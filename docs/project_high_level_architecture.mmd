@@ -1,0 +1,46 @@
+graph TD
+    Input[/"<b><i>Codebase Input</i></b>\nDirectory or ZIP"/]
+
+    subgraph PA["PATH A — Pattern Detection"]
+        direction TB
+        PA_SG["<b><i><u>Semgrep YAML Rules</u></i></b>\nScans for known bad code patterns"]
+        PA_CQ["<b><i><u>CodeQL + Joern</u></i></b>\nTracks how untrusted data flows through the code\n(Additional checks)\nRuns alongside Semgrep in parallel"]
+        PA_LV["<b><i><u>LLM Verifier</u></i></b>\nMerges findings from Semgrep and CodeQL\nUses AI to filter out false positives"]
+        PA_SG --> PA_LV
+        PA_CQ --> PA_LV
+    end
+
+    subgraph PB["PATH B — Semantic Detection"]
+        direction TB
+        PB_HT["<b><i><u>Heuristic Targeting</u></i></b>\nSelects which parts of the code carry the most risk\nEndpoints · auth functions · AI-modified areas"]
+        PB_CG["<b><i><u>Call Graph + CVE Enrichment</u></i></b>\nMaps how functions call each other\nCross-references each surface against known vulnerability database"]
+        PB_TR["<b><i><u>Surface Triage + Token Budget</u></i></b>\nEliminates ~70–80% of surfaces via deterministic rules\nCVE exact match · auth pattern · complexity floor · dedup\nHard token cap enforced before LLM receives any input"]
+        PB_LS["<b><i><u>LLM Semantic Scan</u></i></b>\nReads each high-risk surface and reasons about vulnerabilities\nRuns independently — never sees Path A results"]
+        PB_HT --> PB_CG
+        PB_CG --> PB_TR
+        PB_TR --> PB_LS
+        PB_HT -.->|"When call graph data is unavailable:\ngoes directly to triage"| PB_TR
+    end
+
+    Input --> PA_SG
+    Input --> PA_CQ
+    Input --> PB_HT
+
+    PA_LV --> Dedup
+    PB_LS --> Dedup
+
+    Dedup["<b><i><u>Dedup + Confidence Scoring</u></i></b>\nBoth paths flagged the same issue → HIGH confidence\nOnly one path flagged it → MEDIUM confidence"]
+
+    subgraph PoELayer["Proof-of-Exploit Layer"]
+        direction LR
+        RTA["<b><i><u>Red Team Agent</u></i></b>\nOrchestrates the exploit verification workflow"]
+        DS["<b><i><u>Docker Sandbox</u></i></b>\nAttempts to actually trigger each finding\nto confirm it is real and exploitable"]
+        PoEDoc["<b><i><u>Two-layer PoE Output</u></i></b>\nTechnical trace for developers\nExecutive summary for managers"]
+        RTA --> DS --> PoEDoc
+    end
+
+    Dedup --> RTA
+    Dedup --> FinalReport
+    PoEDoc --> FinalReport
+
+    FinalReport["<b><i><u>HTML Report + Patch Suggestions</u></i></b>"]
