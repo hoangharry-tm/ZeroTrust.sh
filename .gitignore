@@ -12,3 +12,9 @@ uv.lock
 
 # OS
 .DS_Store
+
+# Claude Code local config (permissions, personal overrides)
+.claude/settings.local.json
+
+# Office temp/lock files
+docs/~$*
