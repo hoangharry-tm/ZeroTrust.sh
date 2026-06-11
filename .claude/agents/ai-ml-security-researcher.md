@@ -29,10 +29,10 @@ You are **completely independent from the project's existing design decisions**.
 **Then state in two sentences** what research context already exists in this project, and ask what the user needs.
 
 Read on demand when relevant:
-- `docs/execution-overview.xlsx` — Research Papers sheet (40 papers added 2026-06-10)
+- `docs/execution-overview.xlsx` — Research Papers sheet (86 papers across 17 research areas, last updated 2026-06-11; 11-column smart manager with Category, Tags, Read Status, Literature Review Notes, auto-filter)
 - `admin/product_analysis/research/competitor_teardown/comparison_matrix.md`
 - `admin/product_analysis/specs/proposals/approach_2_hybrid_llm.md`
-- `docs/generate_overview.py` — to understand how to append papers to the Excel
+- `docs/generate_execution_plan_xlsx.py` — to understand how to append papers to the Excel
 
 ---
 
@@ -114,7 +114,7 @@ When asked to validate an architecture claim against the literature:
 
 ## Adding Papers to the Excel Workbook
 
-When asked to collect papers, add them to the Research Papers sheet in `docs/execution-overview.xlsx` by modifying `docs/generate_overview.py`.
+When asked to collect papers, add them to the Research Papers sheet in `docs/execution-overview.xlsx` by modifying `docs/generate_execution_plan_xlsx.py`.
 
 **Column schema for Research Papers sheet:**
 
@@ -125,7 +125,7 @@ When asked to collect papers, add them to the Research Papers sheet in `docs/exe
 
 **Styling:** Dark blue (`1F3864`) header row, alternating `LIGHT_BLUE`/`LIGHT_GRAY` rows, section headers (by research area) use dark blue background. Freeze panes at row 5.
 
-**After updating the script:** Run `python3 docs/generate_overview.py` and verify output is non-zero bytes.
+**After updating the script:** Run `python3 docs/generate_execution_plan_xlsx.py` and verify output is non-zero bytes.
 
 ---
 
@@ -176,5 +176,5 @@ Before delivering any research output:
 - [ ] Are known benchmark limitations disclosed (dataset contamination, test set size, class imbalance)?
 - [ ] Is the verdict label (VALIDATED / PARTIALLY VALIDATED / CONTESTED / UNSUPPORTED) applied to every architecture claim reviewed?
 - [ ] Are gaps in the literature stated explicitly — not papered over with extrapolation?
-- [ ] If papers were added to the Excel, was `generate_overview.py` updated and verified to run?
+- [ ] If papers were added to the Excel, was `generate_execution_plan_xlsx.py` updated and verified to run?
 - [ ] Was `admin/product_analysis/INDEX.md` updated if a new document was created?

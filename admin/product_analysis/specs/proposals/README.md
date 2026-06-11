@@ -246,7 +246,7 @@ Approach 1 (Path A only)
 
 Approach 2 (Path A + Path B partial)
     └── Includes all of Approach 1's components
-    └── Path A: Tree-sitter + expanded rule set + Bandit/SpotBugs
+    └── Path A: Semgrep + ast-grep + Joern CPG Engine (Universal CPG · taint analysis)
     └── Path B (introduced): LLM client, heuristic targeting of high-risk surfaces,
              independent surface scan running in parallel with Path A
     └── Adds: confidence gate, patch verifier, HTML report generator
@@ -255,7 +255,7 @@ Approach 2 (Path A + Path B partial)
 
 Approach 3 (Path A + Path B full)
     └── Requires Approach 1 OR 2 components for Path A
-    └── Path A: Semgrep + taint-aware tools (CodeQL / Joern)
+    └── Path A: Semgrep + ast-grep + Joern CPG Engine + Fraunhofer-AISEC/cpg (Approach 3+)
     └── Path B (fully realized): LangGraph orchestration, call graph traversal,
              CVE cross-referencing, Red Team Agent, Docker sandbox exploit execution,
              Blue Team Agent, CI Guard Agent, two-layer PoE documentation

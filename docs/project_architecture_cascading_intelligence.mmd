@@ -2,16 +2,17 @@ graph TD
     Input[/"<b><i>Codebase Input</i></b>\nDirectory or ZIP"/]
 
     subgraph INGEST["INGESTION"]
-        direction LR
+        direction TB
+        Model_IV["<b><i><u>Model Integrity Verifier</u></i></b>\nRuns at startup — before any code is processed\nSHA256-verifies GGUF model file against pinned release manifest\nBlocks scan and alerts user if model has been modified post-download\nMitigates GGUF backdoor supply chain attacks (ICML 2025)"]
         DI["<b><i><u>Differential Indexer</u></i></b>\nHash-compares input against previous scan cache\nOnly changed or new files enter the pipeline\nFull scan on first run · ~80–95% cost reduction on repeat scans"]
+        Model_IV --> DI
     end
 
     subgraph PA["PATH A — Pattern Detection"]
         direction TB
-        PA_SG["<b><i><u>Semgrep YAML Rules</u></i></b>\nCustom AI-specific rules + community packs\nFast deterministic scan"]
-        PA_CQ["<b><i><u>CodeQL + Joern</u></i></b>\nTaint flow analysis\nRuns in parallel with Semgrep"]
-        PA_LV["<b><i><u>LLM Verifier</u></i></b>\nAgentic CoT framework · only sees structured findings — not raw code\nPrompt includes: taint flow path · sink type · reachability condition\nTargets 88–93% false positive reduction"]
-        PA_SG --> PA_LV
+        PA_SG["<b><i><u>Semgrep + ast-grep · Pattern Detection</u></i></b>\nSemgrep: 30+ languages · community packs · complex patterns (taint flow · metavariables)\nast-grep: Tree-sitter-based · MIT · YAML rule format · fast structural matching\nCovers languages with weak Semgrep community packs · zero additional runtime overhead\nScope extended: MCP server configs (.mcp.json) · agent instruction files\n(.cursor/rules · AGENTS.md · CLAUDE.md · GEMINI.md · copilot-instructions.md)\nPrompt injection via repository instruction surfaces — first tool to cover this vector"]
+        PA_CQ["<b><i><u>Joern CPG Engine · Taint Analysis</u></i></b>\nBuilds Universal Code Property Graph (CPG) from changed files · Apache 2.0\nLanguage support: C/C++ · Java/Kotlin · Python · JS/TS · Go · Ruby · PHP\nTaint query layer: source → sanitizer → sink traversal across CPG\nCPG output shared with Path B — call graph and reachability data\navailable to Heuristic Targeting and Call Graph nodes without re-parse\nApproach 3+: Fraunhofer-AISEC/cpg adds pluggable frontends (Rust · Kotlin · Swift)\nReplaces CodeQL — CPG taint covers same scope with no per-scan database build step\nRuns in parallel with Semgrep + ast-grep"]
+        PA_LV["<b><i><u>LLM Verifier</u></i></b>\nAgentic CoT framework · only sees structured findings — not raw code\nPrompt includes: taint flow path · sink type · reachability condition\nGrammar-constrained decoding: XGrammar enforces JSON schema at generation time\nEliminates malformed output at zero runtime overhead · no retry logic needed\nTargets 88–93% false positive reduction"]
         PA_CQ --> PA_LV
     end
 
@@ -20,35 +21,50 @@ graph TD
 
         subgraph T1["Tier 1 — Surface Selection · deterministic"]
             direction TB
-            PB_HT["<b><i><u>Heuristic Targeting</u></i></b>\nEndpoints · auth functions · AI-modified regions\nFile-level filtering — ~95% of files eliminated · zero LLM cost"]
-            PB_CG["<b><i><u>Call Graph + CVE Enrichment</u></i></b>\nDependency mapping · CVE cross-reference · weekly NVD refresh\nExact CVE match → auto-flag · skip all further analysis\nNo CVE match → heuristic fallback (dangerous functions · unsafe sinks)"]
+            PB_HT["<b><i><u>Heuristic Targeting</u></i></b>\nQueries Joern CPG for language-agnostic surface selection\nCPG-based targeting: external-input nodes · auth-boundary nodes · AI agent config file nodes\nNo per-language rules required — CPG normalizes all languages to shared graph schema\nAI agent config files: MCP configs · instruction files · tool call response strings\nFile-level filtering — ~95% of files eliminated · zero LLM cost"]
+            PB_CG["<b><i><u>Call Graph + CVE Enrichment + Resource ID Dataflow</u></i></b>\nCall graph extracted from Joern CPG — no separate build step required\nCVE enrichment: Trivy (Go library · Apache 2.0 · OSV + NVD + GitHub Advisory databases)\nExact CVE match → auto-flag · skip all further analysis\nZero-trust resource ID tracking: all external IDs treated as untrustworthy until\nexplicit authorization confirmed at each function boundary (BOLAZ formal model · 35 new CVEs)\nFlags IDOR/BOLA violations before classifier · zero LLM cost\nNo CVE match → heuristic fallback (dangerous functions · unsafe sinks)"]
         end
+
         subgraph T2["Tier 2 — Classifier Gate · semi-deterministic"]
             direction TB
-            PB_CC["<b><i><u>Code Vulnerability Classifier</u></i></b>\nUniXcoder-Base-Nine · ~125M params · F1=94.73% on BigVul\nRuns locally on CPU · milliseconds per function · zero API cost\nHigh confidence vulnerable → flag directly · skip LLM\nHigh confidence safe → dismiss · skip LLM\nUncertain → escalate to Tier 3 (~15–25% of surfaces reach LLM)"]
+            PB_CC["<b><i><u>Code Vulnerability Classifier</u></i></b>\nUniXcoder-Base-Nine · ~125M params · F1=94.73% on BigVul\nRuns locally on CPU · milliseconds per function · zero API cost\nSupported languages: Python · Java · JavaScript/TypeScript · Go · Ruby · PHP\nUnsupported languages (Rust · Kotlin · Swift · C#) → routed directly to LLM · classifier skipped\nHigh confidence vulnerable → flag directly · skip LLM\nHigh confidence safe → dismiss · skip LLM\nUncertain → escalate to Tier 2.5 (~15–25% of surfaces reach LLM)"]
+            PB_CCCA["<b><i><u>Call Chain Context Assembler</u></i></b>\nFor each uncertain surface: traces call chain up to depth 3 from Joern CPG\nAssembles multi-function context: caller → surface → callee\nEnables multi-hop reasoning for vulnerabilities spanning multiple functions\nRequired for: IDOR · missing auth guards · middleware bypass · business logic flaws\nSingle-function context misses authorization flaw classes (JitVul / ACL 2025)"]
+            PB_SFS["<b><i><u>Semantic Function Summarizer</u></i></b>\nTransforms assembled call chain context into function-level semantic abstractions\nEach function described as: what it does with untrusted data · sanitizers applied · sinks reached\nLLM never sees raw code — only semantic summaries · aligns with IRIS ICLR 2025 design\nReduces token footprint while preserving security-relevant semantics\nSeparate summary schemas per vulnerability class: taint-flow · auth-guard · logic-flaw"]
         end
+
         subgraph T3["Tier 3 — LLM Reasoning · targeted"]
             direction TB
-            PB_TB["<b><i><u>Token Budget Controller</u></i></b>\nHard cap enforced per scan · UCCI-style uncertainty calibration\nRanks uncertain surfaces by CVE score × classifier uncertainty\nCFG-based chunking: function boundary + taint-critical sub-paths\nVulnerable code positioned at prompt start · mitigates lost-in-middle\nSensitivity filter: credentials and PII routed to secure model only\nDrops lowest-priority surfaces when cap is exceeded"]
-            PB_LS["<b><i><u>LLM Semantic Scan</u></i></b>\nReads only uncertain high-priority surfaces\nNever sees Tier 1 or Tier 2 dismissed surfaces\nNever sees Path A results"]
+            PB_TB["<b><i><u>Token Budget Controller</u></i></b>\nHard cap enforced per scan · UCCI-style uncertainty calibration\nRanks uncertain surfaces by CVE score × classifier uncertainty\nCFG-based chunking: function boundary + taint-critical sub-paths\nVulnerable code positioned at prompt start · mitigates lost-in-middle\nCompression applied only to non-security-critical context (boilerplate · import blocks)\nSecurity-critical lines (data sources · sanitizers · sinks) preserved uncompressed\nIntelligent surface selection preferred over compression · drops only after selection exhausted\nSensitivity filter: credentials and PII routed to secure model only"]
+            PB_LS["<b><i><u>LLM Semantic Scan · Bounded ReAct Loop</u></i></b>\nReads only uncertain high-priority surfaces as semantic summaries — never raw code\nNever sees Tier 1 or Tier 2 dismissed surfaces · Never sees Path A results\nReAct loop (max 3 steps per surface): Thought → context request → Observation → verdict\nContext requests: additional call chain depth · CVE DB lookup · Scan Security Context Store\nProgressive constraint modeling: enumerates program state constraints before vulnerability verdict\nGrammar-constrained decoding: XGrammar enforces JSON schema at generation time\nChain-of-Draft reasoning: verbose CoT compressed to ~7.6% of tokens at same accuracy\nApproach 3 evolution: single scan becomes 3-agent ensemble — Reconnaissance → Exploitation → Verification"]
         end
+
         PB_HT --> PB_CG
         PB_CG --> PB_CC
-        PB_CC -->|"Uncertain cases only\n~15–25% of surfaces"| PB_TB
+        PB_CC -->|"Uncertain cases only\n~15–25% of surfaces"| PB_CCCA
+        PB_CCCA --> PB_SFS
+        PB_SFS --> PB_TB
         PB_TB --> PB_LS
         PB_HT -.->|"When call graph data is unavailable"| PB_CC
     end
 
-    Input --> DI
+    Input --> Model_IV
     DI --> PA_SG
     DI --> PA_CQ
     DI --> PB_HT
 
-    PA_LV --> Dedup
-    PB_LS --> Dedup
-    PB_CC -->|"High-confidence findings\nno LLM required"| Dedup
+    PA_CQ -.->|"CPG shared — call graph\n+ reachability data"| PB_CG
+    PA_CQ -.->|"CPG shared — language-agnostic\nnode queries"| PB_HT
 
-    Dedup["<b><i><u>Dedup + Confidence Scoring</u></i></b>\nTriple-path fusion: AST edit distance · LLM semantic similarity · CWE pattern hash\nBLOCK ≥0.92 · HIGH 0.75–0.91 · MEDIUM 0.60–0.74 · LOW 0.30–0.59 · SUPPRESSED <0.30\nFindings confirmed by both paths → score boosted +15%\nFindings in test files or framework-safe functions → suppressed"]
+    SCS["<b><i><u>Scan Security Context Store</u></i></b>\nPer-scan memory of security inferences accumulated across all analyzed surfaces\nStores: inferred data sources · observed sanitizer gaps · trust boundary violations\nLLM Semantic Scan reads prior inferences before analyzing each surface\nLLM Semantic Scan writes new inferences after each verdict\nEnables detection of cross-surface vulnerabilities invisible to per-function analysis"]
+
+    PB_LS -->|"writes inferences"| SCS
+    SCS -.->|"provides accumulated context"| PB_LS
+    PB_LS --> Dedup
+    PA_SG --> PA_LV
+    PB_CC -->|"High-confidence findings\nno LLM required"| Dedup
+    PA_LV --> Dedup
+
+    Dedup["<b><i><u>Dedup + Confidence Scoring · SSVC-Aligned</u></i></b>\nTriple-path fusion: AST edit distance · LLM semantic similarity · CWE pattern hash\nSSVC dimensions: Exploitation (active/PoC/none) · Automatable (yes/no) · Technical Impact (total/partial)\nBLOCK ≥0.92 — Exploitable + Automatable + Total Impact\nHIGH 0.75–0.91 — PoC exists + automatable path + significant impact\nMEDIUM 0.60–0.74 · LOW 0.30–0.59 · SUPPRESSED <0.30\nFindings confirmed by both paths → score boosted +15%\nFindings in test files or framework-safe functions → suppressed"]
 
     subgraph PoELayer["Proof-of-Exploit Layer"]
         direction LR
@@ -61,5 +77,6 @@ graph TD
     Dedup --> RTA
     Dedup --> FinalReport
     PoEDoc --> FinalReport
+    DS -.->|"Sandbox execution failed\nStatic evidence only"| FinalReport
 
     FinalReport["<b><i><u>HTML Report + Patch Suggestions</u></i></b>"]

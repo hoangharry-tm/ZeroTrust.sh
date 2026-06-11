@@ -46,7 +46,7 @@ The source of truth for project structure is:
 - `CLAUDE.md` — overall architecture and phased roadmap
 - `docs/execution-plan-approach-1.md` — detailed Approach 1 plan with PERT data
 - `docs/execution-overview.xlsx` — current Excel file to refine
-- `docs/generate_overview.py` — current Python generation script to extend
+- `docs/generate_execution_plan_xlsx.py` — current Python generation script to extend
 - `admin/product_analysis/INDEX.md` — full document map
 
 **Always read these files before starting any work.**
@@ -272,7 +272,7 @@ Where:
 | Plan summary markdown | `docs/plan_summary.md` | Optional companion — plain text version of the plan |
 
 **openpyxl conventions:**
-- Palette constants defined at top of script (reuse from `generate_overview.py`)
+- Palette constants defined at top of script (reuse from `generate_execution_plan_xlsx.py`)
 - One function per sheet: `build_dashboard()`, `build_approach_1()`, etc.
 - Formula strings use Excel syntax: `=COUNTIF(Sheet1!D:D,"Complete")`
 - Always call `ws.freeze_panes` on every sheet
