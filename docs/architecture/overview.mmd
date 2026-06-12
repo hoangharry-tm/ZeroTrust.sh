@@ -1,0 +1,79 @@
+graph TD
+    Input[/"<b><i>Codebase Input</i></b>\nDirectory or ZIP"/]
+
+    subgraph INGEST["INGESTION"]
+        direction LR
+        MIV["<b><i><u>Model Integrity Verifier</u></i></b>\nSHA256 GGUF check · blocks tampered model"]
+        DI["<b><i><u>Differential Indexer</u></i></b>\nChanged files only · ~80–95% cost reduction"]
+        MIV --> DI
+    end
+
+    subgraph PA["PATH A — Pattern Detection"]
+        direction TB
+        PA_SG["<b><i><u>Semgrep + ast-grep</u></i></b>\nCode patterns + AI agent config files"]
+        PA_CQ["<b><i><u>Joern CPG Engine · Taint Analysis</u></i></b>\nUniversal CPG · source → sanitizer → sink"]
+        PA_LV["<b><i><u>LLM Verifier</u></i></b>\nFalse positive filter · grammar-constrained output"]
+        PA_CQ --> PA_LV
+    end
+
+    subgraph PB["PATH B — Semantic Detection · Three-Tier Cost Funnel"]
+        direction TB
+
+        subgraph T1["Tier 1 — Surface Selection"]
+            PB_HT["<b><i><u>Heuristic Targeting</u></i></b>\nCPG-based · language-agnostic · ~95% of files eliminated"]
+            PB_CG["<b><i><u>Call Graph + CVE Enrichment + Resource ID Dataflow</u></i></b>\nTrivy (OSV + NVD + GitHub Advisory) · BOLAZ zero-trust ID tracking"]
+        end
+
+        subgraph T2["Tier 2 — Classifier Gate"]
+            PB_CC["<b><i><u>Code Vulnerability Classifier</u></i></b>\nUniXcoder · F1=94.73% · local CPU · zero API cost"]
+            PB_CCCA["<b><i><u>Call Chain Context Assembler</u></i></b>\nDepth-3 caller → surface → callee"]
+            PB_SFS["<b><i><u>Semantic Function Summarizer</u></i></b>\nLLM sees structured summaries · never raw code"]
+        end
+
+        subgraph T3["Tier 3 — LLM Reasoning"]
+            PB_TB["<b><i><u>Token Budget Controller</u></i></b>\nSurface selection over compression · hard token cap"]
+            PB_LS["<b><i><u>LLM Semantic Scan</u></i></b>\nBounded ReAct loop · progressive constraint modeling"]
+        end
+
+        PB_CC -->|"Uncertain · ~15–25%"| PB_CCCA
+        PB_CCCA --> PB_SFS
+        PB_SFS --> PB_TB
+        PB_TB --> PB_LS
+        PB_HT -.->|"No call graph available"| PB_CC
+        PB_HT --> PB_CG
+        PB_CG --> PB_CC
+    end
+
+    Input --> MIV
+    DI --> PA_SG
+    DI --> PA_CQ
+    DI --> PB_HT
+
+    PA_CQ -.->|"CPG shared — call graph + reachability"| PB_CG
+    PA_CQ -.->|"CPG shared — language-agnostic node queries"| PB_HT
+
+    SCS["<b><i><u>Scan Security Context Store</u></i></b>\nCross-surface inference accumulation"]
+    PB_LS -->|"writes inferences"| SCS
+    SCS -.->|"provides accumulated context"| PB_LS
+
+    PA_SG --> PA_LV
+    PB_LS --> Dedup
+    PB_CC -->|"High-confidence findings"| Dedup
+    PA_LV --> Dedup
+
+    Dedup["<b><i><u>Dedup + Confidence Scoring · SSVC-Aligned</u></i></b>\nBLOCK · HIGH · MEDIUM · LOW · SUPPRESSED · Both paths confirmed → +15%"]
+
+    subgraph PoE["Proof-of-Exploit Layer"]
+        direction LR
+        RTA["<b><i><u>Red Team Agent</u></i></b>\nOrchestrates exploit verification"]
+        DS["<b><i><u>Docker Sandbox</u></i></b>\nAttempts live trigger of each finding"]
+        PoEDoc["<b><i><u>Two-layer PoE Output</u></i></b>\nDev trace + Executive summary"]
+        RTA --> DS --> PoEDoc
+    end
+
+    Dedup -->|"Approach 3 only"| RTA
+    Dedup --> FinalReport
+    PoEDoc --> FinalReport
+    DS -.->|"Sandbox failed · static evidence only"| FinalReport
+
+    FinalReport["<b><i><u>HTML Report + Patch Suggestions</u></i></b>"]

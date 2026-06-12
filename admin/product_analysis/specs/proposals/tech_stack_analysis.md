@@ -1,7 +1,8 @@
 # Technology Stack Analysis — ZeroTrust.sh
 
-> **Status:** Draft for tech lead review — June 2026
-> **Scope:** Neutral, evidence-backed analysis of language and runtime choices for ZeroTrust.sh v1.0. No final recommendation is made. All performance claims are cited.
+> **Status:** Decision made — see ADR-001 (`admin/product_analysis/specs/architecture/adr/ADR-001-language-stack.md`)
+> **Decision (2026-06-11):** **Go + Python**. Go for CLI orchestration, Path A/B dispatch, Trivy, Docker API, report generation. Python for UniXcoder (PyTorch), XGrammar, LangGraph (Approach 3), LLMLingua-2. Rust deferred.
+> **Scope:** Evidence-backed analysis of language and runtime choices for ZeroTrust.sh v1.0. All performance claims are cited.
 
 ---
 

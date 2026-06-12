@@ -32,9 +32,11 @@ ZeroTrust.sh uses two parallel detection paths against every codebase input, pre
 Semgrep + ast-grep pattern detection + Joern CPG Engine taint analysis run in parallel. Joern builds a Universal Code Property Graph (CPG) shared with Path B. Rule scope covers code patterns, AI-specific threats, and — uniquely — AI agent config files (MCP server configs, instruction files). An LLM Verifier filters false positives using grammar-constrained output (no malformed JSON possible).
 
 **Path B — Semantic/Logic Detection (three-tier cost funnel)**
-Heuristic Targeting queries the Joern CPG for language-agnostic surface selection, identifying the ~5% of files worth deep analysis — no per-language rules required. A local CPU classifier (UniXcoder) gates ~75–85% of surfaces without any LLM call. For uncertain surfaces, the Call Chain Context Assembler traces caller→surface→callee, then the Semantic Function Summarizer converts that context into function-level semantic abstractions — the LLM never sees raw code, only what each function does with untrusted data (IRIS/ICLR 2025 design). The Token Budget Controller preserves security-critical lines uncompressed and uses intelligent surface selection over aggressive compression (Paper #38/2026). The LLM Semantic Scan uses a bounded ReAct reasoning loop with progressive constraint modeling and reads from a per-scan Scan Security Context Store that accumulates inferences across all analyzed surfaces — enabling detection of cross-surface vulnerabilities that per-function analysis misses (RepoAudit/2025).
+Heuristic Targeting queries the Joern CPG for language-agnostic surface selection, identifying the ~5% of files worth deep analysis — no per-language rules required. A local CPU classifier (UniXcoder) gates ~75–85% of surfaces without any LLM call. For uncertain surfaces, the Call Chain Context Assembler traces caller→surface→callee, then the Semantic Function Summarizer uses a small fast LLM (IRIS/ICLR 2025 approach) to convert that context into XGrammar-constrained JSON summaries per vulnerability class (`taint-flow`, `auth-guard`, `logic-flaw`). CPG-derived fields (taint edges, sink types) are injected as ground-truth; the LLM fills only semantic interpretation fields. The main reasoning LLM never sees raw code — only these structured summaries. The Token Budget Controller preserves security-critical lines uncompressed and uses intelligent surface selection over aggressive compression (Paper #38/2026). The LLM Semantic Scan uses a bounded ReAct reasoning loop with progressive constraint modeling and reads from a per-scan Scan Security Context Store that accumulates inferences across all analyzed surfaces — enabling detection of cross-surface vulnerabilities that per-function analysis misses (RepoAudit/2025).
 
-> Full detailed spec: `docs/project_architecture_cascading_intelligence.mmd`
+> Full detailed spec: `docs/architecture/cascading_intelligence.mmd`
+> Simplified overview diagram: `docs/architecture/overview.mmd`
+> Prose architecture reference: `docs/architecture/detail.md`
 
 ```mermaid
 graph TD
@@ -61,7 +63,7 @@ graph TD
         PB_CG["<b><i><u>Call Graph + CVE Enrichment + Resource ID Dataflow</u></i></b>\nCall graph from Joern CPG · CVE enrichment via Trivy (Apache 2.0 · OSV + NVD + GitHub Advisory)\nZero-trust resource ID tracking: all external IDs untrustworthy until authorization confirmed\n(BOLAZ formal model · 35 new CVEs discovered)"]
         PB_CC["<b><i><u>Code Vulnerability Classifier</u></i></b>\nUniXcoder-Base-Nine · runs locally on CPU · zero API cost\nSupported: Python · Java · JS/TS · Go · Ruby · PHP\nUnsupported (Rust · Kotlin · Swift · C#) → routed directly to LLM\nHigh-confidence verdicts skip LLM entirely"]
         PB_CCCA["<b><i><u>Call Chain Context Assembler</u></i></b>\nTraces call chain to depth 3 from Joern CPG\nAssembles multi-function context for auth and logic flaw detection"]
-        PB_SFS["<b><i><u>Semantic Function Summarizer</u></i></b>\nConverts call chain context into semantic abstractions per function\nLLM never sees raw code — only what each function does with untrusted data\nAligns with IRIS ICLR 2025 design · reduces token footprint"]
+        PB_SFS["<b><i><u>Semantic Function Summarizer</u></i></b>\nLLM-based (IRIS/ICLR 2025): small fast model receives function code + CPG-derived metadata\n(taint source nodes · sanitizer nodes · sink nodes · call graph position)\nCPG fields injected as ground-truth · LLM fills semantic interpretation only\nOutputs XGrammar-constrained JSON per schema: taint-flow · auth-guard · logic-flaw\nLLM never sees raw code in main reasoning scan — only these structured summaries"]
         PB_TB["<b><i><u>Token Budget Controller</u></i></b>\nIntelligent surface selection preferred over compression\nSecurity-critical lines preserved uncompressed · enforces hard token cap"]
         PB_LS["<b><i><u>LLM Semantic Scan · Bounded ReAct Loop</u></i></b>\nReads semantic summaries — never raw code · never sees Path A results\nReAct loop (max 3 steps) · progressive constraint modeling · grammar-constrained output\nApproach 3: becomes 3-agent ensemble — Reconnaissance → Exploitation → Verification"]
         PB_HT --> PB_CG
@@ -117,11 +119,23 @@ A finding confirmed by both paths is treated as high-confidence signal. A vulner
 
 ## Tech Stack (Target)
 
-- **Core Engine**: Rust or Go
-- **Parser**: Tree-sitter
-- **LLM Runtime**: Ollama / llama.cpp with quantized GGUF models
-- **Templates**: Tera (Rust) or Jinja2 (Python)
-- **Distribution**: Single standalone binary
+> **Language decision locked (ADR-001, 2026-06-11):** Go + Python. Rust deferred.
+
+| Layer | Language | Notes |
+|---|---|---|
+| CLI, orchestration, parallel path dispatch | **Go** | Single binary; goroutines map to Path A / B |
+| Trivy CVE enrichment, Docker API (PoE) | **Go** | Native Go libraries |
+| SSVC scoring, dedup, HTML report, patch gen | **Go** | `html/template` + `embed` |
+| UniXcoder classifier (PyTorch), XGrammar | **Python** | No Go port exists |
+| LangGraph 3-agent ensemble (Approach 3) | **Python** | Python-only framework |
+| LLMLingua-2 / Token Budget, Semantic Summarizer | **Python** | HuggingFace ecosystem |
+
+- **Integration boundary**: Go spawns a long-lived Python worker; communication via stdin/stdout newline-delimited JSON (Approach 3: local gRPC)
+- **Parser**: Tree-sitter (Go CGo bindings for Approaches 1–2; Python bindings in the ML worker)
+- **LLM Runtime**: Ollama HTTP API (Go orchestrator calls `localhost:11434`; llama-cpp-python in Python worker for in-process inference)
+- **Templates**: `html/template` + `embed` (Go)
+- **Distribution**: Single Go binary (Approaches 1–2) + bundled Python venv; Docker image (Approach 3)
+- **Full rationale**: `admin/product_analysis/specs/architecture/adr/ADR-001-language-stack.md`
 
 ## Market Position
 
@@ -132,9 +146,10 @@ A finding confirmed by both paths is treated as high-confidence signal. A vulner
 
 ## Execution Plan
 
-- **Workbook**: `docs/ZeroTrust_Internship_Roadmap.xlsx` — 7 sheets: Dashboard (live KPI formulas), Approach 1–3 (milestones + tasks with PERT O/ML/P/E), Research (Scientific Research & Architecture Validation), Constraints, Research Papers (40 papers)
-- **Generator**: `.gemini/antigravity-cli/brain/02917e04-37bf-4ff3-b46b-2cb699f91842/scratch/generate_roadmap_v3.py` — re-run to regenerate after data changes
-- **Design specs**: `docs/excel-design/` — 8 markdown files (one per sheet) with full column schema, color rules, and all data entries
+- **Workbook**: `docs/roadmap/ZeroTrust_Internship_Roadmap.xlsx` — 7 sheets: Dashboard (live KPI formulas), Approach 1–3 (milestones + tasks with PERT O/ML/P/E), Research (Scientific Research & Architecture Validation), Constraints, Research Papers (40 papers)
+- **Generator**: `docs/roadmap/generate_execution_plan_xlsx.py` — re-run to regenerate after data changes (sheet modules in `docs/roadmap/sheets/`)
+- **Milestone task sources**: `docs/planning/g1_milestone_tasks.md` → `g4_milestone_tasks.md`
+- **Approach 1 execution plan**: `docs/planning/execution-plan-approach-1.md`
 
 ## Status
 

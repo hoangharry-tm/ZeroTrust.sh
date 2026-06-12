@@ -38,13 +38,13 @@ graph TD
             PB_LS["<b><i><u>LLM Semantic Scan · Bounded ReAct Loop</u></i></b>\nReads only uncertain high-priority surfaces as semantic summaries — never raw code\nNever sees Tier 1 or Tier 2 dismissed surfaces · Never sees Path A results\nReAct loop (max 3 steps per surface): Thought → context request → Observation → verdict\nContext requests: additional call chain depth · CVE DB lookup · Scan Security Context Store\nProgressive constraint modeling: enumerates program state constraints before vulnerability verdict\nGrammar-constrained decoding: XGrammar enforces JSON schema at generation time\nChain-of-Draft reasoning: verbose CoT compressed to ~7.6% of tokens at same accuracy\nApproach 3 evolution: single scan becomes 3-agent ensemble — Reconnaissance → Exploitation → Verification"]
         end
 
-        PB_HT --> PB_CG
-        PB_CG --> PB_CC
         PB_CC -->|"Uncertain cases only\n~15–25% of surfaces"| PB_CCCA
         PB_CCCA --> PB_SFS
         PB_SFS --> PB_TB
         PB_TB --> PB_LS
         PB_HT -.->|"When call graph data is unavailable"| PB_CC
+        PB_HT --> PB_CG
+        PB_CG --> PB_CC
     end
 
     Input --> Model_IV
