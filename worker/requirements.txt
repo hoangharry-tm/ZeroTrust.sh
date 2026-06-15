@@ -1,0 +1,11 @@
+# Runtime dependencies — keep in sync with pyproject.toml [project.dependencies]
+xgrammar>=0.1.18
+transformers>=4.44.0
+torch>=2.3.0
+ollama>=0.3.0
+pydantic>=2.7.0
+
+# Dev / test
+pytest>=8.0
+ruff>=0.5.0
+mypy>=1.10.0

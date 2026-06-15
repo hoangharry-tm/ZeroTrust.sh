@@ -1,0 +1,29 @@
+linters:
+  enable:
+    - errcheck
+    - staticcheck
+    - gosec
+    - govet
+    - gofmt
+    - revive
+    - unused
+    - bodyclose
+    - noctx
+
+linters-settings:
+  gosec:
+    excludes:
+      - G304 # file path from variable — expected in scanner context
+  revive:
+    rules:
+      - name: exported
+        severity: warning
+      - name: unused-parameter
+        severity: warning
+
+issues:
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - gosec
+        - errcheck

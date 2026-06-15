@@ -1,20 +1,25 @@
+# Go build output
+build/
+*.test
+
 # Python
-.venv/
-__pycache__/
-*.py[cod]
+worker/.venv/
+**/__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
 *.egg-info/
+dist/
 
-# Jupyter
-.ipynb_checkpoints/
+# ZeroTrust.sh runtime artifacts
+*.cpg
+report.html
+.zerotrust-suppressions.yaml
 
-# uv
-uv.lock
-
-# OS
-.DS_Store
-
-# Claude Code local config (permissions, personal overrides)
-.claude/settings.local.json
-
-# Office temp/lock files
-docs/~$*
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
