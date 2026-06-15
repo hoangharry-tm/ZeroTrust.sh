@@ -669,6 +669,15 @@ papers = [
      "Grammar-augmented generation enforcing output structure via syntactic constraints — alternative to XGrammar for ensuring ZeroTrust.sh semantic output conforms to fixed schema.",
      "https://arxiv.org/abs/2403.01632", ""),
 
+    (87,
+     "XGrammar-2: Efficient Structured Generation for Dynamic Agentic LLM Workloads",
+     "Multiple authors", "2026", "arXiv:2601.04426",
+     "Structured Generation",
+     "grammar-constrained decoding, TagDispatch, cross-grammar cache, agentic LLM, structured output, XGrammar-2, dynamic schema, zero overhead",
+     "Unread",
+     "Successor to XGrammar: TagDispatch enables dynamic multi-schema dispatch across calls (covers LLM Verifier + Semantic Summarizer + ReAct schemas without recompilation); cross-grammar cache reuses substructures across schemas; 6x faster compilation; near-zero end-to-end overhead — adopted as the constrained decoding engine across all LLM output points in ZeroTrust.sh.",
+     "https://arxiv.org/abs/2601.04426", ""),
+
     # ── AREA 17 — Context Window Management ──────────────────────────────────
     (86,
      "Beyond RAG vs. Long-Context: Learning Distraction-Aware Retrieval for Efficient Knowledge Grounding",

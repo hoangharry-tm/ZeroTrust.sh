@@ -2,7 +2,7 @@
 
 ## Idea Summary
 
-ZeroTrust.sh is a local, privacy-first CLI security scanner and patch engine designed to audit codebases modified by AI coding agents. It accepts a codebase directory path or ZIP archive as input, performs deep security analysis entirely on-device, and outputs an interactive HTML vulnerability report with patch suggestions.
+ZeroTrust.sh is a local, privacy-first CLI security scanner and patch engine designed to audit codebases modified by AI coding agents. It accepts a codebase directory path as input, performs deep security analysis entirely on-device, and outputs an interactive HTML vulnerability report with patch suggestions.
 
 ## Core Problem
 
@@ -11,9 +11,10 @@ AI coding agents (Cursor, Cline, Aider, Copilot Workspace) generate functional c
 ## Key Features
 
 - **Local & Offline Execution**: Source code never leaves the developer's machine.
-- **ZIP or Directory Input**: Flexible ingestion layer — no VCS dependency.
-- **AI-Specific Threat Detection**: Detects hallucinated packages, security control bypasses, prompt injection in code comments, and — uniquely — prompt injection via AI agent config files (MCP server configs, `.cursor/rules`, `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `copilot-instructions.md`). No competing tool scans this surface.
-- **Model Integrity Verification**: At startup, SHA256-verifies the local GGUF model against a pinned release manifest. Blocks scan if the model has been tampered with post-download. Mitigates GGUF backdoor supply chain attacks (ICML 2025).
+- **Directory Input**: Source code provided as a local directory path — no VCS dependency required.
+- **AI-Specific Threat Detection**: Detects hallucinated packages, security control bypasses, prompt injection in code comments, AI coding agent "cheat" patterns (hardcoded bypasses, TODO-then-skip, disabled assertions, security-node disappearance across scans), and — uniquely — prompt injection via AI agent config files (MCP server configs, `.cursor/rules`, `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `copilot-instructions.md`) via three-tier static analysis (Unicode obfuscation scan · keyword match · sandboxed LLM meta-audit). No competing tool scans this surface.
+- **Model Integrity Verification**: At startup, verifies the local GGUF model against a cosign/Sigstore Rekor signed hash registry (keyed by model ID). Tiered response: WARN for unrecognised models, BLOCK only for confirmed hash mismatch on a known model. Gates LLM calls only — CPG build and pattern matching proceed regardless. Mitigates GGUF backdoor supply chain attacks (ICML 2025).
+- **Security Regression Detection**: Differential Indexer tracks auth/validate/check AST nodes across scans via CPG diff. Removal of a security-relevant node in a changed file triggers Path B escalation — detecting cases where an AI coding agent silently removes a security control while satisfying functional tests.
 - **Dual-Path Analysis Engine**: Path A (fast pattern detection) runs in parallel with Path B (semantic/logic detection) — neither path gates the other.
 - **Three-Tier Cost Funnel (Path B)**: Deterministic Heuristic Targeting → local CPU classifier (UniXcoder, F1=94.73%) → bounded LLM reasoning. ~95% of files and ~75–85% of surfaces never reach the LLM. LLM budget is stretched 3–6x further via LLMLingua-2 prompt compression before any surface is dropped.
 - **Logic Vulnerability Detection**: Path B's Call Chain Context Assembler traces caller→surface→callee (depth 3) before the LLM scan, enabling detection of IDOR, missing auth guards, and business logic flaws that span multiple functions — the class of vulnerability all single-function SAST tools miss.
@@ -26,13 +27,13 @@ AI coding agents (Cursor, Cline, Aider, Copilot Workspace) generate functional c
 
 ZeroTrust.sh uses two parallel detection paths against every codebase input, preceded by an integrity-checked ingestion layer. Neither path gates the other — they produce independent findings merged into a unified SSVC-aligned report.
 
-**INGEST** — Model Integrity Verifier confirms the local GGUF model is untampered before any analysis begins. Differential Indexer then passes only changed files into the pipeline (~80–95% cost reduction on repeat scans).
+**INGEST** — Model Integrity Verifier (cosign/Sigstore Rekor signed registry, tiered WARN/BLOCK) and Differential Indexer run in parallel at startup. MIV gates LLM calls only — CPG build and pattern matching proceed regardless. DI passes only changed files into the pipeline (+ one-hop CPG caller/callee expansion); CPG is always a full rebuild. ~80–95% cost reduction on Semgrep/classifier/LLM calls on repeat scans. State persisted in SQLite (`~/.zerotrust/scans.db`). Directory input only.
 
 **Path A — Pattern Detection (fast, deterministic)**
-Semgrep + ast-grep pattern detection + Joern CPG Engine taint analysis run in parallel. Joern builds a Universal Code Property Graph (CPG) shared with Path B. Rule scope covers code patterns, AI-specific threats, and — uniquely — AI agent config files (MCP server configs, instruction files). An LLM Verifier filters false positives using grammar-constrained output (no malformed JSON possible).
+OpenGrep + ast-grep (language-partitioned; OpenGrep owns its strong languages, ast-grep fills gaps) and Joern CPG Engine taint analysis (Apache 2.0, whole-program inter-file, HTTP API for Go integration) run in parallel. Joern is pre-started at CLI launch to eliminate JVM cold-start latency. Rule scope covers source code patterns, AI coding agent cheat-detection patterns, and — uniquely — three-tier static analysis of AI agent instruction files (Unicode obfuscation + keyword match + MCP schema validation in Approach 1; embedding similarity + sandboxed LLM meta-audit added in Approach 2). An LLM Verifier filters false positives using CoD + SCoT reasoning with XGrammar-2-enforced JSON output and adaptive self-consistency escalation on uncertain verdicts. High-confidence rules bypass the verifier directly to Dedup.
 
 **Path B — Semantic/Logic Detection (three-tier cost funnel)**
-Heuristic Targeting queries the Joern CPG for language-agnostic surface selection, identifying the ~5% of files worth deep analysis — no per-language rules required. A local CPU classifier (UniXcoder) gates ~75–85% of surfaces without any LLM call. For uncertain surfaces, the Call Chain Context Assembler traces caller→surface→callee, then the Semantic Function Summarizer uses a small fast LLM (IRIS/ICLR 2025 approach) to convert that context into XGrammar-constrained JSON summaries per vulnerability class (`taint-flow`, `auth-guard`, `logic-flaw`). CPG-derived fields (taint edges, sink types) are injected as ground-truth; the LLM fills only semantic interpretation fields. The main reasoning LLM never sees raw code — only these structured summaries. The Token Budget Controller preserves security-critical lines uncompressed and uses intelligent surface selection over aggressive compression (Paper #38/2026). The LLM Semantic Scan uses a bounded ReAct reasoning loop with progressive constraint modeling and reads from a per-scan Scan Security Context Store that accumulates inferences across all analyzed surfaces — enabling detection of cross-surface vulnerabilities that per-function analysis misses (RepoAudit/2025).
+Heuristic Targeting queries the Joern CPG for language-agnostic surface selection across external-input and auth-boundary nodes (AI config files handled by Path A), targeting typically ~95% file elimination as a design goal pending CVEFixes benchmark. CVE enrichment via Trivy (online default — source code never leaves the machine; offline mode available for air-gapped environments) auto-flags known-CVE surfaces. Zero-trust resource ID taint tracking (P-API/C-API model, grounded in BolaRay CCS 2024) flags IDOR/BOLA candidates before the classifier; all IDOR candidates always escalate to the LLM. UniXcoder-Base-Nine (~125M, CPU) gates surfaces as a classifier — A-18 is a blocking dependency: BigVul F1 is not a valid claim for Python/Java/JS/Go; CVEFixes fine-tuning and per-language benchmark required before publishing accuracy figures; classifier operates in high-recall mode until complete. For uncertain surfaces, the Call Chain Context Assembler traces callee-first (depth 3, configurable), then the Semantic Function Summarizer (Phi-3-mini/Qwen2.5-3B, CPU) converts call chain context into XGrammar-2-constrained JSON summaries per vulnerability class (`taint-flow`, `auth-guard`, `logic-flaw`) — all schemas include `authorization_check_location` to distinguish real auth gaps from framework-level controls (LLMxCPG USENIX 2025, VULSOLVER arXiv 2025‡). The Token Budget Controller ranks surfaces by `cvss + (1-confidence) + reachability_from_entry`; exhausted-budget surfaces emit SUPPRESSED findings rather than being dropped silently. The LLM Semantic Scan uses a bounded ReAct loop (max 3 steps mapped to progressive constraint checks per VULSOLVER; semantic exit conditions; backbone capability check with single-pass fallback for sub-threshold models) with XGrammar-2-enforced output. A per-scan Scan Security Context Store (graph-based CPG-neighbor retrieval, callee-first ordering) accumulates inferences for cross-surface vulnerability detection (VULSOLVER + LLMxCPG; RepoAudit ICML 2025 cited for memoization cache only).
 
 > Full detailed spec: `docs/architecture/cascading_intelligence.mmd`
 > Simplified overview diagram: `docs/architecture/overview.mmd`
@@ -40,20 +41,19 @@ Heuristic Targeting queries the Joern CPG for language-agnostic surface selectio
 
 ```mermaid
 graph TD
-    Input[/"<b><i>Codebase Input</i></b>\nDirectory or ZIP"/]
+    Input[/"<b><i>Codebase Input</i></b>\nDirectory"/]
 
-    subgraph INGEST["INGESTION"]
+    subgraph INGEST["INGESTION · parallel startup"]
         direction LR
-        MIV["<b><i><u>Model Integrity Verifier</u></i></b>\nSHA256-verifies GGUF model at startup\nBlocks scan if model has been tampered with"]
-        DI["<b><i><u>Differential Indexer</u></i></b>\nOnly changed files enter the pipeline\n~80–95% cost reduction on repeat scans"]
-        MIV --> DI
+        MIV["<b><i><u>Model Integrity Verifier</u></i></b>\ncosign + Sigstore Rekor · signed hash registry per model ID\nTiered: WARN (unrecognised model) · BLOCK (known ID · hash mismatch)\nGates LLM invocations only — CPG build and pattern matching proceed regardless"]
+        DI["<b><i><u>Differential Indexer</u></i></b>\nDirectory input · SQLite state cache · one-hop CPG caller/callee expansion\nChanged files only · ~80–95% pattern-matching cost reduction · CPG always full rebuild"]
     end
 
     subgraph PA["PATH A — Pattern Detection"]
         direction TB
-        PA_SG["<b><i><u>Semgrep + ast-grep · Pattern Detection</u></i></b>\nCode patterns + AI-specific rules · fast structural matching\nExtended: MCP configs · agent instruction files\n(.cursor/rules · AGENTS.md · CLAUDE.md · GEMINI.md)"]
-        PA_CQ["<b><i><u>Joern CPG Engine · Taint Analysis</u></i></b>\nUniversal CPG · taint source → sanitizer → sink · CPG shared with Path B\nRuns alongside Semgrep + ast-grep in parallel"]
-        PA_LV["<b><i><u>LLM Verifier</u></i></b>\nFilters false positives using AI\nGrammar-constrained output — no malformed JSON"]
+        PA_SG["<b><i><u>OpenGrep + ast-grep · Pattern Detection</u></i></b>\nStructural patterns · cheat-detection rules · three-tier instruction file analysis\n(Unicode scan · keyword match · MCP schema validation)"]
+        PA_CQ["<b><i><u>Joern CPG Engine · Taint Analysis</u></i></b>\nUniversal CPG · whole-program inter-file taint · CPG shared with Path B\nHTTP API for Go · pre-started at launch · runs alongside OpenGrep + ast-grep in parallel"]
+        PA_LV["<b><i><u>LLM Verifier</u></i></b>\nCoD + SCoT reasoning · XGrammar-2 output · adaptive SC on uncertain\nHigh-confidence rule bypass · finding normalisation adapter"]
         PA_CQ --> PA_LV
     end
 
@@ -63,7 +63,7 @@ graph TD
         PB_CG["<b><i><u>Call Graph + CVE Enrichment + Resource ID Dataflow</u></i></b>\nCall graph from Joern CPG · CVE enrichment via Trivy (Apache 2.0 · OSV + NVD + GitHub Advisory)\nZero-trust resource ID tracking: all external IDs untrustworthy until authorization confirmed\n(BOLAZ formal model · 35 new CVEs discovered)"]
         PB_CC["<b><i><u>Code Vulnerability Classifier</u></i></b>\nUniXcoder-Base-Nine · runs locally on CPU · zero API cost\nSupported: Python · Java · JS/TS · Go · Ruby · PHP\nUnsupported (Rust · Kotlin · Swift · C#) → routed directly to LLM\nHigh-confidence verdicts skip LLM entirely"]
         PB_CCCA["<b><i><u>Call Chain Context Assembler</u></i></b>\nTraces call chain to depth 3 from Joern CPG\nAssembles multi-function context for auth and logic flaw detection"]
-        PB_SFS["<b><i><u>Semantic Function Summarizer</u></i></b>\nLLM-based (IRIS/ICLR 2025): small fast model receives function code + CPG-derived metadata\n(taint source nodes · sanitizer nodes · sink nodes · call graph position)\nCPG fields injected as ground-truth · LLM fills semantic interpretation only\nOutputs XGrammar-constrained JSON per schema: taint-flow · auth-guard · logic-flaw\nLLM never sees raw code in main reasoning scan — only these structured summaries"]
+        PB_SFS["<b><i><u>Semantic Function Summarizer</u></i></b>\nLLM-based (IRIS/ICLR 2025): small fast model receives function code + CPG-derived metadata\n(taint source nodes · sanitizer nodes · sink nodes · call graph position)\nCPG fields injected as ground-truth · LLM fills semantic interpretation only\nOutputs XGrammar-2-constrained JSON per schema: taint-flow · auth-guard · logic-flaw\nLLM never sees raw code in main reasoning scan — only these structured summaries"]
         PB_TB["<b><i><u>Token Budget Controller</u></i></b>\nIntelligent surface selection preferred over compression\nSecurity-critical lines preserved uncompressed · enforces hard token cap"]
         PB_LS["<b><i><u>LLM Semantic Scan · Bounded ReAct Loop</u></i></b>\nReads semantic summaries — never raw code · never sees Path A results\nReAct loop (max 3 steps) · progressive constraint modeling · grammar-constrained output\nApproach 3: becomes 3-agent ensemble — Reconnaissance → Exploitation → Verification"]
         PB_HT --> PB_CG
@@ -76,6 +76,7 @@ graph TD
     end
 
     Input --> MIV
+    Input --> DI
     DI --> PA_SG
     DI --> PA_CQ
     DI --> PB_HT
@@ -89,22 +90,23 @@ graph TD
     PB_LS -->|"writes inferences"| SCS
     SCS -.->|"provides accumulated context"| PB_LS
 
-    Dedup["<b><i><u>Dedup + Confidence Scoring · SSVC-Aligned</u></i></b>\nBoth paths flagged the same issue → score boosted +15%\nBLOCK · HIGH · MEDIUM · LOW · SUPPRESSED\nSSVC dimensions: Exploitation · Automatable · Technical Impact"]
+    Dedup["<b><i><u>Dedup + Confidence Scoring · SSVC-Aligned</u></i></b>\n6 inputs: Path A bypass · LLM Verifier · CVE auto-flag · UniXcoder direct · LLM Scan · budget-exhausted\nCascaded dedup: CWE hash+file+line → code fingerprint → embedding (MiniLM) → AST edit distance (last resort)\nUncertain verdicts → SUPPRESSED reason:uncertain · never silent drop\nSSVC sourcing: Exploitation (CISA KEV · EPSS · NVD) · Automatable (CWE table) · Technical Impact (CVSS · CWE map)\nBLOCK ≥0.92 · HIGH 0.75–0.91 · MEDIUM 0.60–0.74 · LOW 0.30–0.59 · SUPPRESSED <0.30\nCross-path boost: +15pp additive · capped at 1.0\nAuto-suppression: test file patterns + framework-safe per language · reason field always set · never silent"]
 
-    subgraph PoELayer["Proof-of-Exploit Layer"]
+    subgraph PoELayer["Proof-of-Exploit Layer · Approach 3 only"]
         direction LR
-        RTA["<b><i><u>Red Team Agent</u></i></b>\nOrchestrates the exploit verification workflow"]
-        DS["<b><i><u>Docker Sandbox</u></i></b>\nAttempts to trigger each finding to confirm exploitability"]
-        PoEDoc["<b><i><u>Two-layer PoE Output</u></i></b>\nTechnical trace for developers\nExecutive summary for managers"]
-        RTA --> DS --> PoEDoc
+        PoE_EC["<b><i><u>PoE Eligibility Classifier</u></i></b>\nBLOCK+HIGH only · CWE class filter\nIneligible → poe_status:not_attempted"]
+        RTA["<b><i><u>Red Team Agent</u></i></b>\nReads poe_context · class-specific exploit inputs\nMax 3 attempts · poe_status enum (7 values)"]
+        DS["<b><i><u>Docker Sandbox</u></i></b>\nseccomp · --network none · gVisor recommended\nNever blocks report · graceful degradation"]
+        PoEDoc["<b><i><u>Two-layer PoE Output</u></i></b>\nDev trace (poe_confidence float)\nExec summary (constrained template · business_impact_tier enum)"]
+        PoE_EC --> RTA --> DS --> PoEDoc
     end
 
-    Dedup -->|"Approach 3 only"| RTA
+    Dedup -->|"Approach 3 only"| PoE_EC
     Dedup --> FinalReport
     PoEDoc --> FinalReport
     DS -.->|"Sandbox failed\nStatic evidence only"| FinalReport
 
-    FinalReport["<b><i><u>HTML Report + Patch Suggestions</u></i></b>\nAll approaches produce this report\nApproach 3 also includes proof-of-exploit evidence"]
+    FinalReport["<b><i><u>HTML Report + Patch Suggestions</u></i></b>\nSelf-contained HTML · SSVC-inspired scoring\nPatch validation (go-gitdiff) · scope labels · PatchEval reliability\nXSS mitigations · suppression sidecar (.zerotrust-suppressions.yaml)"]
 ```
 
 A finding confirmed by both paths is treated as high-confidence signal. A vulnerability missed by Path A remains visible to Path B.
@@ -114,7 +116,7 @@ A finding confirmed by both paths is treated as high-confidence signal. A vulner
 | Phase | Builds | Path A | Path B |
 |---|---|---|---|
 | **Approach 1** — Semgrep PoC | Custom Semgrep YAML rules (LLM injection, bypass comments, hardcoded AI keys), fake Spring Boot test codebase, CLI detection demo | Semgrep rules (Python + Java) + MCP/agent config file rules | Not yet |
-| **Approach 2** — Hybrid AST + Local LLM | Go core engine, Model Integrity Verifier, Differential Indexer, LLM Verifier (XGrammar output), Token Budget Controller (LLMLingua-2), HTML report, patch suggestions | Semgrep + ast-grep + Joern CPG Engine | Introduced: UniXcoder classifier gate + CPG-based heuristic targeting + LLM independently scans endpoints and auth surfaces; bounded ReAct loop |
+| **Approach 2** — Hybrid AST + Local LLM | Go core engine, Model Integrity Verifier, Differential Indexer, LLM Verifier (XGrammar-2 output), Token Budget Controller (LLMLingua-2), HTML report, patch suggestions | Semgrep + ast-grep + Joern CPG Engine | Introduced: UniXcoder classifier gate + CPG-based heuristic targeting + LLM independently scans endpoints and auth surfaces; bounded ReAct loop |
 | **Approach 3** — Agentic Scanner | LangGraph multi-agent orchestration, Semantic Function Summarizer, Scan Security Context Store, Docker sandbox with static-evidence fallback, two-layer PoE documentation | Semgrep + ast-grep + Joern CPG Engine + Fraunhofer-AISEC/cpg (Rust · Kotlin · Swift) | Fully realized: BOLAZ zero-trust resource ID tracking, call graph traversal, Trivy CVE enrichment, SSVC-aligned scoring, 3-agent ensemble LLM scan (Reconnaissance → Exploitation → Verification), sandbox exploit execution |
 
 ## Tech Stack (Target)
@@ -126,7 +128,7 @@ A finding confirmed by both paths is treated as high-confidence signal. A vulner
 | CLI, orchestration, parallel path dispatch | **Go** | Single binary; goroutines map to Path A / B |
 | Trivy CVE enrichment, Docker API (PoE) | **Go** | Native Go libraries |
 | SSVC scoring, dedup, HTML report, patch gen | **Go** | `html/template` + `embed` |
-| UniXcoder classifier (PyTorch), XGrammar | **Python** | No Go port exists |
+| UniXcoder classifier (PyTorch), XGrammar-2 | **Python** | No Go port exists |
 | LangGraph 3-agent ensemble (Approach 3) | **Python** | Python-only framework |
 | LLMLingua-2 / Token Budget, Semantic Summarizer | **Python** | HuggingFace ecosystem |
 

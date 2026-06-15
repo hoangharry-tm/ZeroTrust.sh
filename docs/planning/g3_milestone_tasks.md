@@ -69,8 +69,8 @@
 | 3.M4.T2 | Hard per-scan token cap enforcement | TASK | 2026-07-31 | 2026-07-31 | — | — | — | 2.0 | | Not Started | Hoang | Configurable cap (default: 50K tokens per scan); token counter incremented on each LLM call; halt further LLM calls when cap reached; log surfaces dropped |
 | 3.M4.T3 | ReAct loop — Thought step | TASK | 2026-07-31 | 2026-08-01 | — | — | — | 2.5 | | Not Started | Hoang | LLM receives: semantic summary + vulnerability class schema; produces Thought: hypothesis about vulnerability + what additional context needed |
 | 3.M4.T4 | ReAct loop — context-request step (call chain depth + CVE lookup) | TASK | 2026-08-01 | 2026-08-01 | — | — | — | 3.0 | | Not Started | Hoang | LLM can request: deeper call chain (up to depth 3 from 3.M3.T1), CVE DB lookup from OSV-Scanner, or prior scan inferences from SCSS (if available); Go fulfills requests and returns context |
-| 3.M4.T5 | ReAct loop — Observation → verdict step | TASK | 2026-08-01 | 2026-08-01 | — | — | — | 2.5 | | Not Started | Hoang | Max 3 ReAct steps per surface; final step produces verdict; XGrammar enforces JSON schema: {vulnerable: bool, severity: string, cwe: string, rationale: string}; write to Finding channel |
-| 3.M4.T6 | XGrammar schema enforcement on ReAct output (extend Python worker) | TASK | 2026-08-01 | 2026-08-01 | — | — | — | 2.0 | | Not Started | Hoang | Add `llm_scan` type to Python worker dispatcher; XGrammar JSON schema for ReAct verdict; same pattern as LLM Verifier from 2.M3.T7 |
+| 3.M4.T5 | ReAct loop — Observation → verdict step | TASK | 2026-08-01 | 2026-08-01 | — | — | — | 2.5 | | Not Started | Hoang | Max 3 ReAct steps per surface; final step produces verdict; XGrammar-2 enforces JSON schema: {vulnerable: bool, severity: string, cwe: string, rationale: string}; write to Finding channel |
+| 3.M4.T6 | XGrammar-2 schema enforcement on ReAct output (extend Python worker) | TASK | 2026-08-01 | 2026-08-01 | — | — | — | 2.0 | | Not Started | Hoang | Add `llm_scan` type to Python worker dispatcher; XGrammar-2 JSON schema for ReAct verdict; same pattern as LLM Verifier from 2.M3.T7 |
 | 3.M4.T7 | **[SCSS — DROP FIRST]** Scan Security Context Store: in-memory key-value store per scan | TASK | 2026-08-01 | 2026-08-01 | — | — | — | 3.0 | | Not Started | Hoang | DROP if M3.4 starts late; per-scan map: {surfaceID → SecurityInference}; stores: inferred data sources, sanitizer gaps, trust boundary violations observed so far |
 | 3.M4.T8 | **[SCSS — DROP FIRST]** SCSS read/write hooks on LLM calls | TASK | 2026-08-01 | 2026-08-01 | — | — | — | 2.0 | | Not Started | Hoang | DROP if M3.4 starts late; before each ReAct Thought: inject prior inferences from SCSS into prompt; after verdict: write new inferences to SCSS |
 | 3.M4.T9 | **[SCSS — DROP FIRST]** Cross-surface vulnerability detection test | TASK | 2026-08-01 | 2026-08-01 | — | — | — | 3.5 | | Not Started | Hoang | DROP if M3.4 starts late; synthetic test: vulnerability only detectable by combining inferences from two separate surfaces; assert SCSS enables detection where per-surface scan would miss it |
@@ -114,7 +114,7 @@
 | OSV-Scanner CVE enrichment (3.M1.T5–T6) | Go orchestrator binary (1.M2) | SSVC Exploitation dimension (4.M1.T4) |
 | UniXcoder Classifier (3.M2) | Python worker IPC (2.M3.T2–T5), A-18 baseline (2.M4.T3) | Cost funnel stats for demo (4.M3.T5) |
 | Semantic Summarizer (3.M3) | Python worker IPC (2.M3.T2–T5) | LLM ReAct prompt quality (3.M4.T3) |
-| LLM ReAct Scan (3.M4) | XGrammar enforcement (2.M3.T7), Summarizer (3.M3) | Path B findings in dedup (4.M1) |
+| LLM ReAct Scan (3.M4) | XGrammar-2 enforcement (2.M3.T7), Summarizer (3.M3) | Path B findings in dedup (4.M1) |
 | SCSS (3.M4.T7–T9) | ReAct loop (3.M4.T3–T5) | No G4 dependency — post-demo addition |
 
 ---

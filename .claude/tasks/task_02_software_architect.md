@@ -55,7 +55,10 @@ Your responsibilities:
 1. `CLAUDE.md` — project overview, two-path design, phased roadmap
 2. `admin/product_analysis/INDEX.md` — full document map and status
 3. `admin/product_analysis/specs/proposals/README.md` — synthesis overview
-4. `docs/project_high_level_architecture.mmd` — current architecture diagram
+4. Architecture docs (read all three):
+   - `docs/architecture/overview.mmd` — simplified high-level diagram
+   - `docs/architecture/cascading_intelligence.mmd` — full detailed pipeline diagram
+   - `docs/architecture/detail.md` — prose architecture reference
 
 Read on demand when relevant:
 - `admin/product_analysis/specs/proposals/approach_1_ast_sast.md`

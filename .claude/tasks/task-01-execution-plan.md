@@ -11,7 +11,7 @@
 Produce a single Microsoft Word file at:
 
 ```
-docs/execution-plan-approach-1.docx
+docs/planning/execution-plan-approach-1.docx
 ```
 
 The document is an implementation timeline for **Approach 1 (Semgrep PoC)** of the
@@ -336,15 +336,15 @@ which pandoc
 ```
 
 If pandoc is available:
-1. Write the full document content to `docs/execution-plan-approach-1.md` as a
+1. Write the full document content to `docs/planning/execution-plan-approach-1.md` as a
    well-formatted markdown file (use `#`, `##`, `###`, tables, and horizontal rules)
 2. Run:
    ```bash
-   pandoc docs/execution-plan-approach-1.md \
-     -o docs/execution-plan-approach-1.docx \
+   pandoc docs/planning/execution-plan-approach-1.md \
+     -o docs/planning/execution-plan-approach-1.docx \
      --reference-doc=.claude/tasks/reference.docx 2>/dev/null || \
-   pandoc docs/execution-plan-approach-1.md \
-     -o docs/execution-plan-approach-1.docx
+   pandoc docs/planning/execution-plan-approach-1.md \
+     -o docs/planning/execution-plan-approach-1.docx
    ```
 3. Verify the `.docx` file exists and is non-zero bytes
 
@@ -362,7 +362,7 @@ human-readable companion.
 ### Step 5 — Final Check
 
 Before declaring the task complete, verify:
-- [ ] `docs/execution-plan-approach-1.docx` exists and is non-zero bytes
+- [ ] `docs/planning/execution-plan-approach-1.docx` exists and is non-zero bytes
 - [ ] The document contains all required sections per Agent C's structure
 - [ ] All milestones have start date, end date, success criterion
 - [ ] PERT formula appears at least once
@@ -378,8 +378,8 @@ If any check fails, fix it before reporting completion.
 
 ## OUTPUT REQUIREMENTS (Word Document)
 
-**File location**: `docs/execution-plan-approach-1.docx`
-**Companion markdown**: `docs/execution-plan-approach-1.md`
+**File location**: `docs/planning/execution-plan-approach-1.docx`
+**Companion markdown**: `docs/planning/execution-plan-approach-1.md`
 **Target length**: 3–5 pages (aim for 4)
 **Tone**: Professional, direct, no fluff
 **Audience**: Technical lead who will read this in < 5 minutes

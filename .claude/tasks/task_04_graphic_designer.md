@@ -119,9 +119,9 @@ LangGraph agents).
 | Approach 2 | Hybrid AST + Local LLM | Go engine, Differential Indexer, LLM Verifier, HTML report | ~2026-07-11 |
 | Approach 3 | Agentic Scanner | LangGraph multi-agent, call graph, Docker sandbox, PoE docs | ~2026-08-06 |
 
-Read `docs/g1_milestone_tasks.md`, `docs/g2_milestone_tasks.md`,
-`docs/g3_milestone_tasks.md`, `docs/g4_milestone_tasks.md` for milestone detail.
-Read `docs/ZeroTrust_Internship_Roadmap.xlsx` for the full execution plan if
+Read `docs/planning/g1_milestone_tasks.md`, `docs/planning/g2_milestone_tasks.md`,
+`docs/planning/g3_milestone_tasks.md`, `docs/planning/g4_milestone_tasks.md` for milestone detail.
+Read `docs/roadmap/ZeroTrust_Internship_Roadmap.xlsx` for the full execution plan if
 more granular timeline data is needed.
 
 ### 3. Slide Content Requirements
@@ -198,7 +198,7 @@ following research streams **in parallel** using `Agent` tool or `WebSearch`:
 Read these files and extract the following:
 - `CLAUDE.md`: project summary, key differentiators (exact quotes), phased
   roadmap dates, competitor list
-- `docs/g1_milestone_tasks.md` through `docs/g4_milestone_tasks.md`: key task
+- `docs/planning/g1_milestone_tasks.md` through `docs/planning/g4_milestone_tasks.md`: key task
   names per milestone (headline-level only — not every subtask)
 
 Output: A content brief — one line per slide covering what each slide must say.

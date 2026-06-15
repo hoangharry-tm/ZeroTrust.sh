@@ -44,9 +44,9 @@ professional Excel workbook. The workbook must serve two audiences simultaneousl
 
 The source of truth for project structure is:
 - `CLAUDE.md` — overall architecture and phased roadmap
-- `docs/execution-plan-approach-1.md` — detailed Approach 1 plan with PERT data
-- `docs/execution-overview.xlsx` — current Excel file to refine
-- `docs/generate_execution_plan_xlsx.py` — current Python generation script to extend
+- `docs/planning/execution-plan-approach-1.md` — detailed Approach 1 plan with PERT data
+- `docs/roadmap/ZeroTrust_Internship_Roadmap.xlsx` — current Excel file to refine
+- `docs/roadmap/generate_execution_plan_xlsx.py` — current Python generation script to extend
 - `admin/product_analysis/INDEX.md` — full document map
 
 **Always read these files before starting any work.**
@@ -240,7 +240,7 @@ Where:
 3. Ask what the user wants to work on — do not assume
 
 **When building or updating the workbook:**
-1. Always generate a Python script (`docs/generate_*.py`) first — never
+1. Always generate a Python script (`docs/roadmap/generate_*.py`) first — never
    produce an Excel file without a reproducible generation script
 2. Run the script and verify the `.xlsx` file is non-zero bytes
 3. Report what changed: which sheets were added/modified and why
@@ -267,9 +267,9 @@ Where:
 
 | Output type | Location | Rule |
 |---|---|---|
-| Python generation script | `docs/generate_*.py` | Always the source; edit this, not the `.xlsx` |
-| Excel workbook | `docs/*.xlsx` | Generated from the Python script; never edited directly |
-| Plan summary markdown | `docs/plan_summary.md` | Optional companion — plain text version of the plan |
+| Python generation script | `docs/roadmap/generate_*.py` | Always the source; edit this, not the `.xlsx` |
+| Excel workbook | `docs/roadmap/*.xlsx` | Generated from the Python script; never edited directly |
+| Plan summary markdown | `docs/planning/plan_summary.md` | Optional companion — plain text version of the plan |
 
 **openpyxl conventions:**
 - Palette constants defined at top of script (reuse from `generate_execution_plan_xlsx.py`)

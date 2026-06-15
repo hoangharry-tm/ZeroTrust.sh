@@ -32,7 +32,7 @@ ZeroTrust.sh began as a conventional three-tier static analysis proposal (pure A
 | **Surface throughput** | All flagged surfaces forwarded to LLM | Three-tier funnel: ~95% of files eliminated at Tier 1; UniXcoder classifier handles ~75–85% of remaining surfaces on CPU | Only 15–25% of surfaces reach the LLM |
 | **Parse overhead** | CodeQL built its own database per scan; Joern built a separate graph independently | Single Joern CPG built once, shared between Path A taint analysis and Path B heuristic targeting and call graph | Eliminated duplicate parsing; no per-scan database build step |
 | **LLM reasoning depth** | Unbounded — LLM reasoned until a verdict was produced | Bounded ReAct loop (max 3 steps per surface); Chain-of-Draft compresses verbose CoT to 7.6% of tokens at equivalent accuracy | Prevents runaway inference cost; predictable per-scan token budget |
-| **False positive retries** | Malformed LLM JSON output triggered full retry loops | XGrammar constrained decoding enforces schema at generation time | Zero malformed output; zero retry overhead |
+| **False positive retries** | Malformed LLM JSON output triggered full retry loops | XGrammar-2 constrained decoding enforces schema at generation time | Zero malformed output; zero retry overhead |
 
 ---
 
@@ -42,7 +42,7 @@ ZeroTrust.sh began as a conventional three-tier static analysis proposal (pure A
 |---|---|---|---|
 | **Repeat scan cost** | 100% of full scan cost on every run | ~5–20% of full scan cost after first run | Differential Indexer eliminates unchanged files before any analysis |
 | **LLM API calls per scan** | Every pattern-flagged surface → LLM call | High-confidence classifier verdicts and exact CVE matches bypass LLM entirely | 75–85% of surfaces resolved at zero API cost |
-| **Token footprint per surface** | LLM received raw source code (hundreds to thousands of tokens per function) | Semantic Function Summarizer (LLM-based, IRIS/ICLR 2025): small fast model receives function code + CPG metadata, outputs XGrammar-constrained JSON (~50-token structured summary) per vulnerability class schema (taint-flow · auth-guard · logic-flaw); CPG fields are ground-truth, LLM fills semantic interpretation only | Order-of-magnitude token reduction per surface; hallucination risk bounded because structural fields come from CPG, not the model |
+| **Token footprint per surface** | LLM received raw source code (hundreds to thousands of tokens per function) | Semantic Function Summarizer (LLM-based, IRIS/ICLR 2025): small fast model receives function code + CPG metadata, outputs XGrammar-2-constrained JSON (~50-token structured summary) per vulnerability class schema (taint-flow · auth-guard · logic-flaw); CPG fields are ground-truth, LLM fills semantic interpretation only | Order-of-magnitude token reduction per surface; hallucination risk bounded because structural fields come from CPG, not the model |
 | **CVE data maintenance** | Manual weekly NVD refresh — operational overhead | Trivy integrated as Go library (Apache 2.0): real-time OSV + NVD + GitHub Advisory lookups | Zero maintenance; always current |
 | **Tool dependency overhead** | CodeQL (Java-based, separate DB build) + Joern (Scala-based, separate graph) | Joern only — CPG serves both taint analysis and Path B with no second tool startup | Eliminated one JVM-based dependency and its cold-start cost |
 
@@ -54,7 +54,7 @@ ZeroTrust.sh began as a conventional three-tier static analysis proposal (pure A
 |---|---|---|---|
 | **Confidence scoring** | Binary: HIGH or MEDIUM | Five-tier SSVC-aligned: BLOCK / HIGH / MEDIUM / LOW / SUPPRESSED | Actionable verdicts mapped to exploitation likelihood, automatability, and technical impact — compatible with security team triage workflows |
 | **Cross-path signal** | Single-path verdict | Both paths independently confirm a finding → +15% confidence score boost | Dual-confirmation reduces false positive rate on high-severity findings |
-| **LLM output reliability** | Unconstrained generation — JSON parse failures required retries | XGrammar enforces JSON schema at token generation time | 100% well-formed output; targets 88–93% false positive reduction on Path A findings |
+| **LLM output reliability** | Unconstrained generation — JSON parse failures required retries | XGrammar-2 enforces JSON schema at token generation time | 100% well-formed output; targets 88–93% false positive reduction on Path A findings |
 | **Suppression of low-signal findings** | All findings reported regardless of context | Findings in test files or framework-safe functions automatically suppressed | Reduces report noise; focuses developer attention on real risk |
 | **Classifier accuracy gate** | No classifier — all surfaces forwarded | UniXcoder-Base-Nine: F1=94.73% on BigVul; high-confidence verdicts skip LLM entirely | Accurate fast-path for majority of surfaces |
 
@@ -159,7 +159,7 @@ Framed as achievements with scope, method, and impact:
 - **Generalized static analysis to 9+ programming languages** by replacing per-language heuristics with a Universal Code Property Graph (Joern CPG) that decouples surface targeting from language syntax
 - **Detected a new class of vulnerabilities** (IDOR, missing auth guards, middleware bypass) invisible to all single-function SAST tools by implementing a depth-3 call chain context assembler backed by published research (JitVul / ACL 2025)
 - **Implemented cross-surface vulnerability detection** using a per-scan inference store (Scan Security Context Store) that accumulates security context across all analyzed surfaces — based on RepoAudit (2025)
-- **Built privacy-preserving LLM integration**: raw source code never reaches the main reasoning LLM — a Semantic Function Summarizer (small fast model, IRIS/ICLR 2025 approach) converts each uncertain surface into XGrammar-constrained JSON summaries (taint-flow / auth-guard / logic-flaw schemas); CPG-derived taint edges and sink types are injected as ground-truth so hallucination risk is structurally bounded
+- **Built privacy-preserving LLM integration**: raw source code never reaches the main reasoning LLM — a Semantic Function Summarizer (small fast model, IRIS/ICLR 2025 approach) converts each uncertain surface into XGrammar-2-constrained JSON summaries (taint-flow / auth-guard / logic-flaw schemas); CPG-derived taint edges and sink types are injected as ground-truth so hallucination risk is structurally bounded
 - **Identified and mitigated a novel supply chain attack vector** against local AI security tools: SHA256 model integrity verification at startup defends against GGUF backdoor attacks documented at ICML 2025
 - **Produced the first tool to scan AI agent configuration surfaces** as a security threat vector: MCP server configs, `.cursor/rules`, `AGENTS.md`, `CLAUDE.md`, `GEMINI.md` — a scan surface no existing competitor covers
 

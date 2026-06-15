@@ -1,18 +1,17 @@
 graph TD
-    Input[/"<b><i>Codebase Input</i></b>\nDirectory or ZIP"/]
+    Input[/"<b><i>Codebase Input</i></b>\nDirectory"/]
 
-    subgraph INGEST["INGESTION"]
+    subgraph INGEST["INGESTION · parallel startup"]
         direction LR
-        MIV["<b><i><u>Model Integrity Verifier</u></i></b>\nSHA256 GGUF check · blocks tampered model"]
-        DI["<b><i><u>Differential Indexer</u></i></b>\nChanged files only · ~80–95% cost reduction"]
-        MIV --> DI
+        MIV["<b><i><u>Model Integrity Verifier</u></i></b>\ncosign signed registry · tiered WARN/BLOCK · gates LLM calls only"]
+        DI["<b><i><u>Differential Indexer</u></i></b>\nSQLite content-hash diff · one-hop CPG expansion · CPG always full rebuild"]
     end
 
     subgraph PA["PATH A — Pattern Detection"]
         direction TB
-        PA_SG["<b><i><u>Semgrep + ast-grep</u></i></b>\nCode patterns + AI agent config files"]
+        PA_SG["<b><i><u>OpenGrep + ast-grep</u></i></b>\nStructural patterns · cheat-detection rules · three-tier instruction file analysis"]
         PA_CQ["<b><i><u>Joern CPG Engine · Taint Analysis</u></i></b>\nUniversal CPG · source → sanitizer → sink"]
-        PA_LV["<b><i><u>LLM Verifier</u></i></b>\nFalse positive filter · grammar-constrained output"]
+        PA_LV["<b><i><u>LLM Verifier</u></i></b>\nCoD + SCoT reasoning · XGrammar-2 output · adaptive SC on uncertain · high-confidence bypass"]
         PA_CQ --> PA_LV
     end
 
@@ -45,6 +44,9 @@ graph TD
     end
 
     Input --> MIV
+    Input --> DI
+    MIV -.->|"gates LLM calls"| PA_LV
+    MIV -.->|"gates LLM calls"| PB_LS
     DI --> PA_SG
     DI --> PA_CQ
     DI --> PB_HT
@@ -61,19 +63,20 @@ graph TD
     PB_CC -->|"High-confidence findings"| Dedup
     PA_LV --> Dedup
 
-    Dedup["<b><i><u>Dedup + Confidence Scoring · SSVC-Aligned</u></i></b>\nBLOCK · HIGH · MEDIUM · LOW · SUPPRESSED · Both paths confirmed → +15%"]
+    Dedup["<b><i><u>Dedup + Confidence Scoring · SSVC-Aligned</u></i></b>\n6 inputs · cascaded dedup · SSVC-derived score · +15pp cross-path boost · uncertain→SUPPRESSED"]
 
-    subgraph PoE["Proof-of-Exploit Layer"]
+    subgraph PoE["Proof-of-Exploit Layer · Approach 3 only"]
         direction LR
-        RTA["<b><i><u>Red Team Agent</u></i></b>\nOrchestrates exploit verification"]
-        DS["<b><i><u>Docker Sandbox</u></i></b>\nAttempts live trigger of each finding"]
-        PoEDoc["<b><i><u>Two-layer PoE Output</u></i></b>\nDev trace + Executive summary"]
-        RTA --> DS --> PoEDoc
+        PoE_EC["<b><i><u>PoE Eligibility Classifier</u></i></b>\nBLOCK+HIGH only · CWE class filter\nIneligible → poe_status:not_attempted"]
+        RTA["<b><i><u>Red Team Agent</u></i></b>\nReads poe_context from finding · class-specific exploit inputs\nMax 3 attempts · poe_status enum"]
+        DS["<b><i><u>Docker Sandbox</u></i></b>\nseccomp · --network none · --read-only · gVisor recommended\nNever blocks report · graceful degradation"]
+        PoEDoc["<b><i><u>Two-layer PoE Output</u></i></b>\nDev trace (poe_confidence float)\nExec summary (constrained template · business_impact_tier enum)"]
+        PoE_EC --> RTA --> DS --> PoEDoc
     end
 
-    Dedup -->|"Approach 3 only"| RTA
+    Dedup -->|"Approach 3 only"| PoE_EC
     Dedup --> FinalReport
     PoEDoc --> FinalReport
     DS -.->|"Sandbox failed · static evidence only"| FinalReport
 
-    FinalReport["<b><i><u>HTML Report + Patch Suggestions</u></i></b>"]
+    FinalReport["<b><i><u>HTML Report + Patch Suggestions</u></i></b>\nSelf-contained HTML · SSVC-inspired scoring · unified-diff patches\nPatch validation (go-gitdiff) · scope labels · PatchEval reliability\nXSS mitigations · meta-CSP · suppression sidecar (.zerotrust-suppressions.yaml)"]
