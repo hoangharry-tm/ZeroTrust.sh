@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(opengrep *)",
+      "Bash(ast-grep *)"
+    ]
+  }
+}
