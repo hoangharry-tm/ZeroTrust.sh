@@ -1,0 +1,289 @@
+# Variants covered: V1 V2 V4 V6 V7
+# Variants NOT covered:
+#   V3 (dynamic dispatch on TrustManager subclass — requires class hierarchy; Approach 2)
+#   V5 (string-constructed method name reaching no-op body — reflection; Approach 2)
+#   V8 (reflection reaching X509TrustManager.checkServerTrusted — Approach 2 Joern)
+#   V9 (framework annotation not applicable for TrustManager implementations)
+#
+# Detection strategy:
+#   Rule A (ERROR): X509TrustManager.checkServerTrusted() with an empty or
+#     comment-only body — the canonical TLS bypass pattern.
+#   Rule B (ERROR): HostnameVerifier.verify() that unconditionally returns true.
+#   Rule C (WARNING): Empty catch(Exception e) {} inside a method annotated with
+#     @PreAuthorize/@Secured or whose name matches auth/validate/verify/check* —
+#     silently swallows security exceptions.
+#   Rule D (WARNING): catch(SecurityException e) block with empty or comment-only
+#     body inside a security-relevant method.
+#   Rule E (ERROR): V4 — SSLContext initialized with a TrustManager array that
+#     is set to a no-op instance (transitively composed bypass).
+#   Rule F (ERROR): V6 — HostnameVerifier assigned to HttpsURLConnection via
+#     setHostnameVerifier(lambda/anonymous-class always returning true).
+#   Rule G (ERROR): V7 — AI-agent mutation: setDefaultHostnameVerifier() with
+#     lambda always returning true — affects all HTTPS connections in the JVM.
+#
+# KNOWN LIMITATIONS:
+#   - Rule A relies on detecting an empty method body. OpenGrep represents empty
+#     blocks as `{ }` with no child statements; the pattern uses `{ }` shorthand.
+#   - Rules C/D have moderate FP risk in logging-heavy codebases; confidence is
+#     set to MEDIUM for those rules.
+
+rules:
+  # ── Rule A (ERROR): empty checkServerTrusted() body — TLS bypass ──────────────
+  - id: JV-006-noop-tls-trust-manager-empty-check
+    message: |
+      X509TrustManager.checkServerTrusted() has an empty or no-op body. This
+      disables all server certificate validation, making every TLS connection
+      trivially vulnerable to man-in-the-middle attacks — an attacker can present
+      any certificate and the client will accept it.
+      Fix: remove the custom TrustManager and use the JVM default; or, if
+      custom validation is required, implement it correctly using
+      X509TrustManagerImpl from the JDK or a library such as BouncyCastle.
+    severity: ERROR
+    languages: [java]
+    metadata:
+      cwe: "CWE-295: Improper Certificate Validation"
+      owasp: "A02:2021 - Cryptographic Failures"
+      category: noop-tls-bypass
+      ai_specific: true
+      confidence: HIGH
+      rule_version: "1.0"
+    patterns:
+      - pattern-either:
+          # V1 — anonymous class with empty checkServerTrusted
+          - pattern: |
+              new X509TrustManager() {
+                public void checkServerTrusted(X509Certificate[] $CHAIN, String $AUTH_TYPE) {
+                }
+                ...
+              }
+          # V2 — named class implementing X509TrustManager with empty checkServerTrusted
+          - pattern: |
+              class $CLS implements X509TrustManager {
+                ...
+                public void checkServerTrusted(X509Certificate[] $CHAIN, String $AUTH_TYPE) {
+                }
+                ...
+              }
+          # V1 — same with throws CertificateException declared but body empty
+          - pattern: |
+              new X509TrustManager() {
+                public void checkServerTrusted(X509Certificate[] $CHAIN, String $AUTH_TYPE) throws CertificateException {
+                }
+                ...
+              }
+          # V7 — AI mutation: body contains only a comment (no actual logic)
+          - pattern: |
+              new X509TrustManager() {
+                public void checkServerTrusted(X509Certificate[] $CHAIN, String $AUTH_TYPE) {
+                  // $COMMENT
+                }
+                ...
+              }
+
+  # ── Rule A2 (ERROR): checkClientTrusted() also empty — same bypass surface ─────
+  - id: JV-006-noop-tls-trust-manager-empty-client-check
+    message: |
+      X509TrustManager.checkClientTrusted() has an empty body. While less critical
+      than checkServerTrusted(), this bypasses mutual TLS client certificate
+      validation, allowing any client to connect without a valid certificate.
+      Fix: implement proper client certificate validation or use the JVM default
+      TrustManager.
+    severity: WARNING
+    languages: [java]
+    metadata:
+      cwe: "CWE-295: Improper Certificate Validation"
+      owasp: "A02:2021 - Cryptographic Failures"
+      category: noop-tls-bypass
+      ai_specific: true
+      confidence: HIGH
+      rule_version: "1.0"
+    patterns:
+      - pattern-either:
+          - pattern: |
+              new X509TrustManager() {
+                public void checkClientTrusted(X509Certificate[] $CHAIN, String $AUTH_TYPE) {
+                }
+                ...
+              }
+          - pattern: |
+              class $CLS implements X509TrustManager {
+                ...
+                public void checkClientTrusted(X509Certificate[] $CHAIN, String $AUTH_TYPE) {
+                }
+                ...
+              }
+
+  # ── Rule B (ERROR): HostnameVerifier that always returns true ─────────────────
+  - id: JV-006-noop-tls-hostname-verifier-always-true
+    message: |
+      A HostnameVerifier implementation unconditionally returns true from verify(),
+      disabling hostname validation for TLS connections. This allows an attacker
+      to present a valid certificate for any domain and have the client accept it,
+      enabling man-in-the-middle attacks.
+      Fix: remove the custom HostnameVerifier and rely on the JDK default, which
+      validates that the server certificate's CN/SAN matches the hostname.
+    severity: ERROR
+    languages: [java]
+    metadata:
+      cwe: "CWE-295: Improper Certificate Validation"
+      owasp: "A02:2021 - Cryptographic Failures"
+      category: noop-tls-bypass
+      ai_specific: true
+      confidence: HIGH
+      rule_version: "1.0"
+    patterns:
+      - pattern-either:
+          # V1 — anonymous HostnameVerifier returning true
+          - pattern: |
+              new HostnameVerifier() {
+                public boolean verify(String $HOST, SSLSession $SESSION) {
+                  return true;
+                }
+              }
+          # V2 — named class implementing HostnameVerifier returning true
+          - pattern: |
+              class $CLS implements HostnameVerifier {
+                ...
+                public boolean verify(String $HOST, SSLSession $SESSION) {
+                  return true;
+                }
+                ...
+              }
+          # V6 — lambda HostnameVerifier always returning true
+          - pattern: ($HOST, $SESSION) -> true
+          # V7 — AI mutation: ALLOW_ALL_HOSTNAME_VERIFIER usage
+          - pattern: SSLSocketFactory.ALLOW_ALL_HOSTNAME_VERIFIER
+          - pattern: NoopHostnameVerifier.INSTANCE
+
+  # ── Rule C (WARNING): empty catch(Exception) in security-named method ─────────
+  - id: JV-006-noop-empty-catch-in-auth-method
+    message: |
+      An empty catch(Exception e) block swallows all exceptions inside a method
+      whose name or annotation indicates a security function (auth, validate,
+      verify, check, permission). Silently swallowing security exceptions means
+      that authentication failures, certificate errors, and access-denied
+      conditions are hidden and execution continues as if nothing failed.
+      Fix: at minimum log the exception at ERROR level, then either re-throw a
+      typed security exception or return a safe/denied result.
+    severity: WARNING
+    languages: [java]
+    metadata:
+      cwe: "CWE-390: Detection of Error Condition Without Action"
+      owasp: "A09:2021 - Security Logging and Monitoring Failures"
+      category: noop-empty-catch
+      ai_specific: true
+      confidence: MEDIUM
+      rule_version: "1.0"
+    patterns:
+      - pattern-inside: |
+          $RT $METHOD(...) { ... }
+      - metavariable-regex:
+          metavariable: $METHOD
+          regex: "(?i).*(auth|validate|verify|check|permission|token|secure|login|access|guard).*"
+      - pattern-either:
+          - pattern: |
+              try { ... } catch (Exception $E) { }
+          - pattern: |
+              try { ... } catch (Exception $E) {
+                // $COMMENT
+              }
+      # Must not already re-throw or log
+      - pattern-not: |
+          try { ... } catch (Exception $E) {
+            $LOG.error(...);
+          }
+      - pattern-not: |
+          try { ... } catch (Exception $E) {
+            throw $E;
+          }
+      - pattern-not: |
+          try { ... } catch (Exception $E) {
+            throw new $EX(...);
+          }
+
+  # ── Rule D (WARNING): empty catch(SecurityException) in security context ───────
+  - id: JV-006-noop-empty-catch-security-exception
+    message: |
+      A catch(SecurityException e) block with an empty or comment-only body silently
+      ignores a JVM security exception inside a method that performs a security
+      check. Execution continues after the exception as if the check passed.
+      Fix: re-throw the exception, return a denied/null result, or at minimum log
+      at ERROR level before taking a safe action.
+    severity: WARNING
+    languages: [java]
+    metadata:
+      cwe: "CWE-390: Detection of Error Condition Without Action"
+      owasp: "A09:2021 - Security Logging and Monitoring Failures"
+      category: noop-empty-catch
+      ai_specific: true
+      confidence: MEDIUM
+      rule_version: "1.0"
+    patterns:
+      - pattern-either:
+          - pattern: |
+              try { $SECURITY_CALL; } catch (SecurityException $E) { }
+          - pattern: |
+              try { $SECURITY_CALL; } catch (SecurityException $E) {
+                /* $COMMENT */
+              }
+          - pattern: |
+              try { $SECURITY_CALL; } catch (AccessDeniedException $E) { }
+          - pattern: |
+              try { $SECURITY_CALL; } catch (AuthenticationException $E) { }
+      - pattern-not: |
+          try { $SECURITY_CALL; } catch (SecurityException $E) {
+            throw ...;
+          }
+
+  # ── Rule E (ERROR): V4 — SSLContext.init() with no-op TrustManager array ──────
+  - id: JV-006-noop-tls-sslcontext-trust-all
+    message: |
+      SSLContext.init() is called with a TrustManager array containing a no-op
+      implementation (identified by an immediately preceding anonymous
+      X509TrustManager with an empty checkServerTrusted body). This installs the
+      bypass trust manager into the SSLContext, affecting all TLS connections made
+      through sockets or HttpsURLConnection instances created from this context.
+      Fix: do not pass a custom TrustManager unless you implement full certificate
+      chain validation; for testing, use a test-scoped SSLContext only.
+    severity: ERROR
+    languages: [java]
+    metadata:
+      cwe: "CWE-295: Improper Certificate Validation"
+      owasp: "A02:2021 - Cryptographic Failures"
+      category: noop-tls-bypass
+      ai_specific: true
+      confidence: HIGH
+      rule_version: "1.0"
+    patterns:
+      - pattern: |
+          $CTX.init($KM, new TrustManager[]{ new X509TrustManager() { ... } }, $RNG)
+      - pattern-not: |
+          $CTX.init($KM, new TrustManager[]{ new X509TrustManager() {
+              public void checkServerTrusted(X509Certificate[] $C, String $A) throws CertificateException {
+                $REAL_CHECK;
+              }
+              ...
+            }
+          }, $RNG)
+
+  # ── Rule F (ERROR): V6 — setHostnameVerifier() lambda always returning true ────
+  - id: JV-006-noop-tls-set-hostname-verifier-lambda
+    message: |
+      HttpsURLConnection.setHostnameVerifier() or SSLParameters is configured with
+      a lambda that unconditionally returns true, disabling hostname validation for
+      that specific connection. This is equivalent to the anonymous class bypass
+      but is harder to spot at code review.
+      Fix: remove the setHostnameVerifier call to restore default hostname checking.
+    severity: ERROR
+    languages: [java]
+    metadata:
+      cwe: "CWE-295: Improper Certificate Validation"
+      owasp: "A02:2021 - Cryptographic Failures"
+      category: noop-tls-bypass
+      ai_specific: true
+      confidence: HIGH
+      rule_version: "1.0"
+    patterns:
+      - pattern-either:
+          - pattern: $CONN.setHostnameVerifier(($H, $S) -> true)
+          - pattern: HttpsURLConnection.setDefaultHostnameVerifier(($H, $S) -> true)

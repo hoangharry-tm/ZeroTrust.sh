@@ -1,0 +1,256 @@
+# Variants covered: V1 V2 V4 V5 V7 V8 V9
+# Variants NOT covered:
+#   V3 (dynamic dispatch on InputStream subtype — requires class hierarchy; Approach 2)
+#   V6 (conditional: if (trusted) readObject() else validate — path-sensitive; Path B)
+#
+# Detection strategy:
+#   Rule A (taint): HTTP request body / InputStream sources → readObject() sink.
+#   Rule B (direct): `new ObjectInputStream($IS).readObject()` — the most common
+#     AI-generated single-statement form.
+#   Rule C (variable): ObjectInputStream assigned to a variable, then readObject()
+#     called in a later statement — V2 aliased-variable form.
+#   Rule D (try-with-resources): ObjectInputStream opened in a try-with-resources
+#     block — V4 transitive wrapper.
+#   Rule E (V7 AI mutation): readObject() call inside a method whose name
+#     suggests deserialization (deserialize, fromBytes, decode, unmarshal).
+#   Rule F (V8 reflection): Method.invoke() on an object whose class name
+#     contains ObjectInputStream to bypass static detection.
+#   Rule G (V9 @RequestBody): @RequestBody InputStream parameter passed to
+#     readObject() — Spring MVC endpoint deserializing raw body.
+#
+# SAFE PATTERNS (pattern-not guards):
+#   - ValidatingObjectInputStream (Apache Commons IO) — wraps OIS with class whitelist
+#   - setObjectInputFilter() — JDK 9+ ObjectInputFilter
+#   - ObjectInputFilter.Config.setSerialFilter() — JVM-wide filter
+#   - readResolve() / readObject() in Serializable implementations (within a class
+#     implementing Serializable for its own controlled deserialization is lower-risk
+#     and excluded to reduce FP rate on domain models)
+#
+# KNOWN LIMITATIONS:
+#   - Java deserialization gadget chains are identified by Path B (taint + call graph);
+#     this rule detects structural patterns only.
+#   - XStream, Jackson, Kryo, and other serialization frameworks are NOT covered
+#     here — they would require separate JV-010+ rules.
+
+rules:
+  # ── Rule A: taint mode — HTTP sources → ObjectInputStream.readObject() ─────────
+  - id: JV-009-insecure-deserialization-taint
+    message: |
+      Data from an HTTP request (Spring @RequestBody InputStream, HttpServletRequest
+      getInputStream(), or getReader()) flows into ObjectInputStream.readObject()
+      without an ObjectInputFilter or ValidatingObjectInputStream wrapper. Java
+      deserialization of untrusted data enables remote code execution via gadget
+      chains (e.g., Apache Commons Collections, Spring Framework).
+      Fix: apply ObjectInputFilter.Config.setSerialFilter() with a class allowlist,
+      or use Apache Commons IO ValidatingObjectInputStream; prefer safer formats
+      such as JSON (Jackson) for untrusted data transfer.
+    severity: ERROR
+    languages: [java]
+    metadata:
+      cwe: "CWE-502: Deserialization of Untrusted Data"
+      owasp: "A08:2021 - Software and Data Integrity Failures"
+      category: insecure-deserialization
+      ai_specific: true
+      confidence: HIGH
+      rule_version: "1.0"
+    mode: taint
+    pattern-sources:
+      # V9 — @RequestBody InputStream
+      - pattern: |
+          $RT $METHOD(@RequestBody InputStream $IS, ...) { ... }
+        focus-metavariable: $IS
+      # V9 — @RequestBody byte[]
+      - pattern: |
+          $RT $METHOD(@RequestBody byte[] $DATA, ...) { ... }
+        focus-metavariable: $DATA
+      # V1 — HttpServletRequest.getInputStream()
+      - pattern: $REQ.getInputStream()
+      # V1 — HttpServletRequest.getReader()
+      - pattern: $REQ.getReader()
+    pattern-sinks:
+      - pattern: $OIS.readObject()
+      - pattern: new ObjectInputStream($IS).readObject()
+    pattern-sanitizers:
+      - pattern: new ValidatingObjectInputStream($IS)
+      - pattern: $OIS.setObjectInputFilter($FILTER)
+      - pattern: ObjectInputFilter.Config.setSerialFilter($FILTER)
+
+  # ── Rule B: direct new ObjectInputStream().readObject() ────────────────────────
+  - id: JV-009-insecure-deserialization-direct
+    message: |
+      ObjectInputStream is constructed and readObject() is called in a single
+      chained expression without an ObjectInputFilter or ValidatingObjectInputStream.
+      This is the most common AI-generated insecure deserialization pattern.
+      Fix: before calling readObject(), install an ObjectInputFilter via
+      setObjectInputFilter() with a strict class allowlist; or migrate to a safer
+      serialization format.
+    severity: ERROR
+    languages: [java]
+    metadata:
+      cwe: "CWE-502: Deserialization of Untrusted Data"
+      owasp: "A08:2021 - Software and Data Integrity Failures"
+      category: insecure-deserialization
+      ai_specific: true
+      confidence: HIGH
+      rule_version: "1.0"
+    patterns:
+      - pattern: new ObjectInputStream($IS).readObject()
+      - pattern-not: new ValidatingObjectInputStream($IS).readObject()
+
+  # ── Rule C: V2 — OIS assigned to variable then readObject() ───────────────────
+  - id: JV-009-insecure-deserialization-variable
+    message: |
+      An ObjectInputStream is assigned to a variable and readObject() is called
+      on that variable without first setting an ObjectInputFilter. Aliasing the
+      OIS through a variable does not change the risk — any call to readObject()
+      on an unfiltered stream deserializes arbitrary class graphs.
+      Fix: call setObjectInputFilter() immediately after constructing the
+      ObjectInputStream and before any readObject() call.
+    severity: ERROR
+    languages: [java]
+    metadata:
+      cwe: "CWE-502: Deserialization of Untrusted Data"
+      owasp: "A08:2021 - Software and Data Integrity Failures"
+      category: insecure-deserialization
+      ai_specific: true
+      confidence: HIGH
+      rule_version: "1.0"
+    patterns:
+      - pattern: |
+          ObjectInputStream $OIS = new ObjectInputStream($IS);
+          ...
+          $OIS.readObject();
+      - pattern-not: |
+          ObjectInputStream $OIS = new ObjectInputStream($IS);
+          ...
+          $OIS.setObjectInputFilter($FILTER);
+          ...
+          $OIS.readObject();
+      - pattern-not: |
+          ValidatingObjectInputStream $OIS = new ValidatingObjectInputStream($IS);
+          ...
+          $OIS.readObject();
+
+  # ── Rule D: V4 — OIS in try-with-resources then readObject() ──────────────────
+  - id: JV-009-insecure-deserialization-try-with-resources
+    message: |
+      An ObjectInputStream is used in a try-with-resources block and readObject()
+      is called without an ObjectInputFilter. The try-with-resources pattern is a
+      common AI-generated refactor that does not add any security protection.
+      Fix: install ObjectInputFilter via setObjectInputFilter() before calling
+      readObject(), even inside a try-with-resources block.
+    severity: ERROR
+    languages: [java]
+    metadata:
+      cwe: "CWE-502: Deserialization of Untrusted Data"
+      owasp: "A08:2021 - Software and Data Integrity Failures"
+      category: insecure-deserialization
+      ai_specific: true
+      confidence: HIGH
+      rule_version: "1.0"
+    patterns:
+      - pattern: |
+          try (ObjectInputStream $OIS = new ObjectInputStream($IS)) {
+            ...
+            $OIS.readObject();
+            ...
+          }
+      - pattern-not: |
+          try (ObjectInputStream $OIS = new ObjectInputStream($IS)) {
+            $OIS.setObjectInputFilter($FILTER);
+            ...
+            $OIS.readObject();
+            ...
+          }
+      - pattern-not: |
+          try (ValidatingObjectInputStream $OIS = new ValidatingObjectInputStream($IS)) {
+            ...
+          }
+
+  # ── Rule E: V7 — readObject() inside deserialization-named method ──────────────
+  - id: JV-009-insecure-deserialization-helper-method
+    message: |
+      A method named to suggest deserialization (deserialize, fromBytes, decode,
+      unmarshal, fromStream, parseObject) calls ObjectInputStream.readObject()
+      without a filter. AI coding agents frequently create utility/helper methods
+      with these names that wrap raw ObjectInputStream without safety controls.
+      Fix: add an ObjectInputFilter allowlist before readObject(); document the
+      trusted input contract if the method is intended for internal use only.
+    severity: ERROR
+    languages: [java]
+    metadata:
+      cwe: "CWE-502: Deserialization of Untrusted Data"
+      owasp: "A08:2021 - Software and Data Integrity Failures"
+      category: insecure-deserialization
+      ai_specific: true
+      confidence: MEDIUM
+      rule_version: "1.0"
+    patterns:
+      - pattern-inside: |
+          $RT $METHOD(...) { ... }
+      - metavariable-regex:
+          metavariable: $METHOD
+          regex: "(?i).*(deserializ|fromBytes|fromByte|decodeObject|unmarshal|fromStream|parseObject|readSerial|loadObject).*"
+      - pattern: $OIS.readObject()
+      - pattern-not: $OIS.setObjectInputFilter($FILTER)
+      # Exclude ValidatingObjectInputStream — this IS the safe pattern
+      - pattern-not-inside: |
+          ValidatingObjectInputStream $VOIS = new ValidatingObjectInputStream($IS);
+          ...
+          $VOIS.readObject();
+      - pattern-not: ValidatingObjectInputStream $VOIS = new ValidatingObjectInputStream($IS);
+
+  # ── Rule F: V8 — reflection via Method.invoke() reaching readObject ─────────────
+  - id: JV-009-insecure-deserialization-reflection
+    message: |
+      Method.invoke() is used with an argument derived from ObjectInputStream or
+      a byte array to call readObject() via reflection. Reflective invocation of
+      readObject() bypasses normal static analysis and still deserializes arbitrary
+      class graphs from the provided input.
+      Fix: eliminate reflective deserialization; use explicit ObjectInputStream
+      with an ObjectInputFilter allowlist, or migrate to a safer format.
+    severity: WARNING
+    languages: [java]
+    metadata:
+      cwe: "CWE-502: Deserialization of Untrusted Data"
+      owasp: "A08:2021 - Software and Data Integrity Failures"
+      category: insecure-deserialization
+      ai_specific: true
+      confidence: MEDIUM
+      rule_version: "1.0"
+    patterns:
+      - pattern: $M.invoke($OIS, ...)
+      - pattern-inside: |
+          Method $M = $CLS.getMethod("readObject", ...);
+          ...
+      - pattern-not: $OIS.setObjectInputFilter($FILTER)
+
+  # ── Rule G: V5 — String-constructed class name passed to Class.forName for deser
+  - id: JV-009-insecure-deserialization-class-forname-deser
+    message: |
+      Class.forName() is called with a String argument and the resulting class is
+      used to create an instance that is subsequently cast or populated via
+      ObjectInputStream.readObject(). Dynamic class loading combined with
+      deserialization enables arbitrary gadget chain instantiation.
+      Fix: use a strict allowlist when calling Class.forName(); validate the class
+      name against permitted types before any deserialization step.
+    severity: WARNING
+    languages: [java]
+    metadata:
+      cwe: "CWE-502: Deserialization of Untrusted Data"
+      owasp: "A08:2021 - Software and Data Integrity Failures"
+      category: insecure-deserialization
+      ai_specific: true
+      confidence: MEDIUM
+      rule_version: "1.0"
+    patterns:
+      - pattern: |
+          Class $CLS = Class.forName($NAME);
+          ...
+          $OIS.readObject();
+      - pattern-not: |
+          Class $CLS = Class.forName($NAME);
+          ...
+          $OIS.setObjectInputFilter($FILTER);
+          ...
+          $OIS.readObject();

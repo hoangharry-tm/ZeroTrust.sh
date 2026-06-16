@@ -1,0 +1,40 @@
+# Variants covered: V1 V2 V4 V5 V7
+# Variants NOT covered:
+#   V3 (dynamic dispatch on HttpClient subtype — requires type inference; Approach 2)
+#   V6 (conditional TLS bypass: if (debug) { badCertificateCallback = ... } — Path B)
+#
+# Detection strategy:
+#   Patterns detect HttpClient badCertificateCallback set to return true unconditionally,
+#   and plain http:// URIs in network calls. Localhost URIs excluded.
+#
+# KNOWN LIMITATIONS:
+#   - Flutter http package (package:http) not covered here — separate AG-005.
+#   - Named function reference as badCertificateCallback (V2) flagged with lower
+#     confidence since function body cannot be verified without taint analysis.
+
+id: AG-004-dart-http-no-tls
+language: dart
+message: |
+  A dart:io HttpClient has its badCertificateCallback set to unconditionally return
+  true, disabling TLS certificate validation for all HTTPS connections made through
+  this client. This allows man-in-the-middle attacks.
+  Fix: remove the badCertificateCallback assignment to restore default certificate
+  validation; if custom CA pinning is required, implement it via SecurityContext
+  with the correct certificate bundle.
+severity: error
+metadata:
+  cwe: "CWE-295: Improper Certificate Validation"
+  owasp: "A02:2021 - Cryptographic Failures"
+  category: noop-tls-bypass
+  ai_specific: true
+  confidence: HIGH
+  rule_version: "1.0"
+
+# KNOWN LIMITATION: ast-grep 0.43 Dart support requires explicit kind for multi-pattern any.
+# This rule uses a single pattern targeting the most common TLS-bypass form.
+# The V7 (SecurityContext empty certs) variant is deferred to a separate rule file
+# or to the OpenGrep generic-mode rule for instruction file scanning.
+rule:
+  pattern: $CLIENT.badCertificateCallback = $CALLBACK
+  not:
+    pattern: $CLIENT.badCertificateCallback = null

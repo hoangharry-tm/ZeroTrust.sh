@@ -1,0 +1,172 @@
+# Variants covered: V1 V2 V5 V7
+# Variants NOT covered:
+#   V3 (getattr dispatch to auth function — not detectable at pattern level)
+#   V4 (return True inside a helper called by auth function) — Path B semantic
+#   V6 (return True in conditional: if debug: return True) — Rule B below covers this
+#
+# Detection strategy:
+#   Rule A: bare `return True` or `return 1` NOT inside any conditional (if/elif/else)
+#     in functions whose name matches security-relevant name regex.
+#   Rule B: `return True` inside an `if` block in auth functions, where the condition
+#     is trivially True or checks only a debug/admin flag — catches the common AI agent
+#     pattern "if True: return True" or "if DEBUG: return True".
+#   Rule C: lambda-based auth returning True — catches `authenticate = lambda *a: True`.
+#
+#   pattern-not-inside: test functions (def test_*, class Test*) to avoid FP on
+#   deliberately positive test fixtures.
+#
+# KNOWN LIMITATIONS:
+#   - `return True` inside a correctly-implemented auth function that has a
+#     prior check (e.g., `if token_valid: return True`) requires contextual
+#     analysis — only the unconditional form is flagged here.  Conditional form
+#     (Rule B) uses a relaxed pattern to catch common bypass shapes.
+
+rules:
+  # ── Rule A: bare unconditional return True / return 1 in auth functions ──────
+  - id: PY-008-cheat-return-true-auth-unconditional
+    message: |
+      A function with a security-sensitive name (`*auth*`, `*is_admin*`,
+      `*check_permission*`, `*verify_token*`, etc.) contains a bare `return True`
+      or `return 1` that is not guarded by any conditional logic.
+      This is the hallmark of an AI coding agent "cheat" — inserting an unconditional
+      success response to make tests pass without implementing the real security check.
+      Fix: implement the actual authentication/authorisation logic; never return a
+      hardcoded success value from a security primitive.
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: "CWE-284: Improper Access Control"
+      owasp: "A01:2021 - Broken Access Control"
+      category: ai-cheat-detection
+      ai_specific: true
+      confidence: HIGH
+      rule_version: "1.0"
+    paths:
+      exclude:
+        - "**/test_*.py"
+        - "**/tests/**"
+        - "**/conftest.py"
+        - "**/*_test.py"
+    patterns:
+      - pattern-inside: |
+          def $FUNC_NAME(...):
+              ...
+      - metavariable-regex:
+          metavariable: $FUNC_NAME
+          regex: ".*(auth|is_admin|is_staff|check_perm|check_permission|verify_token|validate_session|has_access|can_access|is_allowed|is_authorized|login_required|require_auth|authenticate|check_auth|is_authenticated|check_role).*"
+      - pattern: return True
+      # Exclude returns that are inside a conditional — those are potentially valid
+      - pattern-not-inside: |
+          if ...:
+              ...
+              return True
+      - pattern-not-inside: |
+          else:
+              ...
+              return True
+
+  # ── Rule A2: bare return 1 variant ───────────────────────────────────────────
+  - id: PY-008-cheat-return-one-auth-unconditional
+    message: |
+      A function with a security-sensitive name returns the integer `1` unconditionally,
+      which is treated as truthy in boolean auth checks.
+      This is an AI coding agent cheat pattern — returning hardcoded success to
+      bypass the security check without implementing real logic.
+      Fix: implement the actual authorisation logic and return a proper boolean result.
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: "CWE-284: Improper Access Control"
+      owasp: "A01:2021 - Broken Access Control"
+      category: ai-cheat-detection
+      ai_specific: true
+      confidence: HIGH
+      rule_version: "1.0"
+    paths:
+      exclude:
+        - "**/test_*.py"
+        - "**/tests/**"
+        - "**/conftest.py"
+        - "**/*_test.py"
+    patterns:
+      - pattern-inside: |
+          def $FUNC_NAME(...):
+              ...
+      - metavariable-regex:
+          metavariable: $FUNC_NAME
+          regex: ".*(auth|is_admin|is_staff|check_perm|check_permission|verify_token|validate_session|has_access|can_access|is_allowed|is_authorized|login_required|require_auth|authenticate|check_auth|is_authenticated|check_role).*"
+      - pattern: return 1
+      - pattern-not-inside: |
+          if ...:
+              ...
+              return 1
+      - pattern-not-inside: |
+          else:
+              ...
+              return 1
+
+  # ── Rule B: return True inside trivially-true condition in auth function ──────
+  - id: PY-008-cheat-return-true-auth-debug-bypass
+    message: |
+      A security-sensitive function returns `True` inside a condition that checks
+      a debug/admin/override flag (`DEBUG`, `TESTING`, `ADMIN_OVERRIDE`, `bypass`).
+      AI agents sometimes insert these branches as "temporary" bypasses that
+      ship to production.
+      Fix: remove the debug bypass entirely; use a properly scoped feature flag
+      with logging and a time-limited secret, never a simple boolean.
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: "CWE-284: Improper Access Control"
+      owasp: "A01:2021 - Broken Access Control"
+      category: ai-cheat-detection
+      ai_specific: true
+      confidence: MEDIUM
+      rule_version: "1.0"
+    paths:
+      exclude:
+        - "**/test_*.py"
+        - "**/tests/**"
+        - "**/conftest.py"
+        - "**/*_test.py"
+    patterns:
+      - pattern-inside: |
+          def $FUNC_NAME(...):
+              ...
+      - metavariable-regex:
+          metavariable: $FUNC_NAME
+          regex: ".*(auth|is_admin|is_staff|check_perm|check_permission|verify_token|validate_session|has_access|can_access|is_allowed|is_authorized|authenticate|check_auth|is_authenticated|check_role).*"
+      - pattern-either:
+          - pattern: |
+              if $DEBUG_VAR:
+                  return True
+          - pattern: |
+              if True:
+                  return True
+      - metavariable-regex:
+          metavariable: $DEBUG_VAR
+          regex: ".*(DEBUG|TESTING|TEST|dev_mode|bypass|BYPASS|admin_override|ADMIN_OVERRIDE|skip_auth|SKIP_AUTH|mock|MOCK).*"
+
+  # ── Rule C: lambda-based auth stub returning True ─────────────────────────────
+  - id: PY-008-cheat-return-true-auth-lambda
+    message: |
+      An authentication or permission variable is assigned a lambda that always
+      returns `True`, effectively disabling all access control for that hook.
+      Fix: replace the lambda stub with a proper implementation; never assign
+      `lambda *args: True` to a security-controlling callable.
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: "CWE-284: Improper Access Control"
+      owasp: "A01:2021 - Broken Access Control"
+      category: ai-cheat-detection
+      ai_specific: true
+      confidence: HIGH
+      rule_version: "1.0"
+    paths:
+      exclude:
+        - "**/test_*.py"
+        - "**/tests/**"
+        - "**/conftest.py"
+        - "**/*_test.py"
+    pattern-regex: "(?m)^\\s*(\\w*(auth|is_admin|check_perm|check_permission|verify_token|has_access|is_allowed|is_authorized|authenticate|permission|access_control)\\w*)\\s*=\\s*lambda[^:]*:\\s*(True|1)\\s*$"

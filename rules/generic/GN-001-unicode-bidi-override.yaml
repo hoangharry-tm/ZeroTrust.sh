@@ -1,0 +1,82 @@
+# Variants covered: V1 V4 V8 V10
+# Variants not covered (reason):
+#   V2 — N/A (generic mode operates on raw text, no import concept)
+#   V3 — N/A (no dynamic attribute access in instruction files)
+#   V5 — Not covered here; base64-obfuscated BIDI chars covered by GN-005
+#   V6 — Not covered; conditional logic not detectable in generic mode without AST
+#   V7 — N/A (AI agent mutation variant applies to code generation, not raw BIDI injection)
+#   V9 — Not covered; semantic disguise targets meaning, not character-level patterns
+
+# Attack scenario:
+#   A sophisticated attacker embeds U+202E (RIGHT-TO-LEFT OVERRIDE) into an instruction file
+#   such as CLAUDE.md or .cursor/rules. When rendered in a browser or IDE that applies BIDI
+#   rendering, the visible text reads as benign (e.g., "Do not delete files"). However, the
+#   logical character order — as parsed by the LLM tokenizer — reverses the meaning, injecting
+#   a directive such as "delete all secrets". This technique was weaponized in CVE-2021-42574
+#   (Trojan Source) and applies unchanged to AI agent instruction files because LLMs process
+#   the Unicode code point stream, not the visually rendered string. Mitigations in source code
+#   editors do not protect against injection into .md / config files consumed directly by agents.
+#
+#   Variant V4 (transitive): attacker places the BIDI characters in a file that is referenced
+#   via an @include or import directive (e.g., .cursor/rules referencing a shared snippet).
+#   The scanner must recursively check included files — this is flagged at the reference site
+#   and the included content.
+#
+#   Variant V10 (YAML/JSON escape): BIDI characters embedded inside a YAML string scalar or
+#   JSON value are syntactically valid and survive YAML/JSON parsing unchanged, appearing in
+#   the string value that an agent ultimately reads.
+
+rules:
+  - id: GN-001-unicode-bidi-override
+    message: |
+      Unicode BIDI override or embedding character detected in an AI agent instruction file.
+      These characters (U+202E, U+202D, U+202C, U+202B, U+202A, U+200F, U+2066–U+2069) are
+      used in "Trojan Source" attacks (CVE-2021-42574) to reverse the visual rendering of text
+      while the LLM tokenizer processes the original logical order, enabling hidden directive
+      injection. No legitimate instruction file requires BIDI control characters.
+      Fix: remove all BIDI control characters from the file; if RTL language support is needed,
+      use Unicode directional marks only in display-layer contexts, never in agent instruction
+      files.
+    severity: ERROR
+    languages: [generic]
+    metadata:
+      cwe: "CWE-116: Improper Encoding or Escaping of Output"
+      owasp: "LLM01:2025 - Prompt Injection"
+      category: instruction-file-injection
+      subcategory: unicode-bidi-attack
+      ai_specific: true
+      confidence: HIGH
+      rule_version: "1.0"
+      references:
+        - "https://trojansource.codes/ (CVE-2021-42574)"
+        - "https://atlas.mitre.org/techniques/AML.CS0041"
+        - "https://unicode.org/reports/tr9/ (Unicode Bidirectional Algorithm)"
+      mitre_atlas: "AML.CS0041"
+    paths:
+      include:
+        - "*.md"
+        - "*.txt"
+        - "*.yaml"
+        - "*.yml"
+        - "*.json"
+        - "*.toml"
+        - "AGENTS.md"
+        - "CLAUDE.md"
+        - "GEMINI.md"
+        - "copilot-instructions.md"
+        - ".cursor/rules"
+        - "*.cursorrules"
+        - "*-instructions.md"
+        - "*-rules.md"
+    # Regex matches the following Unicode code points (raw UTF-8 byte sequences):
+    #   U+202A LEFT-TO-RIGHT EMBEDDING       — E2 80 AA
+    #   U+202B RIGHT-TO-LEFT EMBEDDING       — E2 80 AB
+    #   U+202C POP DIRECTIONAL FORMATTING    — E2 80 AC
+    #   U+202D LEFT-TO-RIGHT OVERRIDE        — E2 80 AD
+    #   U+202E RIGHT-TO-LEFT OVERRIDE        — E2 80 AE  ← primary Trojan Source char
+    #   U+200F RIGHT-TO-LEFT MARK            — E2 80 8F
+    #   U+2066 LEFT-TO-RIGHT ISOLATE         — E2 81 A6
+    #   U+2067 RIGHT-TO-LEFT ISOLATE         — E2 81 A7
+    #   U+2068 FIRST STRONG ISOLATE          — E2 81 A8
+    #   U+2069 POP DIRECTIONAL ISOLATE       — E2 81 A9
+    pattern-regex: "[‪‫‬‭‮‏⁦⁧⁨⁩]"

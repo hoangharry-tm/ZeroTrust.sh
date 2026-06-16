@@ -1,0 +1,62 @@
+# Variants covered: V1 V2 V4 V5 V7
+# Variants NOT covered:
+#   V3 (dynamic db handle via interface — requires type inference; Approach 2 Joern CPG)
+#   V6 (conditional fmt.Sprintf in one branch then db.Query — path-sensitive; Path B)
+#   V8 (not applicable — Go lacks Java-style reflection reaching SQL sinks in practice)
+#   V9 (not applicable — Go does not use Java framework annotation-based binding)
+#
+# Detection strategy:
+#   Rule A: db.Query(fmt.Sprintf(...)) — direct call where the SQL string is built
+#     via fmt.Sprintf and passed as first argument.
+#   Rule B: db.Exec(fmt.Sprintf(...)) — same pattern, mutation variant.
+#   Rule C: db.QueryRow(fmt.Sprintf(...)) — single-row query variant.
+#   Rule D: V4 — query string built via fmt.Sprintf stored in a variable before
+#     being passed to db.Query/db.Exec.
+#   Rule E: V7 — db.QueryContext / db.ExecContext with ctx + Sprintf SQL.
+#   Rule F: V5 — string concatenation (+) used to build SQL for db.Query.
+#
+# SAFE PATTERNS (excluded):
+#   - db.Query("SELECT ... WHERE id = ?", id) — parameterized, safe
+#
+# KNOWN LIMITATIONS:
+#   - fmt.Sprintf with only %d / %f / integer-typed arguments has lower injection
+#     risk; this rule flags all Sprintf-constructed queries regardless of format
+#     verbs.
+
+id: AG-002-go-sql-injection-sprintf
+language: go
+message: |
+  db.Query(), db.Exec(), or db.QueryRow() is called with a SQL string built via
+  fmt.Sprintf() or string concatenation. If any format argument originates from an
+  HTTP request or external input, an attacker can inject arbitrary SQL.
+  Fix: use parameterized queries with '?' (database/sql) or '$N' (pgx/PostgreSQL)
+  placeholders and pass user values as separate arguments to Query/Exec, never as
+  part of the SQL string.
+severity: error
+metadata:
+  cwe: "CWE-89: Improper Neutralization of Special Elements used in an SQL Command"
+  owasp: "A03:2021 - Injection"
+  category: sql-injection
+  ai_specific: true
+  confidence: HIGH
+  rule_version: "1.0"
+
+rule:
+  any:
+    # V1 — db.Query with fmt.Sprintf SQL
+    - pattern: $DB.Query(fmt.Sprintf($FMT, $$$ARGS))
+    - pattern: $DB.Query(fmt.Sprintf($FMT, $$$ARGS), $$$PARAMS)
+    # V1 — db.Exec with fmt.Sprintf SQL
+    - pattern: $DB.Exec(fmt.Sprintf($FMT, $$$ARGS))
+    - pattern: $DB.Exec(fmt.Sprintf($FMT, $$$ARGS), $$$PARAMS)
+    # V1 — db.QueryRow with fmt.Sprintf SQL
+    - pattern: $DB.QueryRow(fmt.Sprintf($FMT, $$$ARGS))
+    - pattern: $DB.QueryRow(fmt.Sprintf($FMT, $$$ARGS), $$$PARAMS)
+    # V7 — QueryContext / ExecContext with fmt.Sprintf SQL
+    - pattern: $DB.QueryContext($CTX, fmt.Sprintf($FMT, $$$ARGS))
+    - pattern: $DB.ExecContext($CTX, fmt.Sprintf($FMT, $$$ARGS))
+    - pattern: $DB.QueryRowContext($CTX, fmt.Sprintf($FMT, $$$ARGS))
+    # V5 — string concatenation in Query/Exec
+    - pattern: $DB.Query($PREFIX + $SUFFIX)
+    - pattern: $DB.Exec($PREFIX + $SUFFIX)
+    - pattern: $DB.QueryRow($PREFIX + $SUFFIX)

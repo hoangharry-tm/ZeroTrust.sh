@@ -1,0 +1,242 @@
+# Variants covered: V1 V2 V4 V6 V7 V9
+# Variants NOT covered:
+#   V3 (dynamic attribute on annotation processor — not statically detectable)
+#   V5 (string-constructed annotation names — requires reflection; deferred to Approach 2)
+#   V8 (reflection reaching suppression mechanism — deferred to Approach 2 Joern)
+#
+# Detection strategy:
+#   Rule A: @SuppressWarnings("security"/"unchecked"/"all") co-located with a
+#     security annotation (@PreAuthorize, @Secured, @RolesAllowed) on the same
+#     method — signals intentional security suppression to silence linter checks.
+#   Rule B: bypass-intent comment patterns (V7 AI mutations) immediately preceding
+#     a security annotation, null return, or return-true in a security method.
+#   Rule C: @Disabled on a JUnit 5 / JUnit 4 (@Ignore) test whose name contains
+#     security-relevant keywords — AI agents disable tests they cannot satisfy.
+#   Rule D: @WithMockUser(roles="ADMIN") used outside of a class annotated
+#     @SpringBootTest or @ExtendWith(SpringExtension.class) — signals non-test usage.
+#   Rule E (V6): @EnableWebSecurity class that also sets .permitAll() without
+#     any .authenticated() guard — broad security config bypass.
+#   Rule F (V4 transitive): Security filter chain configured with
+#     csrf().disable() or cors().disable() — common AI-agent shortcuts.
+#
+# KNOWN LIMITATIONS:
+#   - Rule B relies on comment patterns; comments are AST leaves in OpenGrep's
+#     Java parser. Adjust the regex if the parser tokenizes them differently.
+#   - Rule D FP risk: @WithMockUser can appear in @Configuration integration
+#     test base classes — reviewers should verify call context.
+
+rules:
+  # ── Rule A: @SuppressWarnings("security") on security-annotated method ────────
+  - id: JV-004-ai-bypass-suppress-warnings-security
+    message: |
+      A method annotated with a Spring Security annotation (@PreAuthorize, @Secured,
+      or @RolesAllowed) also carries @SuppressWarnings("security"), "unchecked", or
+      "all". This silences static analysis tools on a security-sensitive method and
+      is a strong signal of AI-agent bypass behavior.
+      Fix: remove the @SuppressWarnings annotation and resolve the underlying
+      warning through proper secure coding, not suppression.
+    severity: ERROR
+    languages: [java]
+    metadata:
+      cwe: "CWE-284: Improper Access Control"
+      owasp: "A01:2021 - Broken Access Control"
+      category: ai-bypass-annotation
+      ai_specific: true
+      confidence: HIGH
+      rule_version: "1.0"
+    patterns:
+      - pattern-either:
+          # V1 — @SuppressWarnings + @PreAuthorize on same method
+          - pattern: |
+              @SuppressWarnings($W)
+              @PreAuthorize($EXPR)
+              $RT $METHOD(...) { ... }
+          - pattern: |
+              @PreAuthorize($EXPR)
+              @SuppressWarnings($W)
+              $RT $METHOD(...) { ... }
+          # V1 — @SuppressWarnings + @Secured on same method
+          - pattern: |
+              @SuppressWarnings($W)
+              @Secured($ROLES)
+              $RT $METHOD(...) { ... }
+          - pattern: |
+              @Secured($ROLES)
+              @SuppressWarnings($W)
+              $RT $METHOD(...) { ... }
+          # V1 — @SuppressWarnings + @RolesAllowed on same method
+          - pattern: |
+              @SuppressWarnings($W)
+              @RolesAllowed($ROLES)
+              $RT $METHOD(...) { ... }
+          - pattern: |
+              @RolesAllowed($ROLES)
+              @SuppressWarnings($W)
+              $RT $METHOD(...) { ... }
+
+  # ── Rule B: bypass-intent comments before security code (V7 AI mutations) ─────
+  - id: JV-004-ai-bypass-comment-before-null-return
+    message: |
+      A TODO, FIXME, or HACK comment appears immediately before a bare 'return null'
+      or 'return true' inside a method whose name indicates a security function
+      (contains: auth, validate, verify, check, permission, token, secure, admin).
+      This is a canonical AI-agent "ship-it" bypass: mark the insecurity as a
+      future concern then return a permissive value.
+      Fix: implement the security check fully before shipping; never use TODO as
+      a substitute for a working security control.
+    severity: ERROR
+    languages: [java]
+    metadata:
+      cwe: "CWE-284: Improper Access Control"
+      owasp: "A01:2021 - Broken Access Control"
+      category: ai-bypass-comment
+      ai_specific: true
+      confidence: HIGH
+      rule_version: "1.0"
+    patterns:
+      - pattern-inside: |
+          $RT $METHOD(...) {
+            ...
+          }
+      - pattern-regex: "//\\s*(TODO|FIXME|HACK|XXX):?\\s+.*(auth|secur|permiss|token|hack|bypass|skip|later|temp|fixme)"
+      - pattern-either:
+          - pattern: return true;
+          - pattern: return null;
+      - metavariable-regex:
+          metavariable: $METHOD
+          regex: ".*(auth|Auth|validate|Validate|verify|Verify|check|Check|permission|Permission|token|Token|secure|Secure|admin|Admin|login|Login|isLogged|hasRole|canAccess).*"
+
+  # ── Rule C: @Disabled / @Ignore on security-keyword test methods ──────────────
+  - id: JV-004-ai-bypass-disabled-security-test
+    message: |
+      A JUnit test method or class whose name contains a security-relevant keyword
+      (auth, security, permission, token, role, login, access) is annotated with
+      @Disabled (JUnit 5) or @Ignore (JUnit 4). AI coding agents frequently disable
+      tests they cannot make pass rather than fixing the underlying security control.
+      Fix: investigate why the test is disabled and fix the root cause; never ship
+      a disabled security test.
+    severity: ERROR
+    languages: [java]
+    metadata:
+      cwe: "CWE-284: Improper Access Control"
+      owasp: "A05:2021 - Security Misconfiguration"
+      category: ai-bypass-disabled-test
+      ai_specific: true
+      confidence: HIGH
+      rule_version: "1.0"
+    patterns:
+      - pattern-either:
+          # JUnit 5 @Disabled on method
+          - pattern: |
+              @Disabled
+              void $METHOD(...) { ... }
+          - pattern: |
+              @Disabled($REASON)
+              void $METHOD(...) { ... }
+          # JUnit 4 @Ignore on method
+          - pattern: |
+              @Ignore
+              void $METHOD(...) { ... }
+          - pattern: |
+              @Ignore($REASON)
+              void $METHOD(...) { ... }
+          # JUnit 5 @Disabled on class
+          - pattern: |
+              @Disabled
+              class $CLS { ... }
+          # JUnit 4 @Ignore on class
+          - pattern: |
+              @Ignore
+              class $CLS { ... }
+      - metavariable-regex:
+          metavariable: $METHOD
+          regex: ".*(auth|Auth|security|Security|permission|Permission|token|Token|role|Role|login|Login|access|Access|admin|Admin).*"
+
+  # ── Rule D: @WithMockUser(roles="ADMIN") outside test infrastructure ──────────
+  - id: JV-004-ai-bypass-with-mock-user-non-test
+    message: |
+      @WithMockUser(roles="ADMIN") is used in a class that does not appear to be
+      a test class (no @SpringBootTest, @ExtendWith, or Test/Spec suffix). This
+      annotation injects a mock admin principal and, if used in production code,
+      bypasses real authentication checks.
+      Fix: @WithMockUser must only appear in @SpringBootTest or @ExtendWith test
+      classes; remove it from any production source file.
+    severity: ERROR
+    languages: [java]
+    metadata:
+      cwe: "CWE-284: Improper Access Control"
+      owasp: "A01:2021 - Broken Access Control"
+      category: ai-bypass-annotation
+      ai_specific: true
+      confidence: MEDIUM
+      rule_version: "1.0"
+    patterns:
+      - pattern: |
+          @WithMockUser(roles = $ROLE)
+          $RT $METHOD(...) { ... }
+      - pattern-not-inside: |
+          @SpringBootTest
+          class $CLS { ... }
+      - pattern-not-inside: |
+          @ExtendWith($EXT.class)
+          class $CLS { ... }
+      - pattern-not-inside: |
+          class $CLS extends $PARENT { ... }
+        metavariable-regex:
+          metavariable: $CLS
+          regex: ".*(Test|Spec|IT|Integration|Mock).*"
+
+  # ── Rule E: V6 — permitAll() in HttpSecurity chain without authenticated() ─────
+  - id: JV-004-ai-bypass-permit-all-security-config
+    message: |
+      A Spring Security HttpSecurity configuration calls .permitAll() on
+      requestMatchers("/**") or antMatchers("/**") without a subsequent
+      .authenticated() constraint. This opens the entire application to
+      unauthenticated access — a common AI-agent shortcut to silence 401 errors
+      during development.
+      Fix: scope .permitAll() to specific public endpoints only (e.g., /public/**,
+      /health); require .authenticated() for all other paths.
+    severity: ERROR
+    languages: [java]
+    metadata:
+      cwe: "CWE-284: Improper Access Control"
+      owasp: "A01:2021 - Broken Access Control"
+      category: ai-bypass-security-config
+      ai_specific: true
+      confidence: HIGH
+      rule_version: "1.0"
+    patterns:
+      - pattern-either:
+          - pattern: $HTTP.authorizeHttpRequests(...).requestMatchers("/**").permitAll()
+          - pattern: $HTTP.authorizeRequests(...).antMatchers("/**").permitAll()
+          - pattern: $HTTP.authorizeHttpRequests($LAMBDA).requestMatchers("/**").permitAll()
+      - pattern-not: $HTTP.authorizeHttpRequests(...).anyRequest().authenticated()
+      - pattern-not: $HTTP.authorizeRequests(...).anyRequest().authenticated()
+
+  # ── Rule F: V4 — csrf().disable() or cors().disable() in security config ───────
+  - id: JV-004-ai-bypass-csrf-cors-disabled
+    message: |
+      A Spring Security HttpSecurity chain disables CSRF or CORS protection via
+      csrf().disable() or cors().disable(). AI coding agents routinely disable
+      these controls to silence test failures or enable cross-origin dev access,
+      without re-enabling them before shipping.
+      Fix: for REST APIs, use csrf().csrfTokenRepository(CookieCsrfTokenRepository
+      .withHttpOnlyFalse()) rather than disabling CSRF; configure explicit CORS
+      mappings via CorsConfigurationSource rather than cors().disable().
+    severity: ERROR
+    languages: [java]
+    metadata:
+      cwe: "CWE-352: Cross-Site Request Forgery"
+      owasp: "A01:2021 - Broken Access Control"
+      category: ai-bypass-security-config
+      ai_specific: true
+      confidence: HIGH
+      rule_version: "1.0"
+    patterns:
+      - pattern-either:
+          # Lambda-style (Spring Security 6+)
+          - pattern: $HTTP.csrf($CSRF -> $CSRF.disable())
+          - pattern: $HTTP.cors($CORS -> $CORS.disable())
+          # Legacy chained style (Spring Security 5)
+          - pattern: $HTTP.csrf().disable()
+          - pattern: $HTTP.cors().disable()

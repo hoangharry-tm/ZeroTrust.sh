@@ -1,0 +1,55 @@
+# Variants covered: A-GENERIC (regex on raw text)
+# Variants NOT covered:
+#   V1/V5/V7 (comment-relative AST patterns) — OpenGrep Python AST mode STRIPS comments
+#     from the AST; patterns like `# bypass ...\npass` degenerate to bare `pass`, matching
+#     ANY pass statement in security functions (512+ FPs). These variants are captured
+#     instead by A-GENERIC via generic-mode pattern-regex, which operates on raw text.
+#   V2 (aliased function names — not detectable at comment level)
+#   V3 (dynamic dispatch — not detectable at comment/AST level)
+#   V4 (transitive: bypass comment in a helper called from a security fn) — Path B
+#   V6 (conditional bypass embedding comment) — Path B semantic layer
+#
+# Detection strategy:
+#   generic-mode (raw text regex on *.py files) for comment text patterns.
+#   Comments CANNOT be reliably matched in AST mode (OpenGrep strips them); generic mode
+#   is the only correct approach. Pattern-inside for function scoping is not available
+#   in generic mode, so the rule matches any Python file containing the bypass keyword
+#   in a comment — high-signal patterns only.
+#
+# KNOWN LIMITATIONS (moved from removed rules):
+#   - Rule A (bypass-keyword): formerly used AST `# bypass ...\nreturn True` — degenerated
+#     to `return True` and matched ANY return in auth functions → removed; covered by A-GENERIC.
+#   - Rule A2 (generic): formerly used AST `# $COMMENT` pattern which OpenGrep does not
+#     match in Python AST mode → removed; covered by A-GENERIC.
+#   - Rule B (security-annotation): formerly used AST `# $COMMENT` → removed; covered by A-GENERIC.
+#   - Rule C (noqa-security): formerly used AST `# $COMMENT` → removed; covered by A-GENERIC.
+#   - Rule D (type-ignore-security): formerly used `$EXPR  # type: ignore` which degenerates
+#     to `$EXPR`, matching EVERY expression in auth functions (512 FPs) → removed; covered
+#     by A-GENERIC.
+#   - generic mode regex cannot use pattern-inside for function scoping; function-context
+#     scoping is approximated by requiring keyword specificity in the regex.
+#   - Multi-line comments / docstrings with bypass text: not covered (too broad).
+
+rules:
+  # ── Rule A-GENERIC: bypass/disable comments in Python source files ─────────────
+  - id: PY-005-ai-bypass-comments-generic-regex
+    message: |
+      A comment containing a security-bypass directive ("bypass", "skip security",
+      "disable auth") or a "# SECURITY: disabled/off" annotation was found in a
+      Python source file adjacent to security-controlling code.
+      AI coding agents insert these comments to document intentional bypasses.
+      Fix: remove the bypass; restore the security control.
+    severity: WARNING
+    languages: [generic]
+    metadata:
+      cwe: "CWE-284: Improper Access Control"
+      owasp: "A01:2021 - Broken Access Control"
+      category: ai-cheat-detection
+      ai_specific: true
+      confidence: MEDIUM
+      rule_version: "1.0"
+    paths:
+      include:
+        - "*.py"
+    pattern-regex: |
+      #\s*(bypass|BYPASS|skip\s+security|disable\s+auth|disable_auth|SECURITY\s*:\s*(disabled|off|TODO|remove|for\s+testing)|noqa:\s*S[0-9]+)

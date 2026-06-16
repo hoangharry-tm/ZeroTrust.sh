@@ -1,0 +1,165 @@
+# Variants covered: V1 V2 V5 V7
+# Variants NOT covered:
+#   V3 (getattr dynamic key construction — too broad, ~30% FP risk)
+#   V4 (key passed through a helper function — Path B taint)
+#   V6 (key inside conditional branch — partially covered, condition body is scanned)
+#
+# Detection strategy:
+#   Regex matching on string literal values assigned to variables with key/token/secret
+#   name patterns.  Separate sub-rules per provider to allow tuned severity and
+#   precise regex without cross-contamination.
+#
+#   Five sub-rules:
+#     A — OpenAI: sk-[A-Za-z0-9]{32,}  and  sk-proj-[A-Za-z0-9-_]{32,}
+#     B — Anthropic: sk-ant-[A-Za-z0-9-_]{32,}
+#     C — HuggingFace: hf_[A-Za-z0-9]{32,}
+#     D — Generic: 32+ char hex/base64 in variable named *api_key*/*apikey*
+#     E — Provider keys directly passed as kwarg to openai/anthropic constructors
+#
+#   pattern-not rules exclude correctly-loaded keys from env/dotenv.
+#
+# KNOWN LIMITATIONS:
+#   - Keys stored in config dicts ({"api_key": "sk-..."}) are not caught by the
+#     variable-name regex; Rule E (direct kwarg) partially covers this case.
+#   - Keys defined in constants files and imported elsewhere: only the definition
+#     site is flagged, not the import site.
+
+rules:
+  # ── Rule A: OpenAI API key literal ──────────────────────────────────────────
+  - id: PY-006-hardcoded-ai-api-keys-openai
+    message: |
+      A hardcoded OpenAI API key (prefix `sk-` or `sk-proj-`) is assigned to a
+      variable.  Committing API keys to source control exposes them to repository
+      scanning bots; a leaked key can incur unlimited API costs and data exposure.
+      Fix: move the key to an environment variable (`os.environ["OPENAI_API_KEY"]`)
+      or a secrets manager, and load it at runtime.
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: "CWE-798: Use of Hard-coded Credentials"
+      owasp: "A07:2021 - Identification and Authentication Failures"
+      category: hardcoded-credentials
+      ai_specific: true
+      confidence: HIGH
+      rule_version: "1.0"
+    patterns:
+      - pattern: $VAR = "$KEY"
+      - metavariable-regex:
+          metavariable: $VAR
+          regex: ".*(key|token|secret|api|credential|auth|password|passwd).*"
+      - metavariable-regex:
+          metavariable: $KEY
+          regex: "sk-(proj-)?[A-Za-z0-9_\\-]{32,}"
+      # Exclude keys loaded from environment — these are correctly-handled patterns
+      - pattern-not: $VAR = os.environ.get(...)
+      - pattern-not: $VAR = os.environ[...]
+      - pattern-not: $VAR = os.getenv(...)
+
+  # ── Rule B: Anthropic API key literal ────────────────────────────────────────
+  - id: PY-006-hardcoded-ai-api-keys-anthropic
+    message: |
+      A hardcoded Anthropic API key (prefix `sk-ant-`) is assigned to a variable.
+      Committing this key to source control exposes it to repository scanning and
+      can result in unauthorized model usage or data leakage.
+      Fix: load the key from `os.environ["ANTHROPIC_API_KEY"]` or a secrets manager.
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: "CWE-798: Use of Hard-coded Credentials"
+      owasp: "A07:2021 - Identification and Authentication Failures"
+      category: hardcoded-credentials
+      ai_specific: true
+      confidence: HIGH
+      rule_version: "1.0"
+    patterns:
+      - pattern: $VAR = "$KEY"
+      - metavariable-regex:
+          metavariable: $VAR
+          regex: ".*(key|token|secret|api|credential|auth|password|passwd).*"
+      - metavariable-regex:
+          metavariable: $KEY
+          regex: "sk-ant-[A-Za-z0-9_\\-]{32,}"
+      - pattern-not: $VAR = os.environ.get(...)
+      - pattern-not: $VAR = os.environ[...]
+      - pattern-not: $VAR = os.getenv(...)
+
+  # ── Rule C: HuggingFace API token literal ────────────────────────────────────
+  - id: PY-006-hardcoded-ai-api-keys-huggingface
+    message: |
+      A hardcoded HuggingFace API token (prefix `hf_`) is assigned to a variable.
+      HuggingFace tokens provide access to private models and inference endpoints;
+      a leaked token can expose proprietary model weights and incur costs.
+      Fix: load the token from `os.environ["HF_TOKEN"]` or a secrets manager;
+      use `huggingface_hub.login(token=os.environ["HF_TOKEN"])` at startup.
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: "CWE-798: Use of Hard-coded Credentials"
+      owasp: "A07:2021 - Identification and Authentication Failures"
+      category: hardcoded-credentials
+      ai_specific: true
+      confidence: HIGH
+      rule_version: "1.0"
+    patterns:
+      - pattern: $VAR = "$KEY"
+      - metavariable-regex:
+          metavariable: $VAR
+          regex: ".*(key|token|secret|api|credential|auth|password|passwd).*"
+      - metavariable-regex:
+          metavariable: $KEY
+          regex: "hf_[A-Za-z0-9]{32,}"
+      - pattern-not: $VAR = os.environ.get(...)
+      - pattern-not: $VAR = os.environ[...]
+      - pattern-not: $VAR = os.getenv(...)
+
+  # ── Rule D: generic 32+ char hex/base64 in *api_key* / *apikey* variable ─────
+  - id: PY-006-hardcoded-ai-api-keys-generic
+    message: |
+      A string literal that looks like a 32+ character API key or token (hex or
+      base64 characters) is hardcoded in a variable named `api_key` or `apikey`.
+      This pattern matches generic API keys that don't have a known prefix.
+      Fix: move the key to an environment variable or a secrets manager and load
+      it at runtime; never hardcode credentials in source files.
+    severity: WARNING
+    languages: [python]
+    metadata:
+      cwe: "CWE-798: Use of Hard-coded Credentials"
+      owasp: "A07:2021 - Identification and Authentication Failures"
+      category: hardcoded-credentials
+      ai_specific: false
+      confidence: MEDIUM
+      rule_version: "1.0"
+    patterns:
+      - pattern: $VAR = "$KEY"
+      - metavariable-regex:
+          metavariable: $VAR
+          regex: ".*(api_key|apikey|api_token|apitoken).*"
+      - metavariable-regex:
+          metavariable: $KEY
+          regex: "[A-Za-z0-9+/=_\\-]{32,}"
+      - pattern-not: $VAR = os.environ.get(...)
+      - pattern-not: $VAR = os.environ[...]
+      - pattern-not: $VAR = os.getenv(...)
+
+  # ── Rule E: key literal passed directly as kwarg to AI client constructors ───
+  - id: PY-006-hardcoded-ai-api-keys-kwarg
+    message: |
+      An API key string literal matching a known AI provider prefix is passed
+      directly as the `api_key=` keyword argument to an AI client constructor
+      (OpenAI, Anthropic, Cohere, etc.).  This pattern is easy to miss because
+      the key never touches a named variable.
+      Fix: pass `api_key=os.environ["PROVIDER_API_KEY"]` instead of a literal string.
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: "CWE-798: Use of Hard-coded Credentials"
+      owasp: "A07:2021 - Identification and Authentication Failures"
+      category: hardcoded-credentials
+      ai_specific: true
+      confidence: HIGH
+      rule_version: "1.0"
+    patterns:
+      - pattern: $CLASS(..., api_key="$KEY", ...)
+      - metavariable-regex:
+          metavariable: $KEY
+          regex: "(sk-(proj-)?[A-Za-z0-9_\\-]{32,}|sk-ant-[A-Za-z0-9_\\-]{32,}|hf_[A-Za-z0-9]{32,})"

@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "dev-tools": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/Users/dev"],
+      "capabilities": ["filesystem:/", "shell", "execute", "bash"],
+      "permissions": ["shell", "run_command", "eval"],
+      "scopes": ["filesystem:/home", "shell", "execute"]
+    },
+    "code-runner": {
+      "command": "/Users/dev/.local/bin/mcp-code-runner",
+      "capabilities": ["shell", "exec", "filesystem:/"]
+    }
+  }
+}
