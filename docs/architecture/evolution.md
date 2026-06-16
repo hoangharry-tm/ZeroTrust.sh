@@ -56,7 +56,7 @@ ZeroTrust.sh began as a conventional three-tier static analysis proposal (pure A
 | **Cross-path signal** | Single-path verdict | Both paths independently confirm a finding → +15% confidence score boost | Dual-confirmation reduces false positive rate on high-severity findings |
 | **LLM output reliability** | Unconstrained generation — JSON parse failures required retries | XGrammar-2 enforces JSON schema at token generation time | 100% well-formed output; targets 88–93% false positive reduction on Path A findings |
 | **Suppression of low-signal findings** | All findings reported regardless of context | Findings in test files or framework-safe functions automatically suppressed | Reduces report noise; focuses developer attention on real risk |
-| **Classifier accuracy gate** | No classifier — all surfaces forwarded | UniXcoder-Base-Nine: F1=94.73% on BigVul; high-confidence verdicts skip LLM entirely | Accurate fast-path for majority of surfaces |
+| **Classifier accuracy gate** | No classifier — all surfaces forwarded | UniXcoder-Base-Nine: F1=94.73% on BigVul C/C++ (not valid for Python/Java/JS/Go — see A-18); high-confidence verdicts skip LLM entirely | Fast-path for majority of surfaces; accuracy for target languages pending CVEFixes benchmark |
 
 ---
 
@@ -117,7 +117,7 @@ ZeroTrust.sh began as a conventional three-tier static analysis proposal (pure A
 | **vs. Snyk Code / GitHub Copilot Autofix** | Similar cloud SAST category | Differentiated: fully local (source code never leaves machine), AI-agent-specific rules, three-tier cost control |
 | **vs. IRIS (ICLR 2025)** | No comparable component | Architecturally aligned (semantic summaries, LLM reasoning) but local-first, offline, and covers AI-agent-specific threats IRIS does not |
 | **MCP config injection detection** | Not considered | First and only tool to scan MCP server configs and agent instruction files as a threat surface |
-| **Local + offline + cost-controlled** | Partial (Approach 1 only) | Full: Differential Indexer + three-tier funnel + local CPU classifier means local execution is now economically viable for large codebases |
+| **Local + offline + cost-controlled** | Partial (Approach 1 only) | Full: Differential Indexer + three-tier funnel + local CPU classifier means local execution is now economically viable for large codebases. ReAct-depth LLM reasoning requires 64 GB+ hardware; Tier 1 (16 GB laptop) runs single-pass CoD+SCoT — a well-defined operating mode, not a degraded fallback. |
 
 ---
 
@@ -126,7 +126,7 @@ ZeroTrust.sh began as a conventional three-tier static analysis proposal (pure A
 | Baseline | Cascading Intelligence Pipeline |
 |---|---|
 | Intuitive design — no systematic literature review | 86-paper literature review (2023–2026) across 17 research areas |
-| No external benchmarks cited | UniXcoder F1=94.73% (BigVul); Chain-of-Draft 7.6% token compression; BOLAZ 35 CVEs; ICML 2025 GGUF backdoor; JitVul/ACL 2025 multi-function context; IRIS/ICLR 2025 semantic summaries; RepoAudit 2025 cross-surface memory |
+| No external benchmarks cited | UniXcoder F1=94.73% on BigVul C/C++ (not valid for target languages — A-18 gap); Chain-of-Draft 7.6% token compression on frontier models (local model savings unvalidated); BOLAZ 35 CVEs; ICML 2025 GGUF backdoor; JitVul/ACL 2025 multi-function context; IRIS/ICLR 2025 semantic summaries; RepoAudit 2025 cross-surface memory |
 | 3 approaches compared | 15 competitors benchmarked across SAST and automated pentest categories |
 | Architecture by intuition | Architecture changes gated on external evidence — each component traces to at least one published paper or production tool |
 
@@ -134,18 +134,21 @@ ZeroTrust.sh began as a conventional three-tier static analysis proposal (pure A
 
 ## Key Metrics at a Glance
 
-These are the numbers most useful for presentations and resume framing:
+These are the numbers most useful for presentations and resume framing. Metrics are tagged: **[measured]** = backed by published external benchmark; **[target]** = design goal, contingent on internal benchmarking that has not yet been completed.
 
-- **80–95%** reduction in files processed on repeat scans (Differential Indexer)
-- **~95%** of files eliminated before any classifier or LLM call (Heuristic Targeting)
-- **75–85%** of flagged surfaces resolved by local CPU classifier — zero API cost (UniXcoder)
-- **F1 = 94.73%** on BigVul benchmark for local vulnerability classifier
-- **88–93%** false positive reduction target on Path A findings (LLM Verifier)
-- **7.6%** of tokens used by Chain-of-Draft reasoning vs. verbose CoT at equivalent accuracy
-- **9+ languages** supported via Joern CPG (C/C++, Java/Kotlin, Python, JS/TS, Go, Ruby, PHP)
-- **86 papers** reviewed across 17 research areas to validate architecture decisions
-- **15 competitors** benchmarked — no competitor covers all five unique threat vectors
-- **5 unique threat vectors** detected that no existing tool covers in combination: MCP config injection, AI instruction file injection, GGUF supply chain attack, AI-agent trust escalation, cross-surface authorization flaws
+- **80–95%** reduction in files processed on repeat scans (Differential Indexer) — **[target]** based on change-set size distribution in typical AI-agent workflows; actual reduction is codebase-dependent
+- **~95%** of files eliminated before any classifier or LLM call (Heuristic Targeting) — **[target]** pending CVEFixes benchmark; this is the design goal for the cost funnel
+- **75–85%** of flagged surfaces resolved by local CPU classifier — zero API cost (UniXcoder) — **[target]** contingent on A-18 CVEFixes fine-tuning and per-language benchmark; not a measured figure
+- **F1 = 94.73%** on BigVul benchmark for local vulnerability classifier — **[measured on BigVul C/C++ only]** — explicitly **not valid** for Python/Java/JS/Go target languages; see A-18; do not cite as a general accuracy claim
+- **88–93%** false positive reduction target on Path A findings (LLM Verifier) — **[target]** to be benchmarked against ZeroTrust.sh's rule set on real codebases; not pre-claimed
+- **7.6%** of tokens used by Chain-of-Draft reasoning vs. verbose CoT — **[measured on GPT-4/Claude frontier models]** — local 7B model compliance with word-count constraints must be measured internally before claiming token savings
+- **40–60%** token reduction from SCoT on the verifier reasoning path — **[target]** derived from CoD discipline; local model instruction-following quality determines actual savings
+- **9+ languages** supported via Joern CPG (C/C++, Java/Kotlin, Python, JS/TS, Go, Ruby, PHP) — **[measured — Joern official support matrix]** (Go frontend is community-contributed and less validated)
+- **86 papers** reviewed across 17 research areas to validate architecture decisions — **[measured]**
+- **15 competitors** benchmarked — no competitor covers all five unique threat vectors — **[measured via competitor feature audit]**
+- **5 unique threat vectors** detected that no existing tool covers in combination: MCP config injection, AI instruction file injection, GGUF supply chain attack, AI-agent trust escalation, cross-surface authorization flaws — **[measured via competitor feature audit; feature coverage, not detection accuracy]**
+
+> **Communication guidance.** When presenting to external audiences (potential users, investors, hiring managers), use only **[measured]** figures without caveat. **[target]** figures should be presented as "design targets contingent on benchmark" — never as achieved results.
 
 ---
 
@@ -154,7 +157,7 @@ These are the numbers most useful for presentations and resume framing:
 Framed as achievements with scope, method, and impact:
 
 - **Designed a multi-language local SAST pipeline** validated against 86 academic papers (2023–2026), incorporating published techniques from ICLR 2025, ACL 2025, and ICML 2025 into a production-ready architecture
-- **Reduced LLM inference cost by 75–85%** via a three-tier cost funnel: deterministic heuristic targeting → local CPU classifier (F1=94.73%) → bounded LLM reasoning — only uncertain surfaces reach the LLM
+- **Designed a three-tier cost funnel** targeting 75–85% surface elimination before LLM: deterministic heuristic targeting → local CPU classifier (UniXcoder, pending CVEFixes benchmark for target languages) → bounded LLM reasoning — only uncertain surfaces reach the LLM
 - **Achieved 80–95% scan cost reduction on repeat runs** through a hash-based differential indexer that gates the entire pipeline, designed specifically for AI agent loop use cases
 - **Generalized static analysis to 9+ programming languages** by replacing per-language heuristics with a Universal Code Property Graph (Joern CPG) that decouples surface targeting from language syntax
 - **Detected a new class of vulnerabilities** (IDOR, missing auth guards, middleware bypass) invisible to all single-function SAST tools by implementing a depth-3 call chain context assembler backed by published research (JitVul / ACL 2025)

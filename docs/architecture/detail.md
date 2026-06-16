@@ -39,13 +39,17 @@ Before either path runs, two ingestion components start in parallel. The Model I
 
 **Implementation note.** The maintainer signs the hash registry JSON as a release artifact; the public key is bundled with the tool binary. Verification is a startup-time check, not per-invocation, to keep startup latency near zero.
 
+**Registry operational model.** The signed registry is distributed alongside the tool binary as a release artifact. Update cadence: the registry is re-signed and re-released whenever a supported model receives a new upstream quantization (e.g., a new Ollama build of Llama-3.3-70B). The lag between a new quantization release and registry inclusion is a manual step — during this lag, users running the new quantization see `WARN (unrecognised model ID)`. This is correct behavior: an unrecognised model is not a confirmed tampered model. Users can opt in once per unrecognised model; the decision is cached in `~/.zerotrust/scans.db` and does not re-prompt on subsequent scans. Community-contributed hash entries are accepted via pull request with the contributor providing a SHA256 hash and a verifiable download source. At launch the registry covers: Llama-3.3-70B-Instruct-Q4_K_M, Qwen2.5-72B-Instruct-Q4_K_M, Phi-3-mini-4k-Instruct-Q4_K_M, and Qwen2.5-3B-Instruct-Q4_K_M.
+
 ---
 
 ### Differential Indexer
 
 **What it does.** The Differential Indexer hash-compares all files in the input directory against a SQLite state cache from the previous scan. Only files that are new or have changed since the last scan enter the analysis pipeline. Directory input only — ZIP archive support is not provided. A full scan runs on the first invocation.
 
-**Performance scope.** The ~80–95% cost reduction claim applies to Semgrep/ast-grep pattern matching, UniXcoder classifier inference, and LLM calls on repeat scans. The Joern CPG is always rebuilt in full — CPG construction is a whole-program operation, and partial updates cannot guarantee correct cross-file call graph edges. CPG build cost is a fixed per-scan cost regardless of change set size.
+**Performance scope.** The ~80–95% cost reduction claim applies to Semgrep/ast-grep pattern matching, UniXcoder classifier inference, LLM calls, and — from Approach 2 onward — CPG construction on repeat scans. The first scan always performs a full CPG build. Subsequent scans load the serialized CPG and patch only the changed subgraph (see Joern CPG Engine — Incremental CPG Mode), converting CPG construction from O(total LOC) to O(changed LOC) and bringing CPG cost within the same differential reduction envelope as the rest of the pipeline.
+
+**Expansion depth and taint correctness.** The one-hop expansion used for file selection (which files to analyse) is not the same as the patch scope required for taint correctness. Joern stores inter-procedural data flow (DFG) edges as part of the CPG at build time. If Module B changes, the DFG edges on Module A (B's caller, 1 hop) are refreshed — but Module D (A's caller, 2 hops) still has stale incoming DFG edges from A, because A's outgoing taint behaviour depends on what B feeds into it. The incremental CPG patch scope is set to **depth 5** — intentionally exceeding the Call Chain Context Assembler's context window (depth 3), which is a separate token-budget constraint and not a correctness bound. See Incremental CPG Mode for the scientific basis and full correctness model.
 
 **Dependency expansion.** A pure file-hash differential misses a common AI agent change pattern: a utility function is modified, but its callers are unchanged files. The Differential Indexer expands the working set by one hop using the Joern CPG call graph — immediate callers and callees of functions in changed files are added to the analysis set. This prevents missed vulnerabilities when an AI agent modifies a shared helper without touching call sites.
 
@@ -64,6 +68,43 @@ Index on `(project_id, content_hash)` allows cache hits for files that appear un
 
 ---
 
+### Module Segmentation — Scan Scope Management
+
+**What it does.** Rather than always scanning the entire codebase, ZeroTrust.sh defaults to a module-segmented scan: it identifies which modules the developer is actively working on (via `git diff --cached` or `git diff HEAD`), builds a complete deep CPG for those modules plus a configurable number of neighboring modules, and reports findings scoped to that set. CPG coverage accumulates over time as the developer works across different modules.
+
+**Why it exists.** For large codebases (e.g., Wireshark at ~3,500 files, ~4M LOC), a full cold CPG build takes hours — prohibitive for a pre-commit security gate. Module segmentation makes the first-scan cost proportional to the active working surface, not the total codebase size, without sacrificing completeness within that surface.
+
+**Scan modes.**
+
+| Mode | CPG scope | Completeness | Use case |
+|---|---|---|---|
+| **Default** | Working modules + depth-2 module neighbors | Complete for scope | Pre-commit, dev loop |
+| **`--thorough`** | Working modules + depth-3 module neighbors + sink-flagged modules | Complete for scope | Pre-PR review |
+| **`--full`** | Entire codebase | Complete — no scope limit | Release audit, first-time full scan |
+
+**Module boundary detection.** A module is a package or directory unit: Go package directory, Python module directory, Maven module (`pom.xml` boundary), npm package (`package.json` boundary). Detection uses file-system heuristics and build manifest parsing — no CPG required.
+
+**Neighbor module selection.** For each working module, a lightweight static import analysis (no Joern needed) identifies: (a) modules the working module imports from (callee neighbors), and (b) modules that import the working module (caller neighbors). Default: depth-2 module hops in both directions.
+
+**Dangerous sink pre-flagging.** Tree-sitter (already in stack, ~10 ms/file) scans all modules cheaply for known dangerous patterns: `exec.Command` / `os.Exec` with variable args, raw SQL string concatenation, `os.WriteFile` with user-controlled path, `eval`, `innerHTML` (JS), `pickle.loads`, `yaml.load` (unsafe). Any module containing a flagged sink is added to the neighbor set regardless of its module-hop distance from the working module. This prevents the edge case where a vulnerability lives in a deep utility module outside the depth-2 neighbor expansion.
+
+**Coverage transparency.** The HTML report always states which modules were scanned in the current run and which have not yet been reached. The `cpg_coverage_status` field in the report header is never omitted. A partial-scope scan is never labeled "scan complete" without an explicit scope qualifier.
+
+**State persistence.** The SQLite state cache (`~/.zerotrust/scans.db`) tracks CPG coverage per module:
+
+| Column | Type | Notes |
+|---|---|---|
+| `project_id` | TEXT | Derived from directory path |
+| `module_path` | TEXT | Module root relative to project root |
+| `cpg_included` | INTEGER | 1 = in current CPG, 0 = not yet scanned |
+| `last_scanned_at` | INTEGER | Unix timestamp |
+
+On each run, newly scanned modules are added to `cpg_included = 1`. The persistent CPG on disk merges new module graphs into the existing serialized CPG, growing total coverage toward completeness as the developer works across the codebase.
+
+**What is never missed.** OpenGrep + ast-grep (Path A pattern matching) and the three-tier instruction-file analysis run on **all files in the repository** regardless of module segmentation scope. Only Joern CPG construction (inter-procedural taint analysis) and Path B semantic analysis are scoped. Pattern-detectable vulnerabilities in any file receive full Path A coverage on every scan.
+
+---
+
 ## Path A — Pattern Detection
 
 Path A uses two tools in parallel — OpenGrep + ast-grep for pattern matching, and Joern CPG Engine for taint analysis — followed by an LLM Verifier that filters false positives from both tools' output. OpenGrep and ast-grep are language-partitioned: OpenGrep covers its strongest languages (Python, Java, JS/TS, Go, Ruby, PHP); ast-grep fills the gaps (Dart, Swift, Rust, newer languages with thin OpenGrep community packs). Neither runs the same rules on the same files.
@@ -73,6 +114,8 @@ Path A uses two tools in parallel — OpenGrep + ast-grep for pattern matching, 
 **What it does.** OpenGrep (LGPL-2.1, community fork of Semgrep CE, backed by Aikido, Endor Labs, Jit, and others) restores cross-function taint analysis that Semgrep OSS removed in December 2024, while maintaining 100% rule-format compatibility with the existing Semgrep rule ecosystem. ast-grep is Tree-sitter-based (MIT), uses a compatible YAML rule format, and provides fast structural matching for languages OpenGrep covers weakly. Both tools run against the changed file set in parallel; neither waits for the other.
 
 **Why it exists.** Structural pattern matching is the cheapest form of static analysis. It catches well-understood vulnerability classes — hardcoded credentials, dangerous function calls, unsafe deserialization — in milliseconds per file with no inference cost.
+
+**Rule set cold-start.** At launch, ZeroTrust.sh's rule inventory covers AI-specific threat vectors and a baseline set of conventional vulnerability patterns (injection, hardcoded credentials, dangerous calls). Semgrep OSS has 5,000+ peer-reviewed community rules accumulated over years. ZeroTrust.sh does not match Semgrep's rule depth for conventional vulnerabilities at launch; it surpasses it in AI-agent-specific detection. The OpenGrep rule-format compatibility means the Semgrep community rule ecosystem can be adopted directly over time, but this is a long-tail process — rule coverage for conventional vulnerability classes should be treated as growing rather than complete in Approaches 1–2.
 
 **AI agent config file coverage — three-tier analysis.** The rule scope is extended beyond source code to cover AI agent instruction files and configuration surfaces. No competing tool scans this surface. ZeroTrust.sh is the first to do so. The analysis is structured in three tiers by cost and mechanism:
 
@@ -105,6 +148,18 @@ Path A uses two tools in parallel — OpenGrep + ast-grep for pattern matching, 
 - **CPG sharing with Path B.** The CPG is shared with Path B — call graph data and reachability information are available to Path B's Heuristic Targeting and Call Graph nodes without a second parse step.
 - **Integration pattern.** The Go orchestrator pre-starts Joern as a long-lived HTTP server (`joern --server`, `localhost:8080`) concurrently with MIV and DI at CLI launch, eliminating JVM cold-start latency. Taint findings are exported via `joern-slice data-flow --out findings.json`. The Python ML worker queries the same server via `joern-lib` (PyPI). No Scala knowledge required in the ZeroTrust.sh codebase.
 - **Approach 3 extension.** Fraunhofer-AISEC/cpg is evaluated in Approach 3 as a per-language **replacement** for Joern on Rust, Swift, and C# (not an addition) — running two CPG engines with different schemas in parallel adds integration complexity that outweighs the coverage gain.
+- **CPG construction latency.** Joern CPG construction is a whole-program, single-threaded JVM operation. Empirical estimates: 10k-LOC Go codebase — approximately 30–60 seconds with 4 GB JVM heap; 50k-LOC Java codebase — approximately 2–5 minutes with 8 GB JVM heap. The first scan on any project always pays full build cost. Repeat scans use incremental CPG mode (see below). For Approach 1 (no incremental mode yet), the **recommended maximum codebase size for pre-commit use is 50k LOC**. From Approach 2 onward, repeat-scan CPG cost is proportional to the change set, making larger codebases viable for pre-commit use.
+- **Incremental CPG mode (Approach 2+, repeat scans).** After each scan the CPG is serialized to disk at `~/.zerotrust/{project_id}.cpg` using Joern's native binary export. On the next scan the serialized CPG is loaded via `importCpg` (memory-mapped, significantly faster than a full reparse) and patched using a depth-matched expansion:
+
+  **Patch scope — depth-5 BFS expansion.** The CPG BFS patch depth is set to **5**, which is a distinct parameter from the Call Chain Context Assembler's context depth (3). The CCCA depth is a token-budget constraint on how much call-chain context is assembled for the LLM; the BFS patch depth is a taint-correctness constraint on how many CPG hops must be refreshed. A one-hop patch refreshes B and its direct callers/callees (A, C), but leaves Module D (A's caller, depth 2) with stale incoming DFG edges from A — because A's outgoing taint behaviour depends on B, which changed. Expanding to depth 5 ensures every function whose DFG edges could be affected by the change is reparsed and re-indexed. The expansion set is computed as a BFS over the call graph from each changed file, bounded at depth 5.
+
+  **Scientific basis for depth 5.** Two independent sources calibrate this value: (1) Li et al. (*"On the Effectiveness of Function-Level Vulnerability Detectors for Inter-Procedural Vulnerabilities"*, ICSE 2024) measured real-world C/C++ inter-procedural vulnerability taint paths at an average depth of 2.8 function hops, with ~75% of vulnerability types within depth 3 — depth 5 extends coverage to the residual tail. (2) Effendi et al. (*"Scalable Language Agnostic Taint Tracking using Explicit Data Dependencies"*, SOAP/PLDI 2025, Joern core team) measured taint tracking precision and recall across varying k values on Java, Python, and JavaScript benchmarks, finding significant coverage gains from k=0 to k=3, k=5 as the empirical precision/recall optimum, and exponential runtime growth beginning at k=6. Depth 5 is therefore the scientifically calibrated ceiling before the exponential runtime region, with the hub-module fallback (≥50 callers → full rebuild) guarding against the k=6 case. **Caveat:** both studies cover C/C++, Java, Python, and JavaScript; no equivalent depth-distribution study exists for Go or AI-generated code — this is an open empirical question extending A-18.
+
+  **Hub-module fallback — full rebuild trigger.** Some functions are call-graph hubs: utility libraries, ORM base classes, framework interceptors with many callers. If any changed function has ≥ 50 unique callers in the current CPG (configurable via `--hub-threshold`), the incremental patch scope would expand to a significant fraction of the codebase and the correctness benefit of incremental mode is diminished. In this case the incremental patch is abandoned and a full CPG rebuild is triggered. The threshold is logged so users can tune it for their project's call graph structure.
+
+  **Invalidation triggers.** The serialized CPG is discarded and a full rebuild forced when: the Joern version changes, the project root path changes, or the configured analysis depth changes between scans.
+
+  This converts CPG cost from O(total LOC) per scan to O(depth-N neighbourhood of changed LOC), consistent with the cost reduction the DI provides for pattern matching and LLM calls, while preserving taint analysis correctness at the depth the rest of Path B relies on.
 - **Runs in parallel with OpenGrep + ast-grep.** Joern and the pattern detection tools operate independently.
 
 ---
@@ -119,7 +174,7 @@ Path A uses two tools in parallel — OpenGrep + ast-grep for pattern matching, 
 
 **Key technical choices.**
 
-- **Reasoning technique: CoD + SCoT hybrid.** The verifier uses a Structured Chain-of-Thought (SCoT) analysis schema that maps directly onto the structured JSON input fields — `TAINT SOURCE → PATH TRACE → SANITIZER NODES → SINK REACHABILITY → CWE MATCH → VERDICT` — with each step constrained to one observation + one inference (≤15 words) following Chain-of-Draft discipline. This yields approximately 40–60% token reduction vs. standard CoT on the primary reasoning path. *Note: CoD's published token savings are measured on frontier API models; performance on local 7B models requires internal benchmarking before claiming specific numbers.*
+- **Reasoning technique: CoD + SCoT hybrid.** The verifier uses a Structured Chain-of-Thought (SCoT) analysis schema that maps directly onto the structured JSON input fields — `TAINT SOURCE → PATH TRACE → SANITIZER NODES → SINK REACHABILITY → CWE MATCH → VERDICT` — with each step constrained to one observation + one inference (≤15 words) following Chain-of-Draft discipline. **CoD's published 7.6% token usage figure is measured on GPT-4 and Claude-class frontier models.** Local 7B/13B models do not reliably follow the "≤15 words per step" constraint without explicit fine-tuning — the SCoT schema enforces structure, but step verbosity is model-dependent. The "40–60% token reduction" figure is a design target contingent on the local model respecting the word-count constraint; actual savings must be measured against ZeroTrust.sh's specific model and rule set before any figure is published. On non-compliant models, SCoT still improves output structure but token savings are reduced.
 - **Output: XGrammar-2-enforced JSON.** Output schema: `{"verdict": "confirmed"|"false_positive"|"uncertain", "confidence": <float 0.0–1.0>, "justification": "<string, max 200 chars>"}`. Malformed output is impossible by construction. No retry logic required.
 - **Adaptive Self-Consistency escalation.** If `verdict == "uncertain"` or `confidence < 0.60`, the verifier samples two additional times (temperature 0.4) and majority-votes the verdict, averaging confidence scores. Average overhead is bounded at approximately 1.3× rather than 3×, since most findings with structured input resolve clearly on the first call.
 - **Instruction file meta-audit.** The verifier is extended to evaluate AI agent instruction files using a boolean-only output schema (Tier 3 of the three-tier instruction-file analysis). During this call the model has no tool access and XGrammar-2 enforces boolean-only output — the LLM classifies, never executes.
@@ -188,23 +243,49 @@ Path B is structured as a three-tier funnel. Each tier eliminates surfaces that 
 
 **Analysis ordering.** Surfaces are analyzed in **callee-first (bottom-up) order**: callees are analyzed before callers. This ensures that inferences written to the Scan Security Context Store about taint propagation in a callee are available when its caller is analyzed — a prerequisite for reliable cross-surface detection.
 
+**Cycle detection.** Real codebases contain call graph cycles: mutual recursion, event-driven callbacks, and framework reflection calls all produce cycles in the Joern CPG. The Call Chain Context Assembler maintains a visited-set per traversal. When a cycle is detected — a function already in the current trace appears again in the expansion — traversal halts at that node and logs `reason: cycle_detected` in the assembled context. The context assembled up to the cycle boundary is passed forward unchanged. Security-relevant signal is typically concentrated in the first two or three call hops; cycles encountered at depth 3 rarely contribute new security evidence. Cycles do not prevent the assembler from producing a complete context for shallower functions in the same chain.
+
 ---
 
 #### Semantic Function Summarizer
 
-**What it does.** The Semantic Function Summarizer transforms the assembled call chain context into structured semantic abstractions using a small, fast local LLM (Phi-3-mini 3.8B or Qwen2.5-3B on CPU; separate from the main reasoning LLM). Each function in the chain is described as: what it does with untrusted data, which sanitizers it applies, which sinks it reaches, and where authorization checks are located. The output is a set of XGrammar-2-constrained JSON summaries, one per vulnerability class:
+**What it does.** The Semantic Function Summarizer transforms the assembled call chain context into structured semantic abstractions using a small, fast local LLM (Phi-3-mini 3.8B or Qwen2.5-3B on CPU; separate from the main reasoning LLM). Each function in the chain is described as: what it does with untrusted data, which sanitizers it applies, which sinks it reaches, and where authorization checks are located.
 
-- `taint-flow`: `{untrusted_sources, sanitizer_nodes, sink_type, taint_propagates: bool}`
-- `auth-guard`: `{auth_check_present: bool, authorization_check_location: "framework_annotation" | "explicit_code" | "middleware" | "unknown"}`
-- `logic-flaw`: `{resource_id_source, db_sink, authorization_check_location: "framework_annotation" | "explicit_code" | "middleware" | "unknown"}`
+**Single-pass union schema.** The output is one XGrammar-2-constrained JSON object per function, covering all three vulnerability classes simultaneously in a single inference call:
 
-CPG-derived fields — taint source node identifiers, sanitizer node identifiers, sink node types, call graph position — are injected directly as ground-truth data. The LLM fills only the semantic interpretation fields. The main reasoning LLM in Tier 3 never sees raw source code — only these structured summaries.
+```json
+{
+  "taint_flow": {
+    "untrusted_sources": ["string"],
+    "sanitizer_nodes": ["string"],
+    "sink_type": "string",
+    "taint_propagates": bool
+  },
+  "auth_guard": {
+    "auth_check_present": bool,
+    "authorization_check_location": "framework_annotation" | "explicit_code" | "middleware" | "unknown"
+  },
+  "logic_flaw": {
+    "resource_id_source": "string",
+    "db_sink": "string",
+    "authorization_check_location": "framework_annotation" | "explicit_code" | "middleware" | "unknown"
+  }
+}
+```
 
-The `authorization_check_location` field is required in both `auth-guard` and `logic-flaw` schemas so the LLM Semantic Scan can distinguish a real authorization gap from a framework-level or middleware-enforced control that is invisible to pure taint analysis.
+XGrammar-2's `TagDispatch` handles the union schema without recompilation per call, and its cross-grammar cache reuses substructures across the three nested schemas. This replaces the prior design of three separate inference passes per function — reducing Summarizer inference cost per surface to approximately one-third and eliminating the latency compounding effect on call chains.
 
-**Why it exists.** Raw code maximises token cost, introduces irrelevant syntactic noise, and risks the model focusing on implementation details rather than security-relevant semantics. Summaries preserve security-relevant information while reducing token footprint per surface by an order of magnitude.
+CPG-derived fields — taint source node identifiers, sanitizer node identifiers, sink node types, call graph position — are injected directly as ground-truth data. The LLM fills only the semantic interpretation fields. The main reasoning LLM in Tier 3 never sees raw source code — only these structured union summaries.
 
-**Citations.** This design aligns with LLMxCPG (USENIX Security 2025, peer-reviewed — CPG-derived backward slices as LLM input, 15–40% F1 improvement, 67–91% code size reduction) and VULSOLVER (arXiv:2509.00882, Sep 2025‡ — progressive constraint reasoning over SAST-generated summaries, 96.29% accuracy on OWASP Benchmark). The Semantic Function Summarizer model size (Phi-3-mini/Qwen2.5-3B) is not validated by a published security-specific benchmark and is flagged as an open calibration task.
+The `authorization_check_location` field in both `auth_guard` and `logic_flaw` allows the LLM Semantic Scan to distinguish a real authorization gap from a framework-level or middleware-enforced control that is invisible to pure taint analysis.
+
+**Batch inference.** Multiple uncertain surfaces are grouped into a single batched prompt (up to 5 surfaces per call, delimited by surface ID tokens) before being sent to the Summarizer model. XGrammar-2 enforces the union schema independently per surface within the batch. Batching amortizes model-load and context-window setup overhead across surfaces, reducing effective per-surface inference time at the cost of slightly larger peak memory footprint per call.
+
+**Approach 3 — specialized small model.** The 3B general-purpose model is a calibration placeholder. The Summarizer's task is narrow: fill constrained JSON fields given CPG-derived structured inputs. In Approach 3, a dedicated 0.5B–1B model fine-tuned on CPG→security-JSON pairs (using the CVEFixes corpus from A-18 benchmarking) replaces the general model. A task-specialized model at this scale runs approximately 3–5× faster on CPU, consumes less RAM, and is expected to be more accurate on the specific schema-fill task than a larger general model following a prompt. This fine-tuning work is scheduled alongside A-18 and shares the same dataset pipeline.
+
+**Why it exists.** Raw code maximises token cost, introduces irrelevant syntactic noise, and risks the model focusing on implementation details rather than security-relevant semantics. Summaries preserve security-relevant information while reducing token footprint per surface by an order of magnitude. The single-pass union schema and batch inference further reduce the per-surface cost by approximately 3× compared to sequential per-class generation.
+
+**Citations.** This design aligns with LLMxCPG (USENIX Security 2025, peer-reviewed — CPG-derived backward slices as LLM input, 15–40% F1 improvement, 67–91% code size reduction) and VULSOLVER (arXiv:2509.00882, Sep 2025‡ — progressive constraint reasoning over SAST-generated summaries, 96.29% accuracy on OWASP Benchmark). The Semantic Function Summarizer general model size (Phi-3-mini/Qwen2.5-3B) is not validated by a published security-specific benchmark and is flagged as an open calibration task pending Approach 3 fine-tuning.
 
 ---
 
@@ -248,7 +329,7 @@ Within each step the model may issue context requests — for additional call ch
 
 **Implementation.** Graph-based CPG-neighbor retrieval: a lightweight in-memory graph keyed by Joern CPG function identifiers. Retrieval is structural (CPG-edge traversal), not semantic (no embedding required), which ensures precise retrieval and negligible token overhead (~50–200 tokens per surface at typical scan scale of 12–16 surfaces per 50k-LOC codebase).
 
-**Analysis ordering dependency.** The store's cross-surface detection capability depends on surfaces being analyzed in callee-first order (see Call Chain Context Assembler). If a sink function is analyzed before its taint source, the store is empty at the critical moment. The Call Chain Context Assembler enforces this ordering.
+**Analysis ordering dependency.** The store's cross-surface detection capability depends on surfaces being analyzed in callee-first order (see Call Chain Context Assembler). If a sink function is analyzed before its taint source, the store is empty at the critical moment. The Call Chain Context Assembler enforces this ordering. Call graph cycles, handled by the assembler's visited-set guard, do not cause duplicate inference writes — each function's inferences are written to the store exactly once per scan.
 
 **Why it exists.** A vulnerability spanning multiple non-adjacent code surfaces — a taint source in one module reaching a sink in another through an intermediate data structure — cannot be detected by per-function analysis. The store gives the LLM a memory of what it has already observed, enabling detection of cross-surface vulnerabilities invisible to tools analyzing each function independently.
 
@@ -493,6 +574,24 @@ The `business_impact_tier` enum forces classification into a bounded vocabulary 
 
 ---
 
+## Hardware Configuration and Capability Tiers
+
+ZeroTrust.sh's effective capability is bounded by available RAM and the local model it can run. Most developer laptops operate at Tier 1. Tier 3 is appropriate for CI/CD pipeline runs on server-class hardware.
+
+| Tier | Hardware | Local model (Ollama) | LLM Semantic Scan behavior | ReAct loop |
+|---|---|---|---|---|
+| **1 — Developer laptop (≤16 GB RAM)** | M1/M2 MacBook, typical 16 GB Windows laptop | Phi-3-mini-Q4 or Llama-3.2-3B-Q4 | Single-pass CoD + SCoT (capability probe fails; fallback activates automatically) | Disabled |
+| **2 — M3 Pro / 36 GB unified memory** | MacBook Pro M3 Pro/Max with 36 GB | Qwen2.5-7B-Q8 or Llama-3.1-8B-Q8 | Single-pass CoD + SCoT with higher instruction-following quality; marginal ReAct improvement | Slow (~60–90 s/surface); generally not worth enabling |
+| **3 — Workstation / 64 GB+ RAM or GPU** | Mac Studio M2 Ultra, Linux server with 80 GB VRAM | Qwen2.5-72B-Q4 or Llama-3.3-70B-Q4 | Full bounded ReAct loop (max 3 steps); reliable structured JSON output | Enabled; recommended minimum for Approach 3 agentic ensemble |
+
+**Tier 1 is the common case and is a well-defined operating mode, not a degraded one.** The single-pass CoD + SCoT call that activates at Tier 1 is the same technique used in Path A's LLM Verifier. It produces structured verdicts and is calibrated against the same XGrammar-2 output schema. Tier 1 users receive Path B semantic detection at reduced depth — cross-surface ReAct reasoning is unavailable, but the three-tier cost funnel, CPG-backed heuristic targeting, UniXcoder classification, and Semantic Function Summarizer all operate normally.
+
+**Semantic Function Summarizer latency (Tier 1).** Phi-3-mini or Qwen2.5-3B on CPU produces approximately 5–15 tokens/second. Generating three XGrammar-2-constrained JSON summaries per uncertain surface takes approximately 30–90 seconds per surface. For a codebase generating 10–20 uncertain surfaces, Path B end-to-end runtime at Tier 1 ranges from 5–30 minutes. Tier 3 hardware reduces this by approximately 10× via faster inference. For codebases under 20k LOC, CPG construction (Joern) typically dominates scan time, not LLM inference.
+
+**All tiers share the same detection logic.** Hardware tier affects latency and ReAct depth, not which vulnerability classes can be detected. All three tiers run the full pipeline graph; only the per-surface reasoning depth changes.
+
+---
+
 ## Design Principles
 
 The following architectural decisions are reflected throughout the system. Each is stated explicitly here as a principle rather than scattered across component descriptions.
@@ -503,7 +602,7 @@ The following architectural decisions are reflected throughout the system. Each 
 
 **Three-tier cost funnel — spend budget only where uncertainty exists.** The three tiers of Path B are ordered by cost: deterministic CPG queries first, local CPU classifier second, LLM reasoning last. Each tier resolves the cases it can handle cheaply and passes only the residual uncertain cases to the next tier. The result is that approximately 95% of files and 75–85% of code surfaces never reach the LLM.
 
-**Grammar-constrained output everywhere.** Both the LLM Verifier (Path A) and the LLM Semantic Scan (Path B) use XGrammar-2 (arXiv:2601.04426, May 2026) to enforce JSON output schemas at generation time. Malformed output is impossible by construction. XGrammar-2's `TagDispatch` handles the multiple distinct output schemas across components (LLM Verifier verdict schema, Semantic Function Summarizer taint-flow/auth-guard/logic-flaw schemas, ReAct verdict schema) without recompilation per call; its cross-grammar cache reuses substructures across schemas, delivering 6× faster grammar compilation and near-zero end-to-end overhead vs. XGrammar-1.
+**Grammar-constrained output everywhere.** Both the LLM Verifier (Path A) and the LLM Semantic Scan (Path B) use XGrammar-2 (arXiv:2601.04426, May 2026) to enforce JSON output schemas at generation time. Malformed output is impossible by construction. XGrammar-2's `TagDispatch` handles the multiple distinct output schemas across components (LLM Verifier verdict schema, Semantic Function Summarizer union schema covering `taint_flow`/`auth_guard`/`logic_flaw` in a single inference call, ReAct verdict schema) without recompilation per call; its cross-grammar cache reuses substructures across schemas, delivering 6× faster grammar compilation and near-zero end-to-end overhead vs. XGrammar-1. The Semantic Function Summarizer's use of a union schema is specifically enabled by this multi-schema dispatch capability — it is the mechanism that makes single-pass multi-class summarization architecturally clean.
 
 **CPG shared between paths — one parse, two uses.** The Joern CPG Engine is part of Path A, but the graph it produces is consumed by Path B's Heuristic Targeting and Call Graph nodes without a second parse. This avoids redundant computation and ensures both paths reason about the same graph representation of the code.
 

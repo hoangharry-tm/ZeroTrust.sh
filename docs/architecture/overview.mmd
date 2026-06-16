@@ -4,7 +4,7 @@ graph TD
     subgraph INGEST["INGESTION · parallel startup"]
         direction LR
         MIV["<b><i><u>Model Integrity Verifier</u></i></b>\ncosign signed registry · tiered WARN/BLOCK · gates LLM calls only"]
-        DI["<b><i><u>Differential Indexer</u></i></b>\nSQLite content-hash diff · one-hop CPG expansion · CPG always full rebuild"]
+        DI["<b><i><u>Differential Indexer + Module Segmentation</u></i></b>\nSQLite content-hash diff · one-hop file-selection expansion · cpg_coverage per module tracked\nModule segmentation: working modules (git diff) + depth-2 neighbors · dangerous sink pre-flagging via Tree-sitter\nScan modes: Default · --thorough · --full · OpenGrep+ast-grep always on ALL files\nFirst scan: CPG build for active scope · Repeat: depth-5 BFS patch (SOAP 2025 k=5 · ICSE 2024 avg 2.8 hops)\nPatch depth 5 = taint-correctness bound · distinct from CCCA context depth 3 = token-budget bound · hub fallback → full rebuild"]
     end
 
     subgraph PA["PATH A — Pattern Detection"]
@@ -24,9 +24,9 @@ graph TD
         end
 
         subgraph T2["Tier 2 — Classifier Gate"]
-            PB_CC["<b><i><u>Code Vulnerability Classifier</u></i></b>\nUniXcoder · F1=94.73% · local CPU · zero API cost"]
+            PB_CC["<b><i><u>Code Vulnerability Classifier</u></i></b>\nUniXcoder · local CPU · zero API cost\nA-18: BigVul F1 not valid for target languages — CVEFixes benchmark required"]
             PB_CCCA["<b><i><u>Call Chain Context Assembler</u></i></b>\nDepth-3 caller → surface → callee"]
-            PB_SFS["<b><i><u>Semantic Function Summarizer</u></i></b>\nLLM sees structured summaries · never raw code"]
+            PB_SFS["<b><i><u>Semantic Function Summarizer</u></i></b>\nSingle-pass union schema · all 3 classes in one inference call · batched per 5 surfaces\nLLM sees structured summaries · never raw code"]
         end
 
         subgraph T3["Tier 3 — LLM Reasoning"]
