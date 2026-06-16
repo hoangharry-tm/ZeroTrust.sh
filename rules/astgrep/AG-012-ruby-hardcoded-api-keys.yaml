@@ -1,0 +1,30 @@
+id: AG-012-ruby-hardcoded-api-keys
+language: ruby
+message: >
+  A string literal that appears to be an API key is assigned to a variable or
+  constant with a credential-suggestive name. Hardcoded keys in Ruby source
+  are exposed in the repository and process memory.
+  Fix: use environment variables via ENV['KEY'] or Rails credentials.
+severity: error
+metadata:
+  cwe: "CWE-798: Use of Hard-coded Credentials"
+  owasp: "A07:2021 - Identification and Authentication Failures"
+  category: hardcoded-credentials
+  ai_specific: true
+  confidence: HIGH
+  rule_version: "1.0"
+rule:
+  any:
+    - pattern: $KEY = "$VALUE"
+    - pattern: $KEY ||= "$VALUE"
+    - pattern: $KEY = "$VALUE" unless $COND
+  not:
+    any:
+      - pattern: $KEY = ENV[$ENV]
+      - pattern: $KEY = Rails.application.credentials[$ENV]
+      - pattern: $KEY = AppConfig.$FIELD
+constraints:
+  KEY:
+    regex: "(?i).*(api_key|apikey|api_token|apitoken|token|secret|credential|auth_key|authkey|access_key|accesskey|private_key|privatekey|client_secret|clientsecret|bearer).*"
+  VALUE:
+    regex: "((sk-(proj-)?[A-Za-z0-9_\\-]{32,})|(sk-ant-[A-Za-z0-9_\\-]{32,})|(hf_[A-Za-z0-9]{32,})|([A-Za-z0-9+/=_\\-]{40,}))"

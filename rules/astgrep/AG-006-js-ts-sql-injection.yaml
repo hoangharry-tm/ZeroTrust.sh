@@ -1,0 +1,31 @@
+id: AG-006-js-ts-sql-injection
+language: typescript
+message: >
+  db.query(), db.execute(), or db.run() is called with a SQL string built via
+  template literal or string concatenation. If any interpolated value originates
+  from user input, SQL injection is possible. Fix: use parameterized queries with
+  '?' placeholders and pass user values as separate arguments.
+severity: error
+metadata:
+  cwe: "CWE-89: Improper Neutralization of Special Elements used in an SQL Command"
+  owasp: "A03:2021 - Injection"
+  category: sql-injection
+  ai_specific: true
+  confidence: HIGH
+  rule_version: "1.0"
+rule:
+  any:
+    - pattern: $DB.query(`$SQL`)
+    - pattern: $DB.execute(`$SQL`)
+    - pattern: $DB.run(`$SQL`)
+    - pattern: $DB.query($QUERY + $TAINT)
+    - pattern: $DB.execute($QUERY + $TAINT)
+    - pattern: $DB.run($QUERY + $TAINT)
+    - pattern: $CONN.query(`$SQL`)
+    - pattern: $CONN.execute(`$SQL`)
+  not:
+    any:
+      - pattern: $DB.query(?, $$$)
+      - pattern: $DB.execute(?, $$$)
+      - pattern: $CONN.query(?, $$$)
+      - pattern: $CONN.execute(?, $$$)

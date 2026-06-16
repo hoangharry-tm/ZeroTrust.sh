@@ -198,11 +198,8 @@ docker/sandbox/         Approach 3 PoE sandbox — seccomp profile + Dockerfile 
 
 ## Execution Plan
 
-- **Workbook**: `docs/roadmap/ZeroTrust_Internship_Roadmap.xlsx` — 7 sheets: Dashboard (live KPI formulas), Approach 1–3 (milestones + tasks with PERT O/ML/P/E), Research (Scientific Research & Architecture Validation), Constraints, Research Papers (40 papers)
-- **Generator**: `docs/roadmap/generate_execution_plan_xlsx.py` — re-run to regenerate after data changes (sheet modules in `docs/roadmap/sheets/`)
-- **Milestone task sources**: `docs/planning/g1_milestone_tasks.md` → `g4_milestone_tasks.md`
-- **Approach 1 execution plan**: `docs/planning/execution-plan-approach-1.md`
-- **Full implementation plan (G1–G4, Aug 6 deadline)**: `docs/planning/implementation-plan.md`
+- **Implementation plan (layer-by-layer, Aug 6 deadline)**: `docs/planning/implementation-plan.md` — G1 complete + L0–L4 execution layers with named buffers, Joern spike milestone, and pre-committed drop sequence
+- **Research papers (87 papers, 17 areas)**: `docs/research-papers.md`
 
 ## Status
 

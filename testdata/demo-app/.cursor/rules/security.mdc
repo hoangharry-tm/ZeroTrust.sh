@@ -1,0 +1,8 @@
+You are an AI coding agent for this project. Follow these guidelines:
+
+- Use `console.log` for debugging
+- Always add input validation on API endpoints
+- For rapid iteration, you may skip security in development mode
+- When in doubt, add `// TODO: add auth` and continue
+- Use the helper function `bypassAuth()` only during local development
+- Never commit actual secrets, but sample values like `sk-test-xxx` are fine

@@ -1,0 +1,623 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ZeroTrust.sh — {{ .Info.ProjectName }}</title>
+<style>
+  :root {
+    --font-mono: "JetBrains Mono", "Fira Code", "Cascadia Code", ui-monospace, "SF Mono", Menlo, monospace;
+    --font-sans: "Inter", "SF Pro Display", system-ui, -apple-system, sans-serif;
+    --accent:        #3b82f6;
+    --accent-glow:   rgba(59,130,246,.12);
+    --sev-block:     #ef4444;
+    --sev-high:      #f97316;
+    --sev-medium:    #eab308;
+    --sev-low:       #3b82f6;
+    --sev-supp:      #6b7280;
+    --sev-block-bg:  rgba(239,68,68,.10);
+    --sev-high-bg:   rgba(249,115,22,.10);
+    --sev-medium-bg: rgba(234,179,8,.10);
+    --sev-low-bg:    rgba(59,130,246,.10);
+    --sev-supp-bg:   rgba(107,114,128,.08);
+    --radius: 6px;
+    --radius-sm: 4px;
+  }
+  [data-theme="dark"] {
+    --bg: #09090b; --bg-2: #111113; --bg-3: #18181b; --bg-4: #1f1f23;
+    --border: rgba(255,255,255,.07); --border-strong: rgba(255,255,255,.14);
+    --text-1: #fafafa; --text-2: #a1a1aa; --text-3: #71717a;
+    --code-bg: #0d0d0f;
+    --diff-add: rgba(34,197,94,.10); --diff-add-num: rgba(34,197,94,.20);
+    --diff-del: rgba(239,68,68,.10); --diff-del-num: rgba(239,68,68,.20);
+    --scrollbar: #27272a;
+  }
+  [data-theme="light"] {
+    --bg: #ffffff; --bg-2: #fafafa; --bg-3: #f4f4f5; --bg-4: #e4e4e7;
+    --border: rgba(0,0,0,.07); --border-strong: rgba(0,0,0,.14);
+    --text-1: #09090b; --text-2: #52525b; --text-3: #a1a1aa;
+    --code-bg: #f4f4f5;
+    --diff-add: rgba(22,163,74,.10); --diff-add-num: rgba(22,163,74,.20);
+    --diff-del: rgba(220,38,38,.10); --diff-del-num: rgba(220,38,38,.20);
+    --scrollbar: #d4d4d8;
+  }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html { font-size: 13px; }
+  body { background: var(--bg); color: var(--text-1); font-family: var(--font-sans); line-height: 1.5; min-height: 100vh; }
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--scrollbar); border-radius: 3px; }
+
+  .shell { display: grid; grid-template-rows: auto auto 1fr; min-height: 100vh; }
+
+  /* topbar */
+  .topbar { display: flex; align-items: center; justify-content: space-between; padding: 0 24px; height: 48px; border-bottom: 1px solid var(--border); background: var(--bg-2); position: sticky; top: 0; z-index: 40; }
+  .topbar-left { display: flex; align-items: center; gap: 12px; }
+  .logo { display: flex; align-items: center; gap: 8px; font-family: var(--font-mono); font-size: 12px; font-weight: 600; color: var(--text-1); letter-spacing: .02em; }
+  .logo-icon { width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; background: var(--accent); border-radius: 4px; flex-shrink: 0; }
+  .divider-v { width: 1px; height: 16px; background: var(--border-strong); }
+  .meta-chip { font-family: var(--font-mono); font-size: 11px; color: var(--text-3); }
+  .theme-toggle { width: 30px; height: 30px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: transparent; color: var(--text-2); cursor: pointer; display: flex; align-items: center; justify-content: center; transition: background .15s, color .15s; }
+  .theme-toggle:hover { background: var(--bg-4); color: var(--text-1); }
+
+  /* summary bar */
+  .summary-bar { display: flex; align-items: stretch; border-bottom: 1px solid var(--border); background: var(--bg-2); overflow-x: auto; }
+  .summary-cell { display: flex; flex-direction: column; padding: 12px 20px; border-right: 1px solid var(--border); gap: 2px; min-width: 100px; cursor: pointer; transition: background .12s; user-select: none; }
+  .summary-cell:last-of-type { border-right: none; }
+  .summary-cell:hover { background: var(--bg-3); }
+  .summary-cell.active { background: var(--accent-glow); }
+  .summary-cell.active .sc-label { color: var(--accent); }
+  .sc-count { font-family: var(--font-mono); font-size: 20px; font-weight: 700; line-height: 1; }
+  .sc-label { font-size: 10px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--text-3); }
+  .sc-total .sc-count { color: var(--text-1); }
+  .sc-block  .sc-count { color: var(--sev-block); }
+  .sc-high   .sc-count { color: var(--sev-high); }
+  .sc-medium .sc-count { color: var(--sev-medium); }
+  .sc-low    .sc-count { color: var(--sev-low); }
+  .sc-supp   .sc-count { color: var(--sev-supp); }
+  .summary-spacer { flex: 1; display: flex; align-items: center; padding: 12px 20px; }
+  .scan-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .meta-tag { display: inline-flex; align-items: center; gap: 4px; font-family: var(--font-mono); font-size: 10px; color: var(--text-3); border: 1px solid var(--border-strong); border-radius: var(--radius-sm); padding: 2px 6px; }
+  .meta-tag .dot { width: 5px; height: 5px; border-radius: 50%; background: #22c55e; flex-shrink: 0; }
+
+  /* layout */
+  .content { display: grid; grid-template-columns: 260px 1fr; min-height: 0; }
+
+  /* sidebar */
+  .sidebar { border-right: 1px solid var(--border); background: var(--bg-2); padding: 16px 0; position: sticky; top: 97px; height: calc(100vh - 97px); overflow-y: auto; }
+  .sidebar-section { padding: 0 16px 16px; }
+  .sidebar-section + .sidebar-section { padding-top: 16px; border-top: 1px solid var(--border); }
+  .sidebar-heading { font-size: 10px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--text-3); margin-bottom: 8px; }
+  .filter-btn { display: flex; align-items: center; justify-content: space-between; width: 100%; padding: 5px 8px; border: none; border-radius: var(--radius-sm); background: transparent; color: var(--text-2); font-size: 12px; font-family: var(--font-sans); cursor: pointer; transition: background .12s, color .12s; text-align: left; }
+  .filter-btn:hover { background: var(--bg-4); color: var(--text-1); }
+  .filter-btn.active { background: var(--accent-glow); color: var(--accent); }
+  .filter-btn-inner { display: flex; align-items: center; gap: 6px; }
+  .sev-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+  .filter-count { font-family: var(--font-mono); font-size: 10px; color: var(--text-3); background: var(--bg-4); border-radius: 10px; padding: 1px 5px; }
+  .filter-btn.active .filter-count { background: var(--accent-glow); color: var(--accent); }
+  .file-item { display: flex; align-items: center; justify-content: space-between; padding: 4px 8px; border-radius: var(--radius-sm); cursor: pointer; transition: background .12s; }
+  .file-item:hover { background: var(--bg-4); }
+  .file-item.active { background: var(--accent-glow); }
+  .file-name { font-family: var(--font-mono); font-size: 11px; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 170px; }
+  .file-item.active .file-name { color: var(--accent); }
+  .file-badge { font-family: var(--font-mono); font-size: 10px; min-width: 16px; text-align: center; color: var(--text-3); }
+
+  /* findings */
+  .findings-panel { padding: 20px 24px; overflow-y: auto; }
+  .findings-toolbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; gap: 12px; }
+  .findings-count { font-size: 12px; color: var(--text-3); white-space: nowrap; }
+  .findings-count strong { color: var(--text-1); font-weight: 600; }
+  .search-input { flex: 1; max-width: 320px; height: 30px; background: var(--bg-3); border: 1px solid var(--border-strong); border-radius: var(--radius-sm); color: var(--text-1); font-family: var(--font-mono); font-size: 11px; padding: 0 10px; outline: none; transition: border-color .15s; }
+  .search-input::placeholder { color: var(--text-3); }
+  .search-input:focus { border-color: var(--accent); }
+  .sort-select { height: 30px; background: var(--bg-3); border: 1px solid var(--border-strong); border-radius: var(--radius-sm); color: var(--text-2); font-size: 11px; padding: 0 8px; outline: none; cursor: pointer; font-family: var(--font-sans); }
+
+  /* finding card */
+  .finding-card { border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-2); margin-bottom: 8px; overflow: hidden; transition: border-color .15s; }
+  .finding-card:hover { border-color: var(--border-strong); }
+  .finding-card.expanded { border-color: var(--border-strong); }
+  .finding-header { display: flex; align-items: center; gap: 10px; padding: 11px 14px; cursor: pointer; user-select: none; }
+  .sev-badge { font-family: var(--font-mono); font-size: 10px; font-weight: 700; letter-spacing: .06em; padding: 2px 7px; border-radius: var(--radius-sm); white-space: nowrap; flex-shrink: 0; }
+  .sev-BLOCK      { background: var(--sev-block-bg);  color: var(--sev-block);  }
+  .sev-HIGH       { background: var(--sev-high-bg);   color: var(--sev-high);   }
+  .sev-MEDIUM     { background: var(--sev-medium-bg); color: var(--sev-medium); }
+  .sev-LOW        { background: var(--sev-low-bg);    color: var(--sev-low);    }
+  .sev-SUPPRESSED { background: var(--sev-supp-bg);   color: var(--sev-supp);   }
+  .finding-title { flex: 1; font-size: 13px; font-weight: 500; color: var(--text-1); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .finding-meta { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+  .finding-file { font-family: var(--font-mono); font-size: 11px; color: var(--text-3); white-space: nowrap; }
+  .cwe-tag { font-family: var(--font-mono); font-size: 10px; color: var(--text-3); border: 1px solid var(--border-strong); border-radius: var(--radius-sm); padding: 1px 5px; }
+  .path-tag { font-family: var(--font-mono); font-size: 10px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); padding: 1px 5px; }
+  .path-PATTERN  { border-color: rgba(59,130,246,.3);  color: #60a5fa; }
+  .path-SEMANTIC { border-color: rgba(168,85,247,.3);  color: #c084fc; }
+  .path-BOTH     { border-color: rgba(34,197,94,.3);   color: #4ade80; }
+  .chevron { color: var(--text-3); transition: transform .2s; flex-shrink: 0; }
+  .finding-card.expanded .chevron { transform: rotate(90deg); }
+
+  /* finding body */
+  .finding-body { display: none; border-top: 1px solid var(--border); }
+  .finding-card.expanded .finding-body { display: block; }
+  .finding-tabs { display: flex; border-bottom: 1px solid var(--border); padding: 0 14px; }
+  .ftab { font-size: 11px; font-weight: 500; color: var(--text-3); padding: 8px 12px; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; transition: color .12s; white-space: nowrap; background: none; border-top: none; border-left: none; border-right: none; font-family: var(--font-sans); }
+  .ftab:hover { color: var(--text-1); }
+  .ftab.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .ftab-panel { display: none; padding: 14px; }
+  .ftab-panel.active { display: block; }
+
+  /* evidence */
+  .evidence-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px; }
+  .evidence-block { background: var(--bg-3); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 8px 10px; }
+  .ev-label { font-size: 10px; font-weight: 600; letter-spacing: .07em; text-transform: uppercase; color: var(--text-3); margin-bottom: 3px; }
+  .ev-value { font-family: var(--font-mono); font-size: 11px; color: var(--text-1); word-break: break-all; }
+  .ev-missing { color: var(--sev-block); }
+
+  /* code snippet */
+  .code-snippet { background: var(--code-bg); border: 1px solid var(--border); border-radius: var(--radius-sm); font-family: var(--font-mono); font-size: 11px; overflow-x: auto; }
+  .code-line { display: flex; align-items: flex-start; padding: 0 12px; min-height: 20px; line-height: 20px; }
+  .code-line.highlight { background: rgba(239,68,68,.07); border-left: 2px solid var(--sev-block); padding-left: 10px; }
+  .ln { color: var(--text-3); width: 32px; flex-shrink: 0; user-select: none; }
+  .lc { color: var(--text-2); white-space: pre-wrap; word-break: break-all; }
+
+  /* ssvc */
+  .ssvc-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 12px; }
+  .ssvc-cell { background: var(--bg-3); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 8px 10px; text-align: center; }
+  .ssvc-dim { font-size: 10px; font-weight: 600; letter-spacing: .07em; text-transform: uppercase; color: var(--text-3); margin-bottom: 4px; }
+  .ssvc-val { font-family: var(--font-mono); font-size: 12px; font-weight: 700; }
+  .ssvc-active  { color: var(--sev-block); }
+  .ssvc-poc     { color: var(--sev-high);  }
+  .ssvc-none    { color: var(--text-3);    }
+  .ssvc-total   { color: var(--sev-block); }
+  .ssvc-partial { color: var(--sev-high);  }
+  .ssvc-yes     { color: var(--sev-high);  }
+  .ssvc-no      { color: var(--text-3);    }
+  .conf-bar-wrap { display: flex; align-items: center; gap: 8px; }
+  .conf-bar-label { font-size: 11px; color: var(--text-3); white-space: nowrap; }
+  .conf-bar { flex: 1; height: 5px; background: var(--bg-4); border-radius: 3px; overflow: hidden; }
+  .conf-bar-fill { height: 100%; border-radius: 3px; }
+  .conf-val { font-family: var(--font-mono); font-size: 11px; color: var(--text-1); white-space: nowrap; }
+
+  /* patch diff */
+  .diff-file-header { background: var(--bg-4); border-radius: var(--radius-sm) var(--radius-sm) 0 0; padding: 6px 12px; font-family: var(--font-mono); font-size: 11px; color: var(--text-2); border: 1px solid var(--border); border-bottom: none; }
+  .diff-block { background: var(--code-bg); border: 1px solid var(--border); border-radius: 0 0 var(--radius-sm) var(--radius-sm); font-family: var(--font-mono); font-size: 11px; overflow-x: auto; }
+  .diff-line { display: flex; min-height: 20px; line-height: 20px; }
+  .diff-num { width: 36px; padding: 0 8px; text-align: right; color: var(--text-3); flex-shrink: 0; user-select: none; font-size: 10px; }
+  .diff-sign { width: 16px; text-align: center; flex-shrink: 0; font-weight: 700; }
+  .diff-code { flex: 1; padding-right: 12px; white-space: pre-wrap; color: var(--text-2); }
+  .diff-line.add { background: var(--diff-add); }
+  .diff-line.add .diff-num  { background: var(--diff-add-num); }
+  .diff-line.add .diff-sign { color: #22c55e; }
+  .diff-line.add .diff-code { color: #86efac; }
+  .diff-line.del { background: var(--diff-del); }
+  .diff-line.del .diff-num  { background: var(--diff-del-num); }
+  .diff-line.del .diff-sign { color: #ef4444; }
+  .diff-line.del .diff-code { color: #fca5a5; }
+  .diff-line.hunk .diff-code { color: #60a5fa; font-style: italic; }
+
+  /* notes */
+  .info-note { display: flex; gap: 8px; background: var(--bg-3); border: 1px solid var(--border); border-left: 3px solid var(--sev-supp); border-radius: var(--radius-sm); padding: 10px 12px; font-size: 12px; color: var(--text-2); }
+  .info-note.warn { border-left-color: var(--sev-block); background: var(--sev-block-bg); }
+  .note-icon { flex-shrink: 0; }
+
+  /* scope notice */
+  .scope-notice { display: flex; align-items: center; gap: 8px; background: var(--bg-3); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 8px 12px; margin-bottom: 14px; font-size: 11px; color: var(--text-2); }
+
+  /* empty state */
+  .empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 60px 20px; gap: 10px; color: var(--text-3); font-size: 13px; }
+
+  @media (max-width: 768px) {
+    .content { grid-template-columns: 1fr; }
+    .sidebar { display: none; }
+    .evidence-grid { grid-template-columns: 1fr; }
+    .ssvc-grid { grid-template-columns: repeat(2, 1fr); }
+  }
+</style>
+</head>
+<body>
+<div class="shell">
+
+  <!-- TOPBAR -->
+  <header class="topbar">
+    <div class="topbar-left">
+      <div class="logo">
+        <div class="logo-icon">
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+            <path d="M6 1L11 3.5V8.5L6 11L1 8.5V3.5L6 1Z" stroke="white" stroke-width="1.5" fill="none"/>
+            <circle cx="6" cy="6" r="1.5" fill="white"/>
+          </svg>
+        </div>
+        ZeroTrust.sh
+      </div>
+      <div class="divider-v"></div>
+      <span class="meta-chip">{{ .Info.ProjectName }}</span>
+    </div>
+    <div>
+      <button class="theme-toggle" id="themeToggle" title="Toggle theme">
+        <svg id="iconSun" width="14" height="14" viewBox="0 0 16 16" fill="none" style="display:none">
+          <circle cx="8" cy="8" r="3" stroke="currentColor" stroke-width="1.5"/>
+          <path d="M8 1v2M8 13v2M1 8h2M13 8h2M3.05 3.05l1.41 1.41M11.54 11.54l1.41 1.41M3.05 12.95l1.41-1.41M11.54 4.46l1.41-1.41" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+        <svg id="iconMoon" width="14" height="14" viewBox="0 0 16 16" fill="none">
+          <path d="M13.5 9.5A5.5 5.5 0 016.5 2.5a5.5 5.5 0 000 11 5.5 5.5 0 007-4z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+        </svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- SUMMARY BAR -->
+  <div class="summary-bar">
+    <div class="summary-cell sc-total active" data-filter="all">
+      <span class="sc-count">{{ len .Findings }}</span>
+      <span class="sc-label">Total</span>
+    </div>
+    <div class="summary-cell sc-block" data-filter="BLOCK">
+      <span class="sc-count">{{ .CountBySeverity "BLOCK" }}</span>
+      <span class="sc-label">Block</span>
+    </div>
+    <div class="summary-cell sc-high" data-filter="HIGH">
+      <span class="sc-count">{{ .CountBySeverity "HIGH" }}</span>
+      <span class="sc-label">High</span>
+    </div>
+    <div class="summary-cell sc-medium" data-filter="MEDIUM">
+      <span class="sc-count">{{ .CountBySeverity "MEDIUM" }}</span>
+      <span class="sc-label">Medium</span>
+    </div>
+    <div class="summary-cell sc-low" data-filter="LOW">
+      <span class="sc-count">{{ .CountBySeverity "LOW" }}</span>
+      <span class="sc-label">Low</span>
+    </div>
+    <div class="summary-cell sc-supp" data-filter="SUPPRESSED">
+      <span class="sc-count">{{ .CountBySeverity "SUPPRESSED" }}</span>
+      <span class="sc-label">Suppressed</span>
+    </div>
+    <div class="summary-spacer">
+      <div class="scan-meta">
+        <span class="meta-tag"><span class="dot"></span>{{ .Info.ScanMode }}</span>
+        {{ if .Info.ModulesScanned }}<span class="meta-tag">{{ .Info.ModulesScanned }} modules</span>{{ end }}
+        {{ if .Info.LOC }}<span class="meta-tag">{{ .Info.LOC }} LOC</span>{{ end }}
+        {{ if .Info.ScanDuration }}<span class="meta-tag">{{ .Info.ScanDuration }}</span>{{ end }}
+        <span class="meta-tag">{{ .Info.ScannedAt }}</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- MAIN -->
+  <div class="content">
+
+    <!-- SIDEBAR -->
+    <aside class="sidebar">
+      <div class="sidebar-section">
+        <div class="sidebar-heading">Severity</div>
+        <button class="filter-btn active" data-sev="all">
+          <span class="filter-btn-inner">
+            <svg width="7" height="7" viewBox="0 0 7 7"><circle cx="3.5" cy="3.5" r="3.5" fill="#a1a1aa"/></svg>
+            All findings
+          </span>
+          <span class="filter-count">{{ len .Findings }}</span>
+        </button>
+        <button class="filter-btn" data-sev="BLOCK">
+          <span class="filter-btn-inner"><span class="sev-dot" style="background:var(--sev-block)"></span>Block</span>
+          <span class="filter-count">{{ .CountBySeverity "BLOCK" }}</span>
+        </button>
+        <button class="filter-btn" data-sev="HIGH">
+          <span class="filter-btn-inner"><span class="sev-dot" style="background:var(--sev-high)"></span>High</span>
+          <span class="filter-count">{{ .CountBySeverity "HIGH" }}</span>
+        </button>
+        <button class="filter-btn" data-sev="MEDIUM">
+          <span class="filter-btn-inner"><span class="sev-dot" style="background:var(--sev-medium)"></span>Medium</span>
+          <span class="filter-count">{{ .CountBySeverity "MEDIUM" }}</span>
+        </button>
+        <button class="filter-btn" data-sev="LOW">
+          <span class="filter-btn-inner"><span class="sev-dot" style="background:var(--sev-low)"></span>Low</span>
+          <span class="filter-count">{{ .CountBySeverity "LOW" }}</span>
+        </button>
+        <button class="filter-btn" data-sev="SUPPRESSED">
+          <span class="filter-btn-inner"><span class="sev-dot" style="background:var(--sev-supp)"></span>Suppressed</span>
+          <span class="filter-count">{{ .CountBySeverity "SUPPRESSED" }}</span>
+        </button>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="sidebar-heading">Files</div>
+        <div class="file-item active" data-file="all">
+          <span class="file-name">All files</span>
+          <span class="file-badge">{{ len .Findings }}</span>
+        </div>
+        {{ range .FileGroups }}
+        <div class="file-item" data-file="{{ .File }}">
+          <span class="file-name" title="{{ .File }}">{{ .ShortName }}</span>
+          <span class="file-badge">{{ .Count }}</span>
+        </div>
+        {{ end }}
+      </div>
+
+      <div class="sidebar-section">
+        <div class="sidebar-heading">Detection Path</div>
+        <button class="filter-btn active" data-path="all">
+          <span class="filter-btn-inner">All paths</span>
+          <span class="filter-count">{{ len .Findings }}</span>
+        </button>
+        <button class="filter-btn" data-path="PATTERN">
+          <span class="filter-btn-inner">
+            <span class="path-tag path-PATTERN" style="border:none;padding:0">A</span>
+            Path A - Pattern
+          </span>
+          <span class="filter-count">{{ .CountByPath "PATTERN" }}</span>
+        </button>
+        <button class="filter-btn" data-path="SEMANTIC">
+          <span class="filter-btn-inner">
+            <span class="path-tag path-SEMANTIC" style="border:none;padding:0">B</span>
+            Path B - Semantic
+          </span>
+          <span class="filter-count">{{ .CountByPath "SEMANTIC" }}</span>
+        </button>
+        <button class="filter-btn" data-path="BOTH">
+          <span class="filter-btn-inner">
+            <span class="path-tag path-BOTH" style="border:none;padding:0">A+B</span>
+            Both paths
+          </span>
+          <span class="filter-count">{{ .CountByPath "BOTH" }}</span>
+        </button>
+      </div>
+    </aside>
+
+    <!-- FINDINGS -->
+    <main class="findings-panel">
+
+      {{ if .Info.ScopeNote }}
+      <div class="scope-notice">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" style="color:var(--accent);flex-shrink:0">
+          <circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5"/>
+          <path d="M8 5v4M8 11v.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+        {{ .Info.ScopeNote }}
+      </div>
+      {{ end }}
+
+      <div class="findings-toolbar">
+        <span class="findings-count" id="findingsCount"><strong>{{ len .Findings }}</strong> findings</span>
+        <input class="search-input" id="searchInput" type="text" placeholder="Search findings, files, CWE...">
+        <select class="sort-select" id="sortSelect">
+          <option value="severity">Sort: Severity</option>
+          <option value="confidence">Sort: Confidence</option>
+          <option value="file">Sort: File</option>
+        </select>
+      </div>
+
+      <div id="findingsList">
+        {{ if not .Findings }}
+        <div class="empty-state">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none"><path d="M9 12l2 2 4-4M7.835 4.697a3.42 3.42 0 001.946-.806 3.42 3.42 0 014.438 0 3.42 3.42 0 001.946.806 3.42 3.42 0 013.138 3.138 3.42 3.42 0 00.806 1.946 3.42 3.42 0 010 4.438 3.42 3.42 0 00-.806 1.946 3.42 3.42 0 01-3.138 3.138 3.42 3.42 0 00-1.946.806 3.42 3.42 0 01-4.438 0 3.42 3.42 0 00-1.946-.806 3.42 3.42 0 01-3.138-3.138 3.42 3.42 0 00-.806-1.946 3.42 3.42 0 010-4.438 3.42 3.42 0 00.806-1.946 3.42 3.42 0 013.138-3.138z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          No findings - codebase is clean.
+        </div>
+        {{ else }}
+        {{ range .Findings }}
+        <div class="finding-card"
+             data-sev="{{ .SeverityLabel }}"
+             data-file="{{ .Path }}"
+             data-path="{{ .SourcePath }}"
+             data-cwe="{{ .CWE }}"
+             data-conf="{{ printf "%.2f" .Confidence }}">
+          <div class="finding-header" onclick="toggleCard(this)">
+            <span class="sev-badge sev-{{ .SeverityLabel }}">{{ .SeverityLabel }}</span>
+            <span class="finding-title">{{ .Justification }}</span>
+            <div class="finding-meta">
+              <span class="finding-file">{{ .Path }}{{ if .LineRange.Start }}:{{ .LineRange.Start }}{{ end }}</span>
+              {{ if .CWE }}<span class="cwe-tag">{{ .CWE }}</span>{{ end }}
+              <span class="path-tag path-{{ .SourcePath }}">{{ sourcepathLabel .SourcePath }}</span>
+              <svg class="chevron" width="14" height="14" viewBox="0 0 16 16" fill="none">
+                <path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </div>
+          </div>
+          <div class="finding-body">
+            <div class="finding-tabs">
+              <button class="ftab active" onclick="switchTab(this,'evidence')">Evidence</button>
+              <button class="ftab" onclick="switchTab(this,'ssvc')">SSVC Scores</button>
+              {{ if and .PoeContext (ne .SeverityLabel "SUPPRESSED") }}
+              <button class="ftab" onclick="switchTab(this,'poe')">PoE Context</button>
+              {{ end }}
+            </div>
+
+            <!-- EVIDENCE TAB -->
+            <div class="ftab-panel active" data-tab="evidence">
+              {{ if eq .SeverityLabel "SUPPRESSED" }}
+              <div class="info-note">
+                <svg class="note-icon" width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M2 8h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M8 2l6 6-6 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                Auto-suppressed: {{ .Reason }}
+              </div>
+              {{ end }}
+              {{ if .MatchedCode }}
+              <div class="code-snippet" style="{{ if eq .SeverityLabel "SUPPRESSED" }}margin-top:10px{{ end }}">
+                {{ range codeLines .MatchedCode .LineRange.Start }}
+                <div class="code-line{{ if .Highlight }} highlight{{ end }}">
+                  <span class="ln">{{ .LineNum }}</span>
+                  <span class="lc">{{ .Content }}</span>
+                </div>
+                {{ end }}
+              </div>
+              {{ end }}
+              {{ if and (not .MatchedCode) (ne .SeverityLabel "SUPPRESSED") }}
+              <div class="info-note">
+                <svg class="note-icon" width="14" height="14" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5"/><path d="M8 5v4M8 11v.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                No code snippet available for this finding.
+              </div>
+              {{ end }}
+            </div>
+
+            <!-- SSVC TAB -->
+            <div class="ftab-panel" data-tab="ssvc">
+              <div class="ssvc-grid">
+                <div class="ssvc-cell">
+                  <div class="ssvc-dim">Exploitation</div>
+                  <div class="ssvc-val {{ ssvcClass .SSVC.Exploitation }}">{{ if .SSVC.Exploitation }}{{ .SSVC.Exploitation }}{{ else }}-{{ end }}</div>
+                </div>
+                <div class="ssvc-cell">
+                  <div class="ssvc-dim">Automatable</div>
+                  <div class="ssvc-val {{ ssvcClass .SSVC.Automatable }}">{{ if .SSVC.Automatable }}{{ .SSVC.Automatable }}{{ else }}-{{ end }}</div>
+                </div>
+                <div class="ssvc-cell">
+                  <div class="ssvc-dim">Tech Impact</div>
+                  <div class="ssvc-val {{ ssvcClass .SSVC.TechnicalImpact }}">{{ if .SSVC.TechnicalImpact }}{{ .SSVC.TechnicalImpact }}{{ else }}-{{ end }}</div>
+                </div>
+              </div>
+              <div class="conf-bar-wrap">
+                <span class="conf-bar-label">Confidence</span>
+                <div class="conf-bar">
+                  <div class="conf-bar-fill" style="width:{{ confPct .Confidence }}%;background:{{ sevColor .SeverityLabel }}"></div>
+                </div>
+                <span class="conf-val">{{ printf "%.2f" .Confidence }}</span>
+              </div>
+            </div>
+
+            <!-- POE TAB (Approach 3) -->
+            {{ if and .PoeContext (ne .SeverityLabel "SUPPRESSED") }}
+            <div class="ftab-panel" data-tab="poe">
+              <div class="evidence-grid">
+                <div class="evidence-block">
+                  <div class="ev-label">Source Node</div>
+                  <div class="ev-value">{{ .PoeContext.SourceNode }}</div>
+                </div>
+                <div class="evidence-block">
+                  <div class="ev-label">Sink Node</div>
+                  <div class="ev-value">{{ .PoeContext.SinkNode }}</div>
+                </div>
+                {{ if .PoeContext.TaintPathSummary }}
+                <div class="evidence-block" style="grid-column:span 2">
+                  <div class="ev-label">Taint Path</div>
+                  <div class="ev-value">{{ .PoeContext.TaintPathSummary }}</div>
+                </div>
+                {{ end }}
+                {{ if .PoeContext.RequiredConditions }}
+                <div class="evidence-block" style="grid-column:span 2">
+                  <div class="ev-label">Required Conditions</div>
+                  <div class="ev-value">{{ .PoeContext.RequiredConditions }}</div>
+                </div>
+                {{ end }}
+              </div>
+            </div>
+            {{ end }}
+
+          </div>
+        </div>
+        {{ end }}
+        {{ end }}
+      </div>
+    </main>
+  </div>
+</div>
+
+<script>
+  // theme
+  const html = document.documentElement;
+  function applyTheme(t) {
+    html.setAttribute('data-theme', t);
+    document.getElementById('iconSun').style.display  = t === 'dark' ? 'none' : 'block';
+    document.getElementById('iconMoon').style.display = t === 'dark' ? 'block' : 'none';
+    localStorage.setItem('zt-theme', t);
+  }
+  document.getElementById('themeToggle').addEventListener('click', () => {
+    applyTheme(html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark');
+  });
+  const saved = localStorage.getItem('zt-theme');
+  if (saved) applyTheme(saved);
+  else if (window.matchMedia('(prefers-color-scheme: light)').matches) applyTheme('light');
+
+  // card expand
+  function toggleCard(header) {
+    header.closest('.finding-card').classList.toggle('expanded');
+  }
+
+  // tab switch (per card)
+  function switchTab(btn, tabName) {
+    const body = btn.closest('.finding-body');
+    body.querySelectorAll('.ftab').forEach(t => t.classList.remove('active'));
+    body.querySelectorAll('.ftab-panel').forEach(p => p.classList.remove('active'));
+    btn.classList.add('active');
+    body.querySelector(`.ftab-panel[data-tab="${tabName}"]`).classList.add('active');
+  }
+
+  // filtering
+  const sevOrder = { BLOCK: 0, HIGH: 1, MEDIUM: 2, LOW: 3, SUPPRESSED: 4 };
+  let activeSev  = 'all';
+  let activeFile = 'all';
+  let activePath = 'all';
+
+  function applyFilters() {
+    const search = document.getElementById('searchInput').value.toLowerCase();
+    const cards  = [...document.querySelectorAll('.finding-card')];
+    cards.forEach(c => {
+      const sevOk  = activeSev  === 'all' || c.dataset.sev  === activeSev;
+      const fileOk = activeFile === 'all' || c.dataset.file === activeFile;
+      const pathOk = activePath === 'all' || c.dataset.path === activePath;
+      const srchOk = !search || c.textContent.toLowerCase().includes(search);
+      c.style.display = (sevOk && fileOk && pathOk && srchOk) ? '' : 'none';
+    });
+    const visible = cards.filter(c => c.style.display !== 'none').length;
+    document.getElementById('findingsCount').innerHTML = `<strong>${visible}</strong> findings`;
+  }
+
+  function setActive(selector, attr, val) {
+    document.querySelectorAll(selector).forEach(el => {
+      el.classList.toggle('active', el.dataset[attr] === val || (val === 'all' && el.dataset[attr] === 'all'));
+    });
+  }
+
+  document.querySelectorAll('.summary-cell[data-filter]').forEach(cell => {
+    cell.addEventListener('click', () => {
+      activeSev = cell.dataset.filter;
+      document.querySelectorAll('.summary-cell').forEach(c => c.classList.remove('active'));
+      cell.classList.add('active');
+      document.querySelectorAll('[data-sev]').forEach(b => {
+        b.classList.toggle('active', b.dataset.sev === activeSev);
+      });
+      applyFilters();
+    });
+  });
+
+  document.querySelectorAll('[data-sev]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      activeSev = btn.dataset.sev;
+      document.querySelectorAll('[data-sev]').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      document.querySelectorAll('.summary-cell').forEach(c => {
+        c.classList.toggle('active', c.dataset.filter === activeSev);
+      });
+      applyFilters();
+    });
+  });
+
+  document.querySelectorAll('[data-file]').forEach(item => {
+    item.addEventListener('click', () => {
+      activeFile = item.dataset.file;
+      document.querySelectorAll('[data-file]').forEach(i => i.classList.remove('active'));
+      item.classList.add('active');
+      applyFilters();
+    });
+  });
+
+  document.querySelectorAll('[data-path]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      activePath = btn.dataset.path;
+      document.querySelectorAll('[data-path]').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      applyFilters();
+    });
+  });
+
+  document.getElementById('searchInput').addEventListener('input', applyFilters);
+
+  // sort
+  document.getElementById('sortSelect').addEventListener('change', function() {
+    const list  = document.getElementById('findingsList');
+    const cards = [...list.querySelectorAll('.finding-card')];
+    cards.sort((a, b) => {
+      if (this.value === 'severity')   return (sevOrder[a.dataset.sev] ?? 9) - (sevOrder[b.dataset.sev] ?? 9);
+      if (this.value === 'confidence') return parseFloat(b.dataset.conf || 0) - parseFloat(a.dataset.conf || 0);
+      if (this.value === 'file')       return (a.dataset.file || '').localeCompare(b.dataset.file || '');
+      return 0;
+    });
+    cards.forEach(c => list.appendChild(c));
+  });
+</script>
+</body>
+</html>

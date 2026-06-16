@@ -1,0 +1,31 @@
+id: AG-009-kotlin-sql-injection
+language: kotlin
+message: >
+  A SQL statement built via string concatenation or template interpolation is
+  passed to a database execution method. If any segment originates from user
+  input, SQL injection is possible.
+  Fix: use parameterized queries with PreparedStatement or Exposed's DSL safe
+  query builder instead of raw SQL strings.
+severity: error
+metadata:
+  cwe: "CWE-89: Improper Neutralization of Special Elements used in an SQL Command"
+  owasp: "A03:2021 - Injection"
+  category: sql-injection
+  ai_specific: true
+  confidence: HIGH
+  rule_version: "1.0"
+rule:
+  any:
+    - pattern: $STMT.executeQuery($SQL)
+    - pattern: $STMT.executeUpdate($SQL)
+    - pattern: $STMT.execute($SQL)
+    - pattern: $CONN.createStatement().executeQuery($SQL)
+    - pattern: $CONN.createStatement().executeUpdate($SQL)
+    - pattern: $DB.execRaw($SQL)
+    - pattern: $RAW.query($SQL)
+  not:
+    any:
+      - pattern: $STMT.executeQuery("$STATIC")
+      - pattern: $STMT.executeUpdate("$STATIC")
+      - pattern: $STMT.execute("$STATIC")
+      - pattern: $CONN.prepareStatement($SQL)

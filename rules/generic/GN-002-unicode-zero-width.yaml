@@ -40,7 +40,7 @@ rules:
       tokenizers, enabling steganographic payload encoding and token-boundary manipulation to
       bypass keyword filters. No legitimate AI agent instruction file requires these characters.
       Fix: strip all zero-width and invisible Unicode control characters from the file using a
-      tool such as `sed 's/[​‌‍﻿⁠­]//g'`.
+      tool such as `sed 's/[<200b><200c><feff><2060>]­//g`.
     severity: ERROR
     languages: [generic]
     metadata:

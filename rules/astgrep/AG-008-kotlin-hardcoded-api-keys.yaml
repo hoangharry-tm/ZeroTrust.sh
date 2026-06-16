@@ -1,0 +1,34 @@
+id: AG-008-kotlin-hardcoded-api-keys
+language: kotlin
+message: >
+  A string literal that appears to be an API key is assigned to a variable with
+  a credential-suggestive name. Hardcoded credentials in Kotlin source are
+  compiled into the binary and extractable via analysis tools.
+  Fix: store credentials in environment variables or Android Keystore; retrieve
+  at runtime via System.getenv().
+severity: error
+metadata:
+  cwe: "CWE-798: Use of Hard-coded Credentials"
+  owasp: "A07:2021 - Identification and Authentication Failures"
+  category: hardcoded-credentials
+  ai_specific: true
+  confidence: HIGH
+  rule_version: "1.0"
+rule:
+  any:
+    - pattern: val $KEY = "$VALUE"
+    - pattern: var $KEY = "$VALUE"
+    - pattern: const val $KEY = "$VALUE"
+    - pattern: private val $KEY = "$VALUE"
+    - pattern: companion object { val $KEY = "$VALUE" }
+  not:
+    any:
+      - pattern: val $KEY = System.getenv($ENV)
+      - pattern: var $KEY = System.getenv($ENV)
+      - pattern: val $KEY = BuildConfig.$FIELD
+      - pattern: val $KEY = localProperties[$PROP]
+constraints:
+  KEY:
+    regex: "(?i).*(api_key|apikey|api_token|apitoken|token|secret|credential|authkey|auth_key|accesskey|access_key|privatekey|private_key|clientsecret|client_secret|bearer).*"
+  VALUE:
+    regex: "((sk-(proj-)?[A-Za-z0-9_\\-]{32,})|(sk-ant-[A-Za-z0-9_\\-]{32,})|(hf_[A-Za-z0-9]{32,})|([A-Za-z0-9+/=_\\-]{40,}))"
