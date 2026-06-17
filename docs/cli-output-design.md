@@ -145,24 +145,24 @@ Right panel — tabbed, switchable with number keys.
 
 ### Scanning state
 
-```
+```term
   ZeroTrust.sh v0.1.0 — spring-boot-app — default
   ─────────────────────────────────────────────────────────────────────────────────────
 
-  ┌─ pipeline ──────────────────┐  ┌─ [1:log] [2:findings] [3:summary] [4:suppressed] [5:patches] ─┐
+  ┌─ pipeline ──────────────────┐  ┌─ [1:log] [2:findings] [3:summary] [4:suppressed] [5:patches] ───┐
   │                             │  │                                                                 │
-  │  INGESTION          done    │  │  09:41:02  [MIV]      model qwen2.5-3b · hash match · verified │
-  │  ✓ model   verified         │  │  09:41:02  [DI]       scanning 22 files · 4 changed            │
-  │  ✓ diff    4 changed        │  │  09:41:03  [OG]       loaded 42 rules · starting scan          │
-  │                             │  │  09:41:03  [AG]       loaded 16 rules · starting scan          │
-  │  PATH A             done    │  │  09:41:04  [OG]       hit PY-006 · config.py:11                │
-  │  ✓ opengrep  3 findings     │  │  09:41:04  [OG]       hit JV-002 · UserController.java:42      │
-  │  ✓ ast-grep  1 finding      │  │  09:41:04  [AG]       hit AG-007 · CLAUDE.md:3                 │
-  │  ✓ instrscan clean          │  │  09:41:05  [JOERN]    CPG built · 4 files · 1.2s               │
+  │  INGESTION          done    │  │  09:41:02  [MIV]      model qwen2.5-3b · hash match · verified  │
+  │  ✓ model   verified         │  │  09:41:02  [DI]       scanning 22 files · 4 changed             │
+  │  ✓ diff    4 changed        │  │  09:41:03  [OG]       loaded 42 rules · starting scan           │
+  │                             │  │  09:41:03  [AG]       loaded 16 rules · starting scan           │
+  │  PATH A             done    │  │  09:41:04  [OG]       hit PY-006 · config.py:11                 │
+  │  ✓ opengrep  3 findings     │  │  09:41:04  [OG]       hit JV-002 · UserController.java:42       │
+  │  ✓ ast-grep  1 finding      │  │  09:41:04  [AG]       hit AG-007 · CLAUDE.md:3                  │
+  │  ✓ instrscan clean          │  │  09:41:05  [JOERN]    CPG built · 4 files · 1.2s                │
   │                             │  │  09:41:05  [TARGET]   12 surfaces selected                      │
-  │  PATH B           running   │  │  09:41:06  [CLASSIFY] surface 1/3 · AuthService.java           │
-  │  ✓ targeting  12 surfaces   │  │  09:41:06  [CLASSIFY] surface 1/3 · uncertain → escalated      │
-  │  ✓ classify   1 escalated   │  │  09:41:07  [LLM]      analyzing AuthService.java:88 ...        │
+  │  PATH B           running   │  │  09:41:06  [CLASSIFY] surface 1/3 · AuthService.java            │
+  │  ✓ targeting  12 surfaces   │  │  09:41:06  [CLASSIFY] surface 1/3 · uncertain → escalated       │
+  │  ✓ classify   1 escalated   │  │  09:41:07  [LLM]      analyzing AuthService.java:88 ...         │
   │  ⠿ llm scan  running...     │  │                                                                 │
   │                             │  │                                                                 │
   │  ████████████░░░░░  60%     │  │                                                                 │
@@ -174,22 +174,22 @@ Right panel — tabbed, switchable with number keys.
 
 ### Done state — Tab 2 (findings)
 
-```
-  ┌─ pipeline ──────────────────┐  ┌─ [1:log] [2:findings] [3:summary] [4:suppressed] [5:patches] ─┐
+```term
+  ┌─ pipeline ──────────────────┐  ┌─ [1:log] [2:findings] [3:summary] [4:suppressed] [5:patches] ───┐
   │                             │  │                                                                 │
-  │  ✓ ingestion    0.1s        │  │  ✖  BLOCK   UserController.java:42   sql-injection-jdbc        │
-  │  ✓ path a       0.8s        │  │  ●  HIGH    config.py:11             hardcoded-ai-api-key      │
-  │  ✓ path b       1.4s        │  │  ●  HIGH    AuthService.java:88      missing-auth-guard        │
+  │  ✓ ingestion    0.1s        │  │  ✖  BLOCK   UserController.java:42   sql-injection-jdbc         │
+  │  ✓ path a       0.8s        │  │  ●  HIGH    config.py:11             hardcoded-ai-api-key       │
+  │  ✓ path b       1.4s        │  │  ●  HIGH    AuthService.java:88      missing-auth-guard         │
   │                             │  │  ◌  MEDIUM  CLAUDE.md:3              prompt-injection           │
-  │  DONE           2.3s        │  │  ─────────────────────────────────────────────────────────     │
-  │                             │  │  > UserController.java:42 · CWE-89 · confidence 0.97           │
+  │  DONE           2.3s        │  │  ─────────────────────────────────────────────────────────      │
+  │                             │  │  > UserController.java:42 · CWE-89 · confidence 0.97            │
   │  4 findings                 │  │                                                                 │
   │  1 BLOCK                    │  │    String query = "SELECT * FROM users WHERE id=" + userId;     │
   │  2 HIGH                     │  │                                                                 │
-  │  1 MEDIUM                   │  │    Taint: HTTP param → JDBC sink · no sanitizer detected       │
-  │  0 LOW                      │  │    Source: Path A (opengrep JV-002) + Path B (llm confirmed)   │
+  │  1 MEDIUM                   │  │    Taint: HTTP param → JDBC sink · no sanitizer detected        │
+  │  0 LOW                      │  │    Source: Path A (opengrep JV-002) + Path B (llm confirmed)    │
   │                             │  │                                                                 │
-  │  report →                   │  │    [p] view patch   [s] suppress   [o] open in report          │
+  │  report →                   │  │    [p] view patch   [s] suppress   [o] open in report           │
   │  build/report.html          │  │                                                                 │
   └─────────────────────────────┘  └─────────────────────────────────────────────────────────────────┘
 
@@ -198,27 +198,27 @@ Right panel — tabbed, switchable with number keys.
 
 ### Done state — Tab 3 (summary)
 
-```
-  ┌─ pipeline ──────────────────┐  ┌─ [1:log] [2:findings] [3:summary] [4:suppressed] [5:patches] ─┐
+```term
+  ┌─ pipeline ──────────────────┐  ┌─ [1:log] [2:findings] [3:summary] [4:suppressed] [5:patches] ───┐
   │                             │  │                                                                 │
-  │  ✓ ingestion    0.1s        │  │  project      spring-boot-app                                  │
-  │  ✓ path a       0.8s        │  │  mode         default                                          │
-  │  ✓ path b       1.4s        │  │  started      2026-06-17 09:41:02                              │
-  │                             │  │  duration     2.3s                                             │
+  │  ✓ ingestion    0.1s        │  │  project      spring-boot-app                                   │
+  │  ✓ path a       0.8s        │  │  mode         default                                           │
+  │  ✓ path b       1.4s        │  │  started      2026-06-17 09:41:02                               │
+  │                             │  │  duration     2.3s                                              │
   │  DONE           2.3s        │  │                                                                 │
-  │                             │  │  files        4 changed · 18 unchanged                         │
-  │  4 findings                 │  │  surfaces     12 selected · 9 eliminated · 1 escalated         │
+  │                             │  │  files        4 changed · 18 unchanged                          │
+  │  4 findings                 │  │  surfaces     12 selected · 9 eliminated · 1 escalated          │
   │  1 BLOCK                    │  │                                                                 │
-  │  2 HIGH                     │  │  path a       4 findings  (opengrep 3 · ast-grep 1)            │
-  │  1 MEDIUM                   │  │  path b       1 confirmed · 1 cross-path boost applied         │
+  │  2 HIGH                     │  │  path a       4 findings  (opengrep 3 · ast-grep 1)             │
+  │  1 MEDIUM                   │  │  path b       1 confirmed · 1 cross-path boost applied          │
   │  0 LOW                      │  │                                                                 │
-  │                             │  │  scanned modules                                               │
-  │  report →                   │  │    UserController · AuthService · SecurityConfig · +2 neighbors│
+  │                             │  │  scanned modules                                                │
+  │  report →                   │  │    UserController · AuthService · SecurityConfig · +2 neighbors │
   │  build/report.html          │  │                                                                 │
-  │                             │  │  SSVC dimensions                                               │
-  │                             │  │    exploitation    PoC                                         │
-  │                             │  │    automatable     Yes                                         │
-  │                             │  │    tech impact     Total                                       │
+  │                             │  │  SSVC dimensions                                                │
+  │                             │  │    exploitation    PoC                                          │
+  │                             │  │    automatable     Yes                                          │
+  │                             │  │    tech impact     Total                                        │
   └─────────────────────────────┘  └─────────────────────────────────────────────────────────────────┘
 
   done · 2.3s                       ↑↓ navigate · tab switch · q quit
@@ -226,12 +226,12 @@ Right panel — tabbed, switchable with number keys.
 
 ### Keyboard shortcuts
 
-| Key | Action |
-|---|---|
-| `1`–`5` | Switch tabs |
-| `↑` `↓` | Navigate findings list (tab 2) |
-| `p` | View patch for selected finding |
-| `s` | Suppress selected finding |
-| `o` | Open finding in HTML report |
-| `esc` | Cancel scan (during scanning) |
-| `q` | Quit |
+| Key     | Action                          |
+|---------|---------------------------------|
+| `1`–`5` | Switch tabs                     |
+| `↑` `↓` | Navigate findings list (tab 2)  |
+| `p`     | View patch for selected finding |
+| `s`     | Suppress selected finding       |
+| `o`     | Open finding in HTML report     |
+| `esc`   | Cancel scan (during scanning)   |
+| `q`     | Quit                            |
