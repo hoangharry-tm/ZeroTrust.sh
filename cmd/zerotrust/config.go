@@ -8,7 +8,8 @@ package main
 //	<directory>     → Target        (positional arg, defaults to ".")
 //	--model         → ModelName     (Ollama model name, e.g. "llama3.2")
 //	--offline       → Offline       (disable all network requests)
-//	--output        → OutputPath    (HTML report destination, default "report.html")
+//	--output        → OutputMode    (output mode: minimal|tree|tui; default: auto-detect from TTY)
+//	--report        → ReportPath    (HTML report destination, default "build/report.html")
 //	--project-id    → ProjectID     (override derived project ID for scan-state cache)
 //	--mode          → ScanMode      (Default | Thorough | Full; default "Default")
 //	--joern-url     → JoernURL      (Joern HTTP API URL; default "http://localhost:8080")
@@ -28,8 +29,12 @@ type ScanConfig struct {
 	// and MIV defaults to StatusWarn for unrecognised models.
 	Offline bool
 
-	// OutputPath is the file path where the HTML report is written.
-	OutputPath string
+	// OutputMode selects the CLI output renderer: "minimal", "tree", or "tui".
+	// Empty string triggers auto-detection: TTY → tree, no TTY → minimal.
+	OutputMode string
+
+	// ReportPath is the file path where the self-contained HTML report is written.
+	ReportPath string
 
 	// ProjectID overrides the project identifier used to key scan state in SQLite.
 	// If empty, a deterministic ID is derived from the resolved Target path.
@@ -57,8 +62,8 @@ func (c *ScanConfig) defaults() {
 	if c.Target == "" {
 		c.Target = "."
 	}
-	if c.OutputPath == "" {
-		c.OutputPath = "report.html"
+	if c.ReportPath == "" {
+		c.ReportPath = "build/report.html"
 	}
 	if c.ScanMode == "" {
 		c.ScanMode = "Default"

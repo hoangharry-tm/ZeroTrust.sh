@@ -6,6 +6,8 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
+
+	"github.com/hoangharry-tm/zerotrust/internal/output"
 )
 
 func main() {
@@ -18,7 +20,8 @@ func main() {
 
 	root.Flags().StringP("model", "m", "", "Ollama model name (e.g. llama3.2)")
 	root.Flags().BoolP("offline", "o", false, "disable all network requests (Trivy offline mode)")
-	root.Flags().String("output", "report.html", "HTML report output path")
+	root.Flags().String("output", "", "output mode: minimal|tree|tui (default: auto-detect from TTY)")
+	root.Flags().String("report", "", "HTML report output path (default: build/report.html)")
 	root.Flags().String("project-id", "", "override project ID used for scan-state caching")
 	root.Flags().String("mode", "Default", "scan scope mode: Default | Thorough | Full")
 	root.Flags().String("joern-url", "http://localhost:8080", "Joern HTTP API base URL")
@@ -46,7 +49,11 @@ func runScan(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	cfg.OutputPath, err = cmd.Flags().GetString("output")
+	cfg.OutputMode, err = cmd.Flags().GetString("output")
+	if err != nil {
+		return err
+	}
+	cfg.ReportPath, err = cmd.Flags().GetString("report")
 	if err != nil {
 		return err
 	}
@@ -71,6 +78,9 @@ func runScan(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	renderer := selectRenderer(cfg.OutputMode)
+	events := make(chan output.Event, 64)
+
 	ctx := cmd.Context()
 	p, err := newPipeline(ctx, cfg)
 	if err != nil {
@@ -78,5 +88,17 @@ func runScan(cmd *cobra.Command, args []string) error {
 	}
 	defer p.close() //nolint:errcheck
 
-	return p.run(ctx)
+	// Pipeline runs in a goroutine; renderer drains events on the main goroutine.
+	go func() {
+		if scanErr := p.run(ctx, events); scanErr != nil {
+			output.Emit(events, output.Event{Kind: output.EventError, Err: scanErr})
+		}
+		close(events)
+	}()
+
+	if err := renderer.Render(ctx, events); err != nil {
+		return fmt.Errorf("render: %w", err)
+	}
+	os.Exit(renderer.ExitCode())
+	return nil
 }

@@ -29,6 +29,7 @@ All 42 rules deployed (PY-001→010, JV-001→009, GN-001→007, AG-001→016), 
 ## Layer 0 — Foundation + Fast Path
 
 **Window**: Jun 23 – Jul 3 · ~70h available · **~57h work + 13h buffer**
+**ML0.1 + ML0.1B delivered Jun 17 — 6–7 days early. Remaining: ML0.2–ML0.7.**
 
 Build the Go binary skeleton, ingestion layer (MIV + DI content-hash), pattern detection wrappers, Python worker IPC, and a minimal Dedup + HTML report skeleton. Joern-free. Delivers a working end-to-end pipeline with Path A pattern findings in an HTML report before any Joern risk is taken.
 
@@ -36,15 +37,15 @@ Build the Go binary skeleton, ingestion layer (MIV + DI content-hash), pattern d
 
 | ID | Name | Dates | E (h) | Status | Notes |
 | :---: | --- | :---: | :---: | :---: | --- |
-| **ML0.1** | **Go CLI Core + Finding Channel** | Jun 23–25 | 10.0 | — | |
-| L0.1.T1 | Go module init + CLI flag parsing (`cobra`) | Jun 23 | 2.0 | | |
-| L0.1.T2 | Goroutine dispatcher: spawn Path A + Path B goroutines; Finding channel interface | Jun 23–24 | 5.0 | | Lock this interface first — every downstream component depends on it |
-| L0.1.T3 | Finding struct: `{id, path, line_range, cwe, severity_label, confidence, source_path, reason, poe_context}` | Jun 24 | 3.0 | | `poe_context` forward-compatible with future PoE layer |
-| **ML0.1B** | **CLI Output Layer** | Jun 24–25 | 10.0 | — | Auto-detect TTY; two modes |
-| L0.1B.T1 | Output mode detection: `isatty` check on `os.Stdout`; auto-select minimal (no TTY) or interactive (TTY); `--output minimal\|interactive` flag overrides | Jun 24 | 1.5 | | Enables CI/CD gating with no flag required |
-| L0.1B.T2 | Minimal renderer: plain stdout, ANSI-free, one line per stage + one line per finding; exit code 1 on any BLOCK/HIGH finding | Jun 24 | 3.0 | | Target: CI pipelines, server runs, pipe/redirect |
-| L0.1B.T3 | Interactive TUI skeleton: Bubble Tea event loop + Lip Gloss layout; 3-panel layout (pipeline progress · live findings feed · summary bar) | Jun 24–25 | 4.0 | | `github.com/charmbracelet/bubbletea` + `lipgloss` + `bubbles` |
-| L0.1B.T4 | Wire live pipeline events into TUI panels as scan progresses; keyboard navigation through findings post-scan | Jun 25 | 1.5 | | Glamour for markdown rendering in justification text |
+| **ML0.1** | **Go CLI Core + Finding Channel** | Jun 17 | 10.0 | **Done** | Delivered Jun 17 — 6 days early |
+| L0.1.T1 | Go module init + CLI flag parsing (`cobra`) | Jun 17 | 2.0 | Done | `--output minimal\|tree\|tui`; `--report <path>`; `--output` renamed from HTML path |
+| L0.1.T2 | Goroutine dispatcher: spawn Path A + Path B goroutines; Finding channel interface | Jun 17 | 5.0 | Done | `errgroup`-based; buffered channel 256; fan-in drain; `output.Event` per finding |
+| L0.1.T3 | Finding struct: `{id, path, line_range, cwe, severity_label, confidence, source_path, reason, poe_context}` | Jun 17 | 3.0 | Done | Locked in `internal/finding/finding.go`; `poe_context` forward-compatible |
+| **ML0.1B** | **CLI Output Layer** | Jun 17 | 10.0 | **Done** | Delivered Jun 17 — 7 days early |
+| L0.1B.T1 | Output mode detection: `isatty` check on `os.Stdout`; auto-select minimal (no TTY) or tree (TTY); `--output minimal\|tree\|tui` flag override | Jun 17 | 1.5 | Done | Selection in `cmd/zerotrust/output_select.go` — avoids `output`→`output/tui`→`output` import cycle |
+| L0.1B.T2 | Minimal renderer: plain stdout, ANSI stripped in pipe, coloured in TTY; exit codes 0/1/2 | Jun 17 | 3.0 | Done | `internal/output/minimal.go`; `fatih/color` for severity labels |
+| L0.1B.T3 | TUI skeleton: Bubble Tea 2-panel layout; 5 tabs (log · findings · summary · suppressed · patches); scanning + done states | Jun 17 | 4.0 | Done | `internal/output/tui/{model,update,view}.go`; matches `docs/cli-output-design.md` spec; tree renderer added as Option C (`internal/output/tree.go`) |
+| L0.1B.T4 | Wire live pipeline events into TUI panels; keyboard navigation; Glamour for markdown | Jun 17 | 1.5 | Done | Typed `output.Event` channel; `EventStageStart/End/Finding/Log/Error/Done`; all renderers consume same channel |
 | **ML0.2** | **Ollama HTTP Client** | Jun 24 | 4.0 | — | |
 | L0.2.T1 | Ollama HTTP client wrapper (Go → `localhost:11434`); model-agnostic — model name is config, not code | Jun 24 | 4.0 | | Shared by LLM Verifier, LLM Scan, and patch generation |
 | **ML0.3** | **Model Integrity Verifier** | Jun 25–27 | 17.5 | — | |
@@ -208,7 +209,7 @@ Complete the Dedup pipeline, SSVC scoring, HTML report, patch suggestions, and r
 | Layer | Window | Budget | Primary Risk |
 | --- | --- | --- | --- |
 | G1 — OpenGrep PoC | Jun 9–20 | ~50h | **100% done** — completed Jun 17, 3 days early |
-| L0 — Foundation + Fast Path | Jun 23 – Jul 3 | 57h + 13h buffer | MIV cosign / Sigstore Rekor integration |
+| L0 — Foundation + Fast Path | Jun 23 – Jul 3 | 57h + 13h buffer | **ML0.1 + ML0.1B done Jun 17** (early); ML0.2–ML0.7 remaining; MIV cosign / Sigstore Rekor integration is next primary risk |
 | L1 — Joern Spike (time-boxed) | Jul 3 – Jul 7 | 20h + 8h contingency | Joern JVM + Go CPG frontend quality |
 | L2 — Path A Complete | Jul 7 – Jul 17 | 56h + 14h buffer | Incremental CPG implementation (15h task) |
 | L3 — Path B | Jul 17 – Jul 28 | 69h + 8h buffer | BOLAZ taint model (12h task); A-18 calibration |

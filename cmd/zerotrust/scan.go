@@ -25,13 +25,17 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
+
+	"golang.org/x/sync/errgroup"
 
 	"github.com/hoangharry-tm/zerotrust/internal/dedup"
 	"github.com/hoangharry-tm/zerotrust/internal/finding"
 	"github.com/hoangharry-tm/zerotrust/internal/ingestion"
 	"github.com/hoangharry-tm/zerotrust/internal/ingestion/diffindex"
 	"github.com/hoangharry-tm/zerotrust/internal/ingestion/miv"
+	"github.com/hoangharry-tm/zerotrust/internal/output"
 	"github.com/hoangharry-tm/zerotrust/internal/patch"
 	"github.com/hoangharry-tm/zerotrust/internal/pattern/astgrep"
 	"github.com/hoangharry-tm/zerotrust/internal/pattern/instrscan"
@@ -140,7 +144,7 @@ func newPipeline(ctx context.Context, cfg ScanConfig) (*pipeline, error) {
 	// Output
 	dd := dedup.New()
 	pg := patch.New(cfg.Target)
-	rg := report.New(cfg.OutputPath)
+	rg := report.New(cfg.ReportPath)
 
 	return &pipeline{
 		cfg:      cfg,
@@ -166,38 +170,82 @@ func newPipeline(ctx context.Context, cfg ScanConfig) (*pipeline, error) {
 }
 
 // run executes the full pipeline to completion and writes the HTML report.
-// It is the single entry point called by the cobra RunE handler.
-func (p *pipeline) run(ctx context.Context) error {
+// events receives stage notifications consumed by the active CLI renderer.
+// The caller is responsible for closing events after run returns.
+func (p *pipeline) run(ctx context.Context, events chan<- output.Event) error {
 	start := time.Now()
 
 	// ── 1. INGEST ────────────────────────────────────────────────────────────
+	output.Emit(events, output.Event{Kind: output.EventStageStart, Stage: "ingestion"})
 	ingResult, err := p.ingester.Run(ctx, ingestion.Config{
 		ProjectID:   p.cfg.ProjectID,
 		ProjectRoot: p.cfg.Target,
-		ModelPath:   "", // GGUF path resolved from cfg.ModelName in G2
+		ModelPath:   "", // GGUF path resolved from cfg.ModelName in L0.3
 	})
 	if err != nil {
 		return fmt.Errorf("ingestion: %w", err)
 	}
+	changedCount := 0
+	if ingResult.ChangeSet != nil {
+		changedCount = len(ingResult.ChangeSet.Changed)
+	}
+	output.Emit(events, output.Event{
+		Kind:  output.EventStageEnd,
+		Stage: "ingestion",
+		Summary: &output.StageSummary{
+			Stage:  "ingestion",
+			Detail: fmt.Sprintf("%d files changed", changedCount),
+		},
+	})
 
-	// ── 2. PATH A ─────────────────────────────────────────────────────────────
-	// Implemented in G2.M2.4: opengrep, astgrep, joern, instrscan, verifier
-	// run in parallel goroutines; their findings fan-in to pathAFindings.
-	var pathAFindings []finding.Finding
-	_, _ = ingResult, pathAFindings // G2 wires these
+	// ── 2 + 3. PATH A ∥ PATH B ───────────────────────────────────────────────
+	// Both paths write findings to a shared buffered channel; results are
+	// collected by the drain goroutine below. Neither path gates the other.
+	findCh := make(finding.Channel, 256)
 
-	// ── 3. PATH B ─────────────────────────────────────────────────────────────
-	// Implemented in G3: targeting → enrich → classify → assemble → summarize → budget → scan
-	// store accumulates inferences; ctx cancellation propagates to all stages.
-	var pathBFindings []finding.Finding
-	_, _ = p.store, pathBFindings // G3 wires these
+	g, gctx := errgroup.WithContext(ctx)
+
+	g.Go(func() error {
+		defer func() { /* Path A done; Path B may still be running */ }()
+		return p.runPathA(gctx, ingResult, findCh, events)
+	})
+	g.Go(func() error {
+		return p.runPathB(gctx, ingResult, findCh, events)
+	})
+
+	// Close findCh once both paths finish so the drain loop can exit.
+	var closeOnce sync.Once
+	go func() {
+		_ = g.Wait() // errors surfaced below via the second g.Wait()
+		closeOnce.Do(func() { close(findCh) })
+	}()
+
+	// Drain findings; emit each one to the renderer.
+	var allFindings []finding.Finding
+	for f := range findCh {
+		fc := f
+		allFindings = append(allFindings, fc)
+		output.Emit(events, output.Event{Kind: output.EventFinding, Finding: &fc})
+	}
+
+	if err := g.Wait(); err != nil {
+		return fmt.Errorf("detection paths: %w", err)
+	}
 
 	// ── 4. DEDUP ──────────────────────────────────────────────────────────────
-	merged := append(pathAFindings, pathBFindings...)
-	scored, err := p.dd.Process(merged)
+	output.Emit(events, output.Event{Kind: output.EventStageStart, Stage: "dedup"})
+	scored, err := p.dd.Process(allFindings)
 	if err != nil {
 		return fmt.Errorf("dedup: %w", err)
 	}
+	output.Emit(events, output.Event{
+		Kind:  output.EventStageEnd,
+		Stage: "dedup",
+		Summary: &output.StageSummary{
+			Stage:  "dedup",
+			Detail: fmt.Sprintf("%d findings after dedup", len(scored)),
+		},
+	})
 
 	// ── 5. PATCH ──────────────────────────────────────────────────────────────
 	patches, err := p.gen.Generate(ctx, scored)
@@ -207,11 +255,14 @@ func (p *pipeline) run(ctx context.Context) error {
 	_ = patches
 
 	// ── 6. REPORT ─────────────────────────────────────────────────────────────
-	f, err := os.Create(p.cfg.OutputPath)
+	if err := os.MkdirAll(filepath.Dir(p.cfg.ReportPath), 0o755); err != nil {
+		return fmt.Errorf("mkdir report dir: %w", err)
+	}
+	f, err := os.Create(p.cfg.ReportPath)
 	if err != nil {
 		return fmt.Errorf("create report: %w", err)
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck
 
 	info := report.ScanInfo{
 		ProjectName:  filepath.Base(p.cfg.Target),
@@ -219,7 +270,57 @@ func (p *pipeline) run(ctx context.Context) error {
 		ScanMode:     p.cfg.ScanMode,
 		ScanDuration: time.Since(start).Round(time.Millisecond).String(),
 	}
-	return p.rep.Render(f, info, scored)
+	if err := p.rep.Render(f, info, scored); err != nil {
+		return fmt.Errorf("render report: %w", err)
+	}
+
+	// Build per-severity counts for the done summary.
+	bySeverity := make(map[finding.SeverityLabel]int, 5)
+	for _, s := range scored {
+		bySeverity[s.SeverityLabel]++
+	}
+	output.Emit(events, output.Event{
+		Kind: output.EventDone,
+		Done: &output.ScanSummary{
+			Elapsed:       time.Since(start),
+			TotalFindings: len(scored),
+			BySeverity:    bySeverity,
+			ReportPath:    p.cfg.ReportPath,
+		},
+	})
+	return nil
+}
+
+// runPathA executes all Path A detectors concurrently and writes findings to ch.
+// Stubs for individual stages (opengrep, astgrep, joern, instrscan, verifier)
+// will be filled in ML0.5 / ML2.
+func (p *pipeline) runPathA(ctx context.Context, _ *ingestion.Result, ch finding.Channel, events chan<- output.Event) error {
+	output.Emit(events, output.Event{Kind: output.EventStageStart, Stage: "path a"})
+	// Individual stage goroutines (opengrep, ast-grep, Joern, instrscan) will
+	// be wired here in ML0.5 / ML2.1 when the wrappers are production-ready.
+	_ = ctx
+	_ = ch
+	output.Emit(events, output.Event{
+		Kind:    output.EventStageEnd,
+		Stage:   "path a",
+		Summary: &output.StageSummary{Stage: "path a", Detail: "stub — wired in ML0.5"},
+	})
+	return nil
+}
+
+// runPathB executes the Path B semantic detection tier pipeline and writes
+// findings to ch. Stubs will be filled in ML3.
+func (p *pipeline) runPathB(ctx context.Context, _ *ingestion.Result, ch finding.Channel, events chan<- output.Event) error {
+	output.Emit(events, output.Event{Kind: output.EventStageStart, Stage: "path b"})
+	_ = ctx
+	_ = ch
+	_ = p.store
+	output.Emit(events, output.Event{
+		Kind:    output.EventStageEnd,
+		Stage:   "path b",
+		Summary: &output.StageSummary{Stage: "path b", Detail: "stub — wired in ML3"},
+	})
+	return nil
 }
 
 // close shuts down the Python worker and releases any other held resources.
