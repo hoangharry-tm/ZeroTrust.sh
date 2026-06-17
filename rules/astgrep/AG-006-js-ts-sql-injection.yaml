@@ -1,10 +1,8 @@
 id: AG-006-js-ts-sql-injection
 language: typescript
 message: >
-  db.query(), db.execute(), or db.run() is called with a SQL string built via
-  template literal or string concatenation. If any interpolated value originates
-  from user input, SQL injection is possible. Fix: use parameterized queries with
-  '?' placeholders and pass user values as separate arguments.
+  db.query(), db.execute(), or db.run() is called with a SQL string built via template literal or string concatenation. If any interpolated value originates from user input, SQL injection is possible. Fix: use parameterized queries with '?' placeholders and pass user values as separate arguments.
+
 severity: error
 metadata:
   cwe: "CWE-89: Improper Neutralization of Special Elements used in an SQL Command"

@@ -24,7 +24,6 @@
 #     for exact line proximity, but carries high FP risk across all file types.
 #   - Commented-out validation (Rule C) only catches single-line comments, not
 #     multi-line block comments.
-
 rules:
   # ── Rule A: pass-only function body with security name (stub detection) ───────
   - id: PY-009-cheat-todo-then-skip-pass-stub
@@ -58,7 +57,6 @@ rules:
       - metavariable-regex:
           metavariable: $FUNC_NAME
           regex: ".*(validate|sanitize|check|verify|auth|authenticate|authorize|permission|access|guard|secure|protect|filter|escape|encode).*"
-
   # ── Rule B: return None / empty return / empty collection as security stub ────
   - id: PY-009-cheat-todo-then-skip-return-none
     message: |
@@ -93,7 +91,6 @@ rules:
           def $FUNC_NAME(...):
               """..."""
               return None
-
   # ── Rule C: commented-out validation inside security function ─────────────────
   - id: PY-009-cheat-todo-then-skip-commented-validation
     message: |
@@ -126,7 +123,6 @@ rules:
       - metavariable-regex:
           metavariable: $COMMENT
           regex: ".*(validate|sanitize|check|assert|verify|authenticate|authorize|filter|escape|require_auth|check_permission|jwt\\.verify|token\\.verify).*"
-
   # ── Rule D: TODO/FIXME/HACK immediately before pass/return in any function ────
   - id: PY-009-cheat-todo-then-skip-generic
     message: |

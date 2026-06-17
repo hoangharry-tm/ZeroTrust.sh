@@ -31,7 +31,6 @@
 #     this rule detects structural patterns only.
 #   - XStream, Jackson, Kryo, and other serialization frameworks are NOT covered
 #     here — they would require separate JV-010+ rules.
-
 rules:
   # ── Rule A: taint mode — HTTP sources → ObjectInputStream.readObject() ─────────
   - id: JV-009-insecure-deserialization-taint
@@ -74,7 +73,6 @@ rules:
       - pattern: new ValidatingObjectInputStream($IS)
       - pattern: $OIS.setObjectInputFilter($FILTER)
       - pattern: ObjectInputFilter.Config.setSerialFilter($FILTER)
-
   # ── Rule B: direct new ObjectInputStream().readObject() ────────────────────────
   - id: JV-009-insecure-deserialization-direct
     message: |
@@ -96,7 +94,6 @@ rules:
     patterns:
       - pattern: new ObjectInputStream($IS).readObject()
       - pattern-not: new ValidatingObjectInputStream($IS).readObject()
-
   # ── Rule C: V2 — OIS assigned to variable then readObject() ───────────────────
   - id: JV-009-insecure-deserialization-variable
     message: |
@@ -130,7 +127,6 @@ rules:
           ValidatingObjectInputStream $OIS = new ValidatingObjectInputStream($IS);
           ...
           $OIS.readObject();
-
   # ── Rule D: V4 — OIS in try-with-resources then readObject() ──────────────────
   - id: JV-009-insecure-deserialization-try-with-resources
     message: |
@@ -166,7 +162,6 @@ rules:
           try (ValidatingObjectInputStream $OIS = new ValidatingObjectInputStream($IS)) {
             ...
           }
-
   # ── Rule E: V7 — readObject() inside deserialization-named method ──────────────
   - id: JV-009-insecure-deserialization-helper-method
     message: |
@@ -199,7 +194,6 @@ rules:
           ...
           $VOIS.readObject();
       - pattern-not: ValidatingObjectInputStream $VOIS = new ValidatingObjectInputStream($IS);
-
   # ── Rule F: V8 — reflection via Method.invoke() reaching readObject ─────────────
   - id: JV-009-insecure-deserialization-reflection
     message: |
@@ -224,7 +218,6 @@ rules:
           Method $M = $CLS.getMethod("readObject", ...);
           ...
       - pattern-not: $OIS.setObjectInputFilter($FILTER)
-
   # ── Rule G: V5 — String-constructed class name passed to Class.forName for deser
   - id: JV-009-insecure-deserialization-class-forname-deser
     message: |

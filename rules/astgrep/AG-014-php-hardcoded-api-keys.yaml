@@ -1,10 +1,8 @@
 id: AG-014-php-hardcoded-api-keys
 language: php
 message: >
-  A string literal that appears to be an API key is assigned to a variable or
-  defined constant with a credential-suggestive name. Hardcoded keys in PHP
-  are exposed in version control and production stack traces.
-  Fix: use environment variables via getenv() or $_ENV.
+  A string literal that appears to be an API key is assigned to a variable or defined constant with a credential-suggestive name. Hardcoded keys in PHP are exposed in version control and production stack traces. Fix: use environment variables via getenv() or $_ENV.
+
 severity: error
 metadata:
   cwe: "CWE-798: Use of Hard-coded Credentials"

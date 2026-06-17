@@ -1,9 +1,8 @@
 id: AG-007-js-ts-llm-prompt-injection
 language: typescript
 message: >
-  An LLM chat completion call receives template-literal content or user-controlled
-  data, enabling prompt injection. Fix: pass user data only in user-role messages;
-  never interpolate unsanitized input into system or assistant prompts.
+  An LLM chat completion call receives template-literal content or user-controlled data, enabling prompt injection. Fix: pass user data only in user-role messages; never interpolate unsanitized input into system or assistant prompts.
+
 severity: error
 metadata:
   cwe: "CWE-77: Improper Neutralization of Special Elements used in a Command"
@@ -18,5 +17,5 @@ rule:
     - pattern: $OPENAI.chat.completions.create($ARGS)
   not:
     any:
-      - pattern: '$CLIENT.chat.completions.create({messages: [{role: ''user'', content: $STATIC}]})'
-      - pattern: '$OPENAI.chat.completions.create({messages: [{role: ''user'', content: $STATIC}]})'
+      - pattern: "$CLIENT.chat.completions.create({messages: [{role: 'user', content: $STATIC}]})"
+      - pattern: "$OPENAI.chat.completions.create({messages: [{role: 'user', content: $STATIC}]})"

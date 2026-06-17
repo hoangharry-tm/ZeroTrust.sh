@@ -37,7 +37,6 @@
 #
 #   data: URL scheme (V7): "fetch data:text/html,<script>..." causes an agent with browser
 #   tooling to render attacker-controlled HTML in an iframe context.
-
 rules:
   - id: GN-006A-exfil-callback-services
     message: |
@@ -76,7 +75,6 @@ rules:
         - "*-instructions.md"
         - "*-rules.md"
     pattern-regex: "(?i)https?://[a-z0-9\\-\\.]*\\.(ngrok\\.io|ngrok\\.app|ngrok-free\\.app|burpcollaborator\\.net|requestbin\\.(com|net|io)|pipedream\\.net|webhook\\.site|interact\\.sh|canarytokens\\.org|oastify\\.com|oast\\.fun|oast\\.me|oast\\.online|oast\\.site|oast\\.pro)"
-
   - id: GN-006B-non-rfc1918-ip
     message: |
       Non-private IP address directly embedded in an AI agent instruction file. Hard-coded
@@ -124,7 +122,6 @@ rules:
     patterns:
       - pattern-regex: "https?://\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}"
       - pattern-not-regex: "https?://(127\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}|10\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}|192\\.168\\.\\d{1,3}\\.\\d{1,3}|172\\.(1[6-9]|2[0-9]|3[01])\\.\\d{1,3}\\.\\d{1,3}|169\\.254\\.\\d{1,3}\\.\\d{1,3})"
-
   - id: GN-006C-data-url-scheme
     message: |
       data: URL scheme detected in an AI agent instruction file. The data: URI scheme embeds
@@ -161,7 +158,6 @@ rules:
         - "*-instructions.md"
         - "*-rules.md"
     pattern-regex: "(?i)\\bdata:[a-z/+;]+base64,"
-
   - id: GN-006D-variable-interpolation-url
     message: |
       Shell variable or template variable interpolation detected inside a URL in an AI agent

@@ -1,10 +1,8 @@
 id: AG-015-js-ts-llm-prompt-injection-anthropic
 language: typescript
 message: >
-  An Anthropic SDK messages.create() call receives template-literal content
-  inside a system or assistant message. If the interpolated value originates
-  from user input, prompt injection is possible.
-  Fix: pass user data only in user-role messages; never in system messages.
+  An Anthropic SDK messages.create() call receives template-literal content inside a system or assistant message. If the interpolated value originates from user input, prompt injection is possible. Fix: pass user data only in user-role messages; never in system messages.
+
 severity: error
 metadata:
   cwe: "CWE-77: Improper Neutralization of Special Elements used in a Command"

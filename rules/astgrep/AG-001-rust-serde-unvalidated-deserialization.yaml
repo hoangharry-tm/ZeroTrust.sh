@@ -26,7 +26,6 @@
 #     validate($INPUT), or sanitize($INPUT) appears in the enclosing function
 #     before the deserialize call, the rule is suppressed.
 #   - Multi-hop taint (input stored in struct field, retrieved later) requires Path B.
-
 id: AG-001-rust-serde-unvalidated-deserialization
 language: rust
 message: |
@@ -45,7 +44,6 @@ metadata:
   ai_specific: true
   confidence: MEDIUM
   rule_version: "1.0"
-
 # ast-grep rule body — matches AST nodes for Rust
 rule:
   any:
@@ -60,9 +58,9 @@ rule:
     - pattern: serde_yaml::from_slice($INPUT)
     # V7 — serde_cbor variants
     - pattern: serde_cbor::from_slice($INPUT)
-    # KNOWN LIMITATION: V2 (aliased import: use serde_json::from_str as alias; alias(input))
-    # $ALIAS($INPUT) is a catch-all matching every single-argument call — removed due to 100% FP rate.
-    # Aliased deserialization deferred to Approach 2 Joern CPG inter-file taint analysis.
+      # KNOWN LIMITATION: V2 (aliased import: use serde_json::from_str as alias; alias(input))
+      # $ALIAS($INPUT) is a catch-all matching every single-argument call — removed due to 100% FP rate.
+      # Aliased deserialization deferred to Approach 2 Joern CPG inter-file taint analysis.
   not:
     any:
       # Exclude regular string literal arguments (static, not user-controlled)

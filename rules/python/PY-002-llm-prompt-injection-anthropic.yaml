@@ -15,7 +15,6 @@
 #   - Async client `anthropic.AsyncAnthropic().messages.create(...)` uses same pattern
 #     and is caught by the $CLIENT wildcard.
 #   - Multi-hop taint through pre-assembled `content` lists requires Path B.
-
 rules:
   # ── Rule A: taint mode — user input → anthropic messages.create ─────────────
   - id: PY-002-llm-prompt-injection-anthropic-taint
@@ -72,7 +71,6 @@ rules:
       - patterns:
           - pattern: $CLIENT.completions.create(..., prompt=$P, ...)
           - focus-metavariable: $P
-
   # ── Rule B: inline f-string / .format() at Anthropic call site ──────────────
   - id: PY-002-llm-prompt-injection-anthropic-fstring
     message: |
@@ -106,7 +104,6 @@ rules:
       # string concatenation in system=
       - pattern: |
           $CLIENT.messages.create(..., system=$A + $B, ...)
-
   # ── Rule C: legacy HUMAN_PROMPT / human_turn string assembly ─────────────────
   - id: PY-002-llm-prompt-injection-anthropic-legacy
     message: |

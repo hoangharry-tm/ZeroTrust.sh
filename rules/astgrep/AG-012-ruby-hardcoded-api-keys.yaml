@@ -1,10 +1,8 @@
 id: AG-012-ruby-hardcoded-api-keys
 language: ruby
 message: >
-  A string literal that appears to be an API key is assigned to a variable or
-  constant with a credential-suggestive name. Hardcoded keys in Ruby source
-  are exposed in the repository and process memory.
-  Fix: use environment variables via ENV['KEY'] or Rails credentials.
+  A string literal that appears to be an API key is assigned to a variable or constant with a credential-suggestive name. Hardcoded keys in Ruby source are exposed in the repository and process memory. Fix: use environment variables via ENV['KEY'] or Rails credentials.
+
 severity: error
 metadata:
   cwe: "CWE-798: Use of Hard-coded Credentials"

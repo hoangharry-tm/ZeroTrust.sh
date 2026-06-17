@@ -11,7 +11,6 @@
 #   - Cannot combine name + value constraints in a single ast-grep pattern without
 #     taint; two separate rules fire and reviewers verify both name AND value match.
 #   - Multiline string literals (triple-quote) not covered by string_literal kind.
-
 id: AG-003-swift-hardcoded-api-keys
 language: swift
 message: |
@@ -29,7 +28,6 @@ metadata:
   ai_specific: true
   confidence: MEDIUM
   rule_version: "1.0"
-
 # Matches variables with credential-related names assigned any string literal.
 # Reviewers should verify the value matches a known key prefix (sk-, hf_, etc.).
 rule:
@@ -43,7 +41,6 @@ rule:
     any:
       - pattern: let $CRED = ProcessInfo.processInfo.environment["$KEY"]
       - pattern: let $CRED = Bundle.main.infoDictionary?["$KEY"] as? String
-
 # Filter $CRED to only match credential-suggestive variable names
 constraints:
   CRED:

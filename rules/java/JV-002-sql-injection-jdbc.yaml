@@ -19,7 +19,6 @@
 #   - Multi-step taint via DTO fields or service method boundaries requires
 #     inter-procedural analysis in Path B Joern.
 #   - JPA Criteria API (CriteriaBuilder) is safe by construction and excluded.
-
 rules:
   # ── Rule A: taint mode — Spring sources → JDBC execute* sinks ────────────────
   - id: JV-002-sql-injection-jdbc-taint
@@ -80,7 +79,6 @@ rules:
       - pattern: $STMT.setInt(...)
       - pattern: $STMT.setLong(...)
       - pattern: $STMT.setObject(...)
-
   # ── Rule B: inline String concat / String.format() in execute*() call ─────────
   - id: JV-002-sql-injection-jdbc-inline-concat
     message: |
@@ -118,7 +116,6 @@ rules:
       - pattern-not-inside: |
           PreparedStatement $PSTMT = ...;
           ...
-
   # ── Rule C: V4 — SQL built via StringBuilder / += then passed to execute*() ───
   - id: JV-002-sql-injection-jdbc-stringbuilder
     message: |
@@ -177,7 +174,6 @@ rules:
               $SQL += $VAR;
               ...
               $STMT.executeUpdate($SQL);
-
   # ── Rule D: V8 — Reflection (Method.invoke()) reaching Statement execute* ──────
   - id: JV-002-sql-injection-jdbc-reflection
     message: |

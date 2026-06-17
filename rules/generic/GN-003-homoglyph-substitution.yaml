@@ -57,7 +57,6 @@
 #      v → ν (U+03BD Greek small letter nu)
 #      u → υ (U+03C5 Greek small letter upsilon)
 #      n → η (U+03B7 Greek small letter eta)
-
 rules:
   - id: GN-003-homoglyph-substitution
     message: |

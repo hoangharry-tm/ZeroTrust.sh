@@ -22,7 +22,6 @@
 #   - Multi-hop taint via DTO fields (e.g., body.getContent()) requires
 #     inter-procedural analysis in Path B.
 #   - Reactive (Flux/Mono) chains are not matched by these patterns.
-
 rules:
   # ── Rule A: taint mode — Spring MVC sources → LLM SDK sinks ─────────────────
   - id: JV-001-spring-boot-prompt-injection-taint
@@ -118,7 +117,6 @@ rules:
       - pattern: new Message("user", $TAINTED)
       - pattern: builder.user($TAINTED)
       - pattern: $CLIENT.prompt().user($TAINTED)
-
   # ── Rule B: inline String concatenation / String.format() in LLM call args ───
   - id: JV-001-spring-boot-prompt-injection-concat
     message: |
@@ -166,7 +164,6 @@ rules:
               $PROMPT = $PREFIX + $VAR;
               ...
               $OBJ.call($PROMPT);
-
   # ── Rule C: V2 — aliased LLM client usage ────────────────────────────────────
   - id: JV-001-spring-boot-prompt-injection-aliased-client
     message: |

@@ -1,11 +1,8 @@
 id: AG-010-csharp-hardcoded-api-keys
 language: csharp
 message: >
-  A string literal matching an API key pattern is assigned to a variable with a
-  credential-suggestive name. Hardcoded keys in C# are compiled into the assembly
-  and extractable via ILSpy or dotPeek.
-  Fix: use the .NET Secret Manager, environment variables, or Azure Key Vault;
-  never hardcode credentials in source.
+  A string literal matching an API key pattern is assigned to a variable with a credential-suggestive name. Hardcoded keys in C# are compiled into the assembly and extractable via ILSpy or dotPeek. Fix: use the .NET Secret Manager, environment variables, or Azure Key Vault; never hardcode credentials in source.
+
 severity: error
 metadata:
   cwe: "CWE-798: Use of Hard-coded Credentials"

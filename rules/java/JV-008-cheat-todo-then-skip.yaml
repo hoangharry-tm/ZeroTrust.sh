@@ -35,7 +35,6 @@
 #     regardless of position relative to the return.
 #   - `return new ArrayList<>()` is less common in auth methods but AI agents
 #     use it in collection-returning security methods (e.g., getPermissions()).
-
 rules:
   # ── Rule A: TODO/FIXME in security method + placeholder return/throw ───────────
   - id: JV-008-cheat-todo-skip-security-method
@@ -73,7 +72,6 @@ rules:
           - pattern: return Collections.emptyList();
           - pattern: throw new UnsupportedOperationException(...);
           - pattern: throw new UnsupportedOperationException();
-
   # ── Rule B: V7 — TODO above no-op body in @PreAuthorize / @Secured method ─────
   - id: JV-008-cheat-todo-skip-security-annotation
     message: |
@@ -110,7 +108,6 @@ rules:
           - pattern: return true;
           - pattern: throw new UnsupportedOperationException(...);
           - pattern: throw new UnsupportedOperationException();
-
   # ── Rule C: V6 — TODO above return false in auth method (placeholder denial) ───
   - id: JV-008-cheat-todo-skip-false-return-auth
     message: |
@@ -140,7 +137,6 @@ rules:
           regex: "(?i).*(auth|Auth|validate|Validate|verify|Verify|check|Check|permission|Permission|token|Token|login|Login|access|Access|role|Role|authorize|Authorize).*"
       - pattern-regex: "//\\s*(TODO|FIXME|HACK|XXX):?\\s+"
       - pattern: return false;
-
   # ── Rule D: V9 — TODO in @RequestMapping controller returning null / UOE ───────
   - id: JV-008-cheat-todo-skip-unimplemented-endpoint
     message: |
@@ -182,7 +178,6 @@ rules:
           - pattern: return null;
           - pattern: throw new UnsupportedOperationException(...);
           - pattern: throw new UnsupportedOperationException();
-
   # ── Rule E: V4 — TODO above UOE in security interface implementation ───────────
   - id: JV-008-cheat-todo-skip-interface-impl
     message: |

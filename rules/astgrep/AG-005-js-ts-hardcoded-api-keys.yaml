@@ -1,10 +1,8 @@
 id: AG-005-js-ts-hardcoded-api-keys
 language: typescript
 message: >
-  A string literal matching an AI API key pattern (sk-, sk-ant-, hf_) is assigned
-  to a variable. Hardcoded keys in JS/TS source are exposed to browser devtools
-  and sourcemaps. Fix: load API keys from environment variables via process.env
-  or a secrets manager.
+  A string literal matching an AI API key pattern (sk-, sk-ant-, hf_) is assigned to a variable. Hardcoded keys in JS/TS source are exposed to browser devtools and sourcemaps. Fix: load API keys from environment variables via process.env or a secrets manager.
+
 severity: error
 metadata:
   cwe: "CWE-798: Use of Hard-coded Credentials"

@@ -28,7 +28,6 @@
 #   - Boolean permission methods that call a real service and then return true on
 #     a non-null result look structurally similar; confidence set to HIGH for
 #     annotation-based rules and MEDIUM for name-only rules.
-
 rules:
   # ── Rule A: @PreAuthorize / @Secured method with bare return true ─────────────
   - id: JV-007-cheat-return-true-pre-authorize
@@ -90,7 +89,6 @@ rules:
               $RT $METHOD(...) {
                 return Boolean.TRUE;
               }
-
   # ── Rule B: auth-named method with bare return true / return null ──────────────
   - id: JV-007-cheat-return-true-auth-method-name
     message: |
@@ -132,7 +130,6 @@ rules:
       - metavariable-regex:
           metavariable: $METHOD
           regex: "(?i).*(isAuthorized|checkPermission|validateToken|hasRole|canAccess|authenticate|isAdmin|isLoggedIn|isAuthenticated|verifyToken|authorizeUser|checkAccess|verifyUser|validateUser|isAllowed|hasPermission|permitUser).*"
-
   # ── Rule C: V6 — return true inside catch block in auth method ─────────────────
   - id: JV-007-cheat-return-true-in-catch
     message: |
@@ -168,7 +165,6 @@ rules:
       - metavariable-regex:
           metavariable: $METHOD
           regex: "(?i).*(auth|Auth|validate|Validate|verify|Verify|check|Check|permission|Permission|token|Token|login|Login|admin|Admin|access|Access|role|Role).*"
-
   # ── Rule D: V7 — auth method body is only a single return statement ────────────
   - id: JV-007-cheat-single-statement-auth-method
     message: |
@@ -209,7 +205,6 @@ rules:
               $RT $METHOD(...) {
                 return true;
               }
-
   # ── Rule E: V9 — UserDetailsService returning constant UserDetails ────────────
   - id: JV-007-cheat-user-details-service-stub
     message: |

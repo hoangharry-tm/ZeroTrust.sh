@@ -1,11 +1,8 @@
 id: AG-009-kotlin-sql-injection
 language: kotlin
 message: >
-  A SQL statement built via string concatenation or template interpolation is
-  passed to a database execution method. If any segment originates from user
-  input, SQL injection is possible.
-  Fix: use parameterized queries with PreparedStatement or Exposed's DSL safe
-  query builder instead of raw SQL strings.
+  A SQL statement built via string concatenation or template interpolation is passed to a database execution method. If any segment originates from user input, SQL injection is possible. Fix: use parameterized queries with PreparedStatement or Exposed's DSL safe query builder instead of raw SQL strings.
+
 severity: error
 metadata:
   cwe: "CWE-89: Improper Neutralization of Special Elements used in an SQL Command"

@@ -11,7 +11,6 @@
 #   - Flutter http package (package:http) not covered here — separate AG-005.
 #   - Named function reference as badCertificateCallback (V2) flagged with lower
 #     confidence since function body cannot be verified without taint analysis.
-
 id: AG-004-dart-http-no-tls
 language: dart
 message: |
@@ -29,7 +28,6 @@ metadata:
   ai_specific: true
   confidence: HIGH
   rule_version: "1.0"
-
 # KNOWN LIMITATION: ast-grep 0.43 Dart support requires explicit kind for multi-pattern any.
 # This rule uses a single pattern targeting the most common TLS-bypass form.
 # The V7 (SecurityContext empty certs) variant is deferred to a separate rule file

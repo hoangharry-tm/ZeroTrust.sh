@@ -1,11 +1,8 @@
 id: AG-016-ruby-llm-prompt-injection
 language: ruby
 message: >
-  An LLM chat completion or message creation call receives a system or assistant
-  message built via string interpolation. If the interpolated value originates
-  from user input, prompt injection is possible.
-  Fix: pass user data only in user-role messages; never inline unsanitized
-  input into system prompts.
+  An LLM chat completion or message creation call receives a system or assistant message built via string interpolation. If the interpolated value originates from user input, prompt injection is possible. Fix: pass user data only in user-role messages; never inline unsanitized input into system prompts.
+
 severity: error
 metadata:
   cwe: "CWE-77: Improper Neutralization of Special Elements used in a Command"
@@ -20,4 +17,4 @@ rule:
     - pattern: $OPENAI.chat($ARGS)
   not:
     any:
-      - pattern: '$CLIENT.chat(messages: [{role: ''user'', content: $STATIC}])'
+      - pattern: "$CLIENT.chat(messages: [{role: 'user', content: $STATIC}])"

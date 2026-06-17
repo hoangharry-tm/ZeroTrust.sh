@@ -30,7 +30,6 @@
 #   Variant V9 (semantic disguise): the hidden instruction is syntactically part of a normal
 #   English sentence; the zero-width chars steer tokenization so the LLM reads a different
 #   imperative than a human reviewer would.
-
 rules:
   - id: GN-002-unicode-zero-width
     message: |
@@ -83,4 +82,4 @@ rules:
     # The Go-native check in internal/pattern/instrscan/zero_width.go skips U+FEFF
     # at byte offset 0 to eliminate this false positive; this rule catches all occurrences
     # including mid-file BOM, which the Go check also flags as HIGH confidence.
-    pattern-regex: "[​‌‍﻿⁠­]"
+    pattern-regex: "[​‌‍\uFEFF⁠­]"

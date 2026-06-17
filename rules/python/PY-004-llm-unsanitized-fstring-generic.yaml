@@ -19,7 +19,6 @@
 #     reflect this; Path B semantic analysis disambiguates uncertain cases.
 #   - Functions named `query` in ORM contexts (SQLAlchemy, Django ORM) are at FP
 #     risk — mitigated by pattern-not-inside for ORM import patterns.
-
 rules:
   - id: PY-004-llm-unsanitized-fstring-generic
     message: |

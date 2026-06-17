@@ -29,7 +29,6 @@
 #   - generic mode regex cannot use pattern-inside for function scoping; function-context
 #     scoping is approximated by requiring keyword specificity in the regex.
 #   - Multi-line comments / docstrings with bypass text: not covered (too broad).
-
 rules:
   # ── Rule A-GENERIC: bypass/disable comments in Python source files ─────────────
   - id: PY-005-ai-bypass-comments-generic-regex

@@ -23,7 +23,6 @@
 # KNOWN LIMITATIONS:
 #   - JPQL assembled in a helper/service method then passed to a controller
 #     requires inter-procedural analysis in Path B Joern.
-
 rules:
   # ── Rule A: taint mode — Spring sources → EntityManager createQuery sinks ─────
   - id: JV-003-sql-injection-jpql-taint
@@ -79,8 +78,7 @@ rules:
     pattern-sanitizers:
       # Safe: TypedQuery parameter binding
       - pattern: $Q.setParameter(...)
-      # Safe: Spring Data @Query with named params (detected upstream, not here)
-
+    # Safe: Spring Data @Query with named params (detected upstream, not here)
   # ── Rule B: inline String concat / String.format() in createQuery*() ─────────
   - id: JV-003-sql-injection-jpql-inline-concat
     message: |
@@ -129,7 +127,6 @@ rules:
       # Exclude fluent setParameter chaining — also safe
       - pattern-not: $EM.createQuery($JPQL, $CLASS).setParameter($NAME, $VAL)
       - pattern-not: $EM.createQuery($JPQL).setParameter($NAME, $VAL)
-
   # ── Rule C: V4 — JPQL string assembled via StringBuilder / += before EM call ──
   - id: JV-003-sql-injection-jpql-stringbuilder
     message: |
@@ -185,7 +182,6 @@ rules:
               String $JPQL = $BASE.concat($VAR);
               ...
               $EM.createNativeQuery($JPQL);
-
   # ── Rule D: V2 — @PersistenceContext-injected EntityManager patterns ──────────
   - id: JV-003-sql-injection-jpql-persistence-context
     message: |

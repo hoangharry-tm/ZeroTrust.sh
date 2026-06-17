@@ -22,7 +22,6 @@
 #   - fmt.Sprintf with only %d / %f / integer-typed arguments has lower injection
 #     risk; this rule flags all Sprintf-constructed queries regardless of format
 #     verbs.
-
 id: AG-002-go-sql-injection-sprintf
 language: go
 message: |
@@ -40,7 +39,6 @@ metadata:
   ai_specific: true
   confidence: HIGH
   rule_version: "1.0"
-
 rule:
   any:
     # V1 — db.Query with fmt.Sprintf SQL

@@ -16,7 +16,6 @@
 #     Path B semantic depth.  These cases emit no finding from this rule.
 #   - `openai.ChatCompletion.acreate` (async) shares the same pattern — covered by
 #     the `...` wildcard on the method name in rules B/C.
-
 rules:
   # ── Rule A: taint mode — user input flows into any openai sink ──────────────
   - id: PY-001-llm-prompt-injection-openai-taint
@@ -86,7 +85,6 @@ rules:
       - patterns:
           - pattern: $CLIENT.completions.create(..., prompt=$P, ...)
           - focus-metavariable: $P
-
   # ── Rule B: inline f-string / .format() in messages list literal ────────────
   - id: PY-001-llm-prompt-injection-openai-fstring
     message: |
@@ -126,7 +124,6 @@ rules:
           # New SDK streaming with f-string
           - pattern: |
               $CLIENT.chat.completions.create(..., messages=[..., {"role": $ROLE, "content": f"...$VAR..."}, ...], stream=True, ...)
-
   # ── Rule C: aliased OpenAI import patterns ──────────────────────────────────
   - id: PY-001-llm-prompt-injection-openai-alias
     message: |

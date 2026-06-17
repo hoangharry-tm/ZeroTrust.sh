@@ -25,7 +25,6 @@
 #   Variant V10 (YAML/JSON escape): BIDI characters embedded inside a YAML string scalar or
 #   JSON value are syntactically valid and survive YAML/JSON parsing unchanged, appearing in
 #   the string value that an agent ultimately reads.
-
 rules:
   - id: GN-001-unicode-bidi-override
     message: |

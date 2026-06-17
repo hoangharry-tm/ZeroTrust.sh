@@ -24,7 +24,6 @@
 #     Java parser. Adjust the regex if the parser tokenizes them differently.
 #   - Rule D FP risk: @WithMockUser can appear in @Configuration integration
 #     test base classes — reviewers should verify call context.
-
 rules:
   # ── Rule A: @SuppressWarnings("security") on security-annotated method ────────
   - id: JV-004-ai-bypass-suppress-warnings-security
@@ -73,7 +72,6 @@ rules:
               @RolesAllowed($ROLES)
               @SuppressWarnings($W)
               $RT $METHOD(...) { ... }
-
   # ── Rule B: bypass-intent comments before security code (V7 AI mutations) ─────
   - id: JV-004-ai-bypass-comment-before-null-return
     message: |
@@ -105,7 +103,6 @@ rules:
       - metavariable-regex:
           metavariable: $METHOD
           regex: ".*(auth|Auth|validate|Validate|verify|Verify|check|Check|permission|Permission|token|Token|secure|Secure|admin|Admin|login|Login|isLogged|hasRole|canAccess).*"
-
   # ── Rule C: @Disabled / @Ignore on security-keyword test methods ──────────────
   - id: JV-004-ai-bypass-disabled-security-test
     message: |
@@ -151,7 +148,6 @@ rules:
       - metavariable-regex:
           metavariable: $METHOD
           regex: ".*(auth|Auth|security|Security|permission|Permission|token|Token|role|Role|login|Login|access|Access|admin|Admin).*"
-
   # ── Rule D: @WithMockUser(roles="ADMIN") outside test infrastructure ──────────
   - id: JV-004-ai-bypass-with-mock-user-non-test
     message: |
@@ -185,7 +181,6 @@ rules:
         metavariable-regex:
           metavariable: $CLS
           regex: ".*(Test|Spec|IT|Integration|Mock).*"
-
   # ── Rule E: V6 — permitAll() in HttpSecurity chain without authenticated() ─────
   - id: JV-004-ai-bypass-permit-all-security-config
     message: |
@@ -212,7 +207,6 @@ rules:
           - pattern: $HTTP.authorizeHttpRequests($LAMBDA).requestMatchers("/**").permitAll()
       - pattern-not: $HTTP.authorizeHttpRequests(...).anyRequest().authenticated()
       - pattern-not: $HTTP.authorizeRequests(...).anyRequest().authenticated()
-
   # ── Rule F: V4 — csrf().disable() or cors().disable() in security config ───────
   - id: JV-004-ai-bypass-csrf-cors-disabled
     message: |

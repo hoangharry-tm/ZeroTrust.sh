@@ -1,11 +1,8 @@
 id: AG-008-kotlin-hardcoded-api-keys
 language: kotlin
 message: >
-  A string literal that appears to be an API key is assigned to a variable with
-  a credential-suggestive name. Hardcoded credentials in Kotlin source are
-  compiled into the binary and extractable via analysis tools.
-  Fix: store credentials in environment variables or Android Keystore; retrieve
-  at runtime via System.getenv().
+  A string literal that appears to be an API key is assigned to a variable with a credential-suggestive name. Hardcoded credentials in Kotlin source are compiled into the binary and extractable via analysis tools. Fix: store credentials in environment variables or Android Keystore; retrieve at runtime via System.getenv().
+
 severity: error
 metadata:
   cwe: "CWE-798: Use of Hard-coded Credentials"

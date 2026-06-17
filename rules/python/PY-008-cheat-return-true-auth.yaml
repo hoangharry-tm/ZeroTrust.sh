@@ -20,7 +20,6 @@
 #     prior check (e.g., `if token_valid: return True`) requires contextual
 #     analysis — only the unconditional form is flagged here.  Conditional form
 #     (Rule B) uses a relaxed pattern to catch common bypass shapes.
-
 rules:
   # ── Rule A: bare unconditional return True / return 1 in auth functions ──────
   - id: PY-008-cheat-return-true-auth-unconditional
@@ -64,7 +63,6 @@ rules:
           else:
               ...
               return True
-
   # ── Rule A2: bare return 1 variant ───────────────────────────────────────────
   - id: PY-008-cheat-return-one-auth-unconditional
     message: |
@@ -104,7 +102,6 @@ rules:
           else:
               ...
               return 1
-
   # ── Rule B: return True inside trivially-true condition in auth function ──────
   - id: PY-008-cheat-return-true-auth-debug-bypass
     message: |
@@ -146,7 +143,6 @@ rules:
       - metavariable-regex:
           metavariable: $DEBUG_VAR
           regex: ".*(DEBUG|TESTING|TEST|dev_mode|bypass|BYPASS|admin_override|ADMIN_OVERRIDE|skip_auth|SKIP_AUTH|mock|MOCK).*"
-
   # ── Rule C: lambda-based auth stub returning True ─────────────────────────────
   - id: PY-008-cheat-return-true-auth-lambda
     message: |

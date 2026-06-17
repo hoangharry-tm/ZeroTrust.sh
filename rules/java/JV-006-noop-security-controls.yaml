@@ -26,7 +26,6 @@
 #     blocks as `{ }` with no child statements; the pattern uses `{ }` shorthand.
 #   - Rules C/D have moderate FP risk in logging-heavy codebases; confidence is
 #     set to MEDIUM for those rules.
-
 rules:
   # ── Rule A (ERROR): empty checkServerTrusted() body — TLS bypass ──────────────
   - id: JV-006-noop-tls-trust-manager-empty-check
@@ -79,7 +78,6 @@ rules:
                 }
                 ...
               }
-
   # ── Rule A2 (ERROR): checkClientTrusted() also empty — same bypass surface ─────
   - id: JV-006-noop-tls-trust-manager-empty-client-check
     message: |
@@ -112,7 +110,6 @@ rules:
                 }
                 ...
               }
-
   # ── Rule B (ERROR): HostnameVerifier that always returns true ─────────────────
   - id: JV-006-noop-tls-hostname-verifier-always-true
     message: |
@@ -154,7 +151,6 @@ rules:
           # V7 — AI mutation: ALLOW_ALL_HOSTNAME_VERIFIER usage
           - pattern: SSLSocketFactory.ALLOW_ALL_HOSTNAME_VERIFIER
           - pattern: NoopHostnameVerifier.INSTANCE
-
   # ── Rule C (WARNING): empty catch(Exception) in security-named method ─────────
   - id: JV-006-noop-empty-catch-in-auth-method
     message: |
@@ -200,7 +196,6 @@ rules:
           try { ... } catch (Exception $E) {
             throw new $EX(...);
           }
-
   # ── Rule D (WARNING): empty catch(SecurityException) in security context ───────
   - id: JV-006-noop-empty-catch-security-exception
     message: |
@@ -234,7 +229,6 @@ rules:
           try { $SECURITY_CALL; } catch (SecurityException $E) {
             throw ...;
           }
-
   # ── Rule E (ERROR): V4 — SSLContext.init() with no-op TrustManager array ──────
   - id: JV-006-noop-tls-sslcontext-trust-all
     message: |
@@ -265,7 +259,6 @@ rules:
               ...
             }
           }, $RNG)
-
   # ── Rule F (ERROR): V6 — setHostnameVerifier() lambda always returning true ────
   - id: JV-006-noop-tls-set-hostname-verifier-lambda
     message: |

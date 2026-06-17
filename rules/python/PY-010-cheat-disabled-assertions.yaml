@@ -22,7 +22,6 @@
 #     cannot be evaluated as always-true/false without runtime analysis.
 #   - pytest parametrize with skip conditions: not covered, too complex for
 #     pattern analysis.
-
 rules:
   # ── Rule A: assert False — assertion that always fails (dead code trap) ───────
   - id: PY-010-cheat-disabled-assertions-assert-false
@@ -50,7 +49,6 @@ rules:
         - "**/*_test.py"
     patterns:
       - pattern: assert False, ...
-
   # ── Rule A2: bare assert False without message ────────────────────────────────
   - id: PY-010-cheat-disabled-assertions-assert-false-bare
     message: |
@@ -76,7 +74,6 @@ rules:
     patterns:
       - pattern: assert False
       - pattern-not: assert False, ...
-
   # ── Rule B: assert True — always-passing assertion (security no-op) ───────────
   - id: PY-010-cheat-disabled-assertions-assert-true
     message: |
@@ -104,7 +101,6 @@ rules:
       - pattern: assert True
       - pattern: assert True, ...
       - pattern: assert 1
-
   # ── Rule C: @pytest.mark.skip / @unittest.skip on security test functions ─────
   - id: PY-010-cheat-disabled-assertions-skip-decorator
     message: |
@@ -163,7 +159,6 @@ rules:
               - metavariable-regex:
                   metavariable: $TEST_FUNC
                   regex: ".*(auth|permission|security|validation|access|login|token|credential).*"
-
   # ── Rule D: raise NotImplementedError in security primitive functions ──────────
   - id: PY-010-cheat-disabled-assertions-not-implemented
     message: |

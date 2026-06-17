@@ -19,7 +19,6 @@
 #     routed to Path B.
 #   - Custom BasePromptTemplate subclasses: not covered (would require class hierarchy
 #     analysis — Path B / CPG taint).
-
 rules:
   # ── Rule A: taint mode — user input → LangChain chain execution sinks ───────
   - id: PY-003-llm-prompt-injection-langchain-taint
@@ -95,7 +94,6 @@ rules:
       - patterns:
           - pattern: $CHAIN.ainvoke($TAINTED)
           - focus-metavariable: $TAINTED
-
   # ── Rule B: PromptTemplate / ChatPromptTemplate with f-string template ───────
   - id: PY-003-llm-prompt-injection-langchain-template-fstring
     message: |
@@ -133,7 +131,6 @@ rules:
       # ChatPromptTemplate.from_messages with .format() in tuple
       - pattern: |
           ChatPromptTemplate.from_messages([..., ($ROLE, "...".format(...)), ...])
-
   # ── Rule C: Message objects (SystemMessage, HumanMessage) with tainted content
   - id: PY-003-llm-prompt-injection-langchain-messages
     message: |
@@ -164,7 +161,6 @@ rules:
       - pattern: HumanMessage(content=f"...$VAR...")
       # AIMessage prefill injection
       - pattern: AIMessage(content=f"...$VAR...")
-
   # ── Rule D: LlamaIndex QueryEngine — inline query construction ───────────────
   - id: PY-003-llm-prompt-injection-llamaindex
     message: |
