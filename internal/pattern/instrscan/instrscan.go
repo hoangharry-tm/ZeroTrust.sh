@@ -18,23 +18,32 @@ import (
 	"strings"
 )
 
+// SignalType classifies the kind of prompt injection signal detected in an instruction file.
 type SignalType string
 
+// SignalType constants for the three detection tiers.
 const (
-	SignalUnicodeObfuscation SignalType = "unicode_obfuscation"
-	SignalKeywordMatch       SignalType = "keyword_match"
-	SignalMCPSchemaViolation SignalType = "mcp_schema_violation"
+	SignalUnicodeObfuscation SignalType = "unicode_obfuscation" // invisible/bidi Unicode characters
+	SignalKeywordMatch       SignalType = "keyword_match"        // suspicious keyword phrase match
+	SignalMCPSchemaViolation SignalType = "mcp_schema_violation" // over-broad MCP server permission
 )
 
+// Finding is a single prompt injection signal detected in an instruction file.
 type Finding struct {
-	File   string
-	Line   int
+	// File is the path of the scanned file (relative to the fs.FS root).
+	File string
+	// Line is the 1-based line number where the signal was detected (0 for file-level signals).
+	Line int
+	// Signal classifies the detection tier that produced this finding.
 	Signal SignalType
+	// Detail is a human-readable description of the specific signal.
 	Detail string
 }
 
+// Scanner walks an fs.FS and detects prompt injection signals in AI agent instruction files.
 type Scanner struct{}
 
+// New returns a Scanner ready to walk an fs.FS.
 func New() *Scanner { return &Scanner{} }
 
 var unicodeDangerChars = []struct {
@@ -107,6 +116,7 @@ func isMCPConfig(name string) bool {
 	return filepath.Base(name) == "mcp.json"
 }
 
+// Scan walks fsys and returns all prompt injection findings across instruction files and MCP configs.
 func (s *Scanner) Scan(fsys fs.FS) ([]Finding, error) {
 	var findings []Finding
 	err := fs.WalkDir(fsys, ".", func(path string, d fs.DirEntry, err error) error {

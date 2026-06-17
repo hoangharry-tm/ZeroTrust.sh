@@ -1,8 +1,13 @@
 // Package sqlite wraps a SQLite database connection for the ZeroTrust.sh state cache.
 // Uses modernc.org/sqlite (pure-Go, no CGo dependency).
+//
+// Two tables are managed:
+//   - scan_state: one row per (project, file), keyed on content hash for diff detection.
+//   - suppressions: user-acknowledged suppression decisions persisted across scans.
 package sqlite
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 
@@ -14,7 +19,36 @@ type DB struct {
 	conn *sql.DB
 }
 
-// Open opens or creates the SQLite database at path, running migrations if needed.
+// ScanStateRow is one row from the scan_state table.
+type ScanStateRow struct {
+	// ProjectID identifies the scanned project (derived from project root path).
+	ProjectID string
+	// FilePath is the file path relative to the project root.
+	FilePath string
+	// ContentHash is the SHA-256 hex digest of the file's contents.
+	ContentHash string
+	// LastScannedAt is a Unix timestamp (seconds) of the scan that last touched this row.
+	LastScannedAt int64
+}
+
+// SuppressionRow is one row from the suppressions table.
+type SuppressionRow struct {
+	// ProjectID identifies the scanned project.
+	ProjectID string
+	// FindingID is the stable dedup hash of the suppressed finding.
+	FindingID string
+	// Reason is a human-readable justification supplied at suppression time.
+	Reason string
+	// SuppressedAt is a Unix timestamp of when the suppression was recorded.
+	SuppressedAt int64
+}
+
+// Open opens or creates the SQLite database at path, running schema migrations if needed.
+//
+// Parameters:
+//   - path: absolute path to the .db file; created if it does not exist.
+//
+// Returns a ready-to-use *DB, or an error if the file cannot be opened or migration fails.
 func Open(path string) (*DB, error) {
 	conn, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -29,10 +63,96 @@ func Open(path string) (*DB, error) {
 }
 
 // Conn exposes the underlying *sql.DB for callers that need raw query access.
+// Prefer the typed helpers (GetScanState, UpsertScanState, etc.) where possible.
 func (db *DB) Conn() *sql.DB { return db.conn }
 
 // Close releases the database connection.
 func (db *DB) Close() error { return db.conn.Close() }
+
+// ─── scan_state helpers ──────────────────────────────────────────────────────
+
+// GetScanState returns the cached state row for (projectID, filePath).
+// Returns sql.ErrNoRows if no prior scan entry exists for the file.
+//
+// Parameters:
+//   - ctx: cancellation context.
+//   - projectID: project identifier.
+//   - filePath: file path relative to project root.
+func (db *DB) GetScanState(ctx context.Context, projectID, filePath string) (*ScanStateRow, error) {
+	// implemented in G2.M2.2
+	return nil, nil
+}
+
+// UpsertScanState inserts or replaces the scan state row for one file.
+// Called by diffindex.Indexer.Commit after a successful scan.
+//
+// Parameters:
+//   - ctx: cancellation context.
+//   - row: the state row to persist.
+func (db *DB) UpsertScanState(ctx context.Context, row ScanStateRow) error {
+	// implemented in G2.M2.2
+	return nil
+}
+
+// ListScanState returns all cached state rows for the given projectID.
+// Used by diffindex.Indexer.Diff to build the prior-state map.
+//
+// Parameters:
+//   - ctx: cancellation context.
+//   - projectID: project identifier.
+func (db *DB) ListScanState(ctx context.Context, projectID string) ([]ScanStateRow, error) {
+	// implemented in G2.M2.2
+	return nil, nil
+}
+
+// DeleteScanState removes the state row for (projectID, filePath).
+// Called when a file is detected as removed from the project.
+//
+// Parameters:
+//   - ctx: cancellation context.
+//   - projectID: project identifier.
+//   - filePath: file path to remove.
+func (db *DB) DeleteScanState(ctx context.Context, projectID, filePath string) error {
+	// implemented in G2.M2.2
+	return nil
+}
+
+// ─── suppressions helpers ────────────────────────────────────────────────────
+
+// IsSuppressed reports whether findingID is in the suppressions table for projectID.
+//
+// Parameters:
+//   - ctx: cancellation context.
+//   - projectID: project identifier.
+//   - findingID: the stable dedup hash of the finding.
+func (db *DB) IsSuppressed(ctx context.Context, projectID, findingID string) (bool, error) {
+	// implemented in G4.M4.1
+	return false, nil
+}
+
+// AddSuppression records a new suppression decision.
+// Idempotent: re-inserting the same (projectID, findingID) updates the reason.
+//
+// Parameters:
+//   - ctx: cancellation context.
+//   - row: the suppression to persist.
+func (db *DB) AddSuppression(ctx context.Context, row SuppressionRow) error {
+	// implemented in G4.M4.1
+	return nil
+}
+
+// ListSuppressions returns all suppression rows for the given projectID.
+// Used by the report generator to annotate suppressed findings.
+//
+// Parameters:
+//   - ctx: cancellation context.
+//   - projectID: project identifier.
+func (db *DB) ListSuppressions(ctx context.Context, projectID string) ([]SuppressionRow, error) {
+	// implemented in G4.M4.1
+	return nil, nil
+}
+
+// ─── schema ──────────────────────────────────────────────────────────────────
 
 func (db *DB) migrate() error {
 	_, err := db.conn.Exec(`
@@ -47,9 +167,9 @@ func (db *DB) migrate() error {
 			ON scan_state (project_id, content_hash);
 
 		CREATE TABLE IF NOT EXISTS suppressions (
-			project_id  TEXT NOT NULL,
-			finding_id  TEXT NOT NULL,
-			reason      TEXT NOT NULL,
+			project_id    TEXT    NOT NULL,
+			finding_id    TEXT    NOT NULL,
+			reason        TEXT    NOT NULL,
 			suppressed_at INTEGER NOT NULL,
 			PRIMARY KEY (project_id, finding_id)
 		);

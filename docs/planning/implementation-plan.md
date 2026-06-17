@@ -245,6 +245,26 @@ Complete the Dedup pipeline, SSVC scoring, HTML report, patch suggestions, and r
 
 ---
 
+## [BONUS] R&D — A-18 Resolution: QLoRA Fine-Tuning on CVEFixes
+
+**When**: Post-Aug 6 demo. Not in the 308h budget. Does not affect the drop sequence.
+**Prerequisite**: L3.2.T6 gap measurement complete — use its per-language F1 results to prioritise which language splits to fine-tune first.
+
+> Rationale: L3.2.T6 produces an honest measurement of the A-18 gap on 50 labeled samples. This plan closes the gap properly via QLoRA fine-tuning on CVEFixes, enabling the confidence threshold to be raised from the conservative 0.80 to ~0.85–0.90 and reducing LLM escalation rate in the cost funnel.
+
+| ID | Name | E (h) | Notes |
+| :---: | --- | :---: | --- |
+| **A18.T1** | **CVEFixes data pipeline** | 6.0 | Download CVEFixes SQLite DB; query `file_change` + `fixes` + `commits`; filter to function-level samples overlapping the diff hunk via Tree-sitter (already in project); split by language; output per-language JSONL: `{code, label, language, cve_id}` |
+| **A18.T2** | **Class balancing + train/val/test splits** | 2.0 | CVEFixes is ~10:1 safe:vulnerable at function level; oversample vulnerable or use weighted loss; stratified split per language (80/10/10); document sample counts per language in `docs/benchmarks/a18_gap.md` |
+| **A18.T3** | **QLoRA fine-tune per language** | 6.0 | `microsoft/unixcoder-base-nine` + `BitsAndBytesConfig` (4-bit NF4); LoRA rank=16, alpha=32, target `query`+`value` attention layers; 5 epochs, lr=2e-4, batch=16, fp16; ~1.5M trainable params (1.2% of 125M); run per-language split; ~30–90 min per language on A40 (RunPod); estimated cloud cost $15–25 total |
+| **A18.T4** | **Per-language evaluation** | 3.0 | F1 / precision / recall on held-out test split per language; compare against BigVul C/C++ baseline (94.73%); append results to `docs/benchmarks/a18_gap.md`; identify any language below acceptable threshold (target F1 ≥ 0.80) |
+| **A18.T5** | **Save LoRA adapter + wire into Python worker** | 2.0 | `model.save_pretrained()` outputs adapter weights (~6MB per language, not 500MB); load in `worker/handlers/classify.py` via `PeftModel.from_pretrained()`; base model loads once, adapter hot-swapped per language tag on classify request |
+| **A18.T6** | **Threshold recalibration** | 1.0 | Raise `uncertain` band threshold from conservative 0.80 → empirically validated value per language (target 0.85–0.90); re-run funnel stats benchmark; update `docs/benchmarks/tier1_elimination.md` with new LLM escalation rate |
+| **A18.T7** | **Update accuracy claims** | 0.5 | Replace A-18 caveat language in CLAUDE.md, README, and report output with validated per-language F1 figures; remove "high-recall mode" warnings where threshold has been validated |
+| **A18 total** | | **20.5h** | Hard time-box. If Go or Ruby splits are too thin (<1.5k samples) for reliable fine-tuning, document and keep high-recall mode for those languages only. |
+
+---
+
 ## Design-Conformance Assessment (Jun 16)
 
 ### G1 Rule Coverage vs Architecture Requirements

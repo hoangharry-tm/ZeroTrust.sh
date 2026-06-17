@@ -1,6 +1,7 @@
-BINARY    := zerotrust
-BUILD_DIR := build
-MODULE    := github.com/hoangharry-tm/zerotrust
+BINARY      := zerotrust
+BUILD_DIR   := build
+MODULE      := github.com/hoangharry-tm/zerotrust
+GOTESTSUM   := $(shell go env GOPATH)/bin/gotestsum
 
 .PHONY: build test test-rules lint worker-install demo clean
 
@@ -9,7 +10,7 @@ build:
 	go build -o $(BUILD_DIR)/$(BINARY) ./cmd/zerotrust
 
 test:
-	go test ./...
+	$(GOTESTSUM) --format testdox --format-icons codicons --format-hide-empty-pkg -- ./...
 
 test-rules:
 	@echo "Running OpenGrep rule tests..."

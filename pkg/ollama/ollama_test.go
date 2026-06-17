@@ -39,7 +39,7 @@ func TestGenerateSuccess(t *testing.T) {
 	})
 	defer srv.Close()
 
-	got, err := c.Generate(context.Background(), "say hello")
+	got, err := c.Generate(context.Background(), "say hello", nil)
 	if err != nil {
 		t.Fatalf("Generate error: %v", err)
 	}
@@ -54,7 +54,7 @@ func TestGenerateNonOKStatus(t *testing.T) {
 	})
 	defer srv.Close()
 
-	_, err := c.Generate(context.Background(), "prompt")
+	_, err := c.Generate(context.Background(), "prompt", nil)
 	if err == nil {
 		t.Fatal("expected error for non-200 status")
 	}
@@ -67,7 +67,7 @@ func TestGenerateInvalidJSON(t *testing.T) {
 	})
 	defer srv.Close()
 
-	_, err := c.Generate(context.Background(), "prompt")
+	_, err := c.Generate(context.Background(), "prompt", nil)
 	if err == nil {
 		t.Fatal("expected error for invalid JSON response")
 	}
@@ -84,7 +84,7 @@ func TestGenerateContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
 
-	_, err := c.Generate(ctx, "prompt")
+	_, err := c.Generate(ctx, "prompt", nil)
 	if err == nil {
 		t.Fatal("expected error when context is cancelled")
 	}
@@ -138,5 +138,5 @@ func TestGenerateSendsPromptVerbatim(t *testing.T) {
 	})
 	defer srv.Close()
 
-	c.Generate(context.Background(), prompt)
+	c.Generate(context.Background(), prompt, nil)
 }

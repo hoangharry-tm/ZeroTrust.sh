@@ -1,0 +1,75 @@
+package main
+
+// ScanConfig holds the resolved, validated configuration for a single scan run.
+// It is populated from cobra flags in runScan before the pipeline is constructed.
+//
+// Flag → field mapping:
+//
+//	<directory>     → Target        (positional arg, defaults to ".")
+//	--model         → ModelName     (Ollama model name, e.g. "llama3.2")
+//	--offline       → Offline       (disable all network requests)
+//	--output        → OutputPath    (HTML report destination, default "report.html")
+//	--project-id    → ProjectID     (override derived project ID for scan-state cache)
+//	--mode          → ScanMode      (Default | Thorough | Full; default "Default")
+//	--joern-url     → JoernURL      (Joern HTTP API URL; default "http://localhost:8080")
+//	--ollama-url    → OllamaURL     (Ollama HTTP API URL; default "http://localhost:11434")
+//	--token-cap     → TokenCap      (token budget cap for Path B Tier 3; default 50 000)
+type ScanConfig struct {
+	// Target is the absolute or relative path to the codebase to scan.
+	Target string
+
+	// ModelName is the Ollama model identifier used for LLM stages.
+	// Example: "llama3.2", "qwen2.5:3b".
+	// If empty, LLM stages are skipped.
+	ModelName string
+
+	// Offline disables all outbound network requests.
+	// When true: Trivy runs in offline mode, cosign/Rekor registry lookup is skipped,
+	// and MIV defaults to StatusWarn for unrecognised models.
+	Offline bool
+
+	// OutputPath is the file path where the HTML report is written.
+	OutputPath string
+
+	// ProjectID overrides the project identifier used to key scan state in SQLite.
+	// If empty, a deterministic ID is derived from the resolved Target path.
+	ProjectID string
+
+	// ScanMode controls the CPG and Path B scope.
+	//   "Default"  — working modules (git diff) + depth-2 module neighbours.
+	//   "Thorough" — depth-3 neighbours + all sink-flagged modules.
+	//   "Full"     — entire codebase (no scope limit).
+	ScanMode string
+
+	// JoernURL is the base URL of the pre-started Joern HTTP API server.
+	JoernURL string
+
+	// OllamaURL is the base URL of the Ollama inference server.
+	OllamaURL string
+
+	// TokenCap is the hard per-scan token budget for the Token Budget Controller.
+	// Surfaces that exceed the cap are emitted as SUPPRESSED findings.
+	TokenCap int
+}
+
+// defaults fills zero-value fields with safe production defaults.
+func (c *ScanConfig) defaults() {
+	if c.Target == "" {
+		c.Target = "."
+	}
+	if c.OutputPath == "" {
+		c.OutputPath = "report.html"
+	}
+	if c.ScanMode == "" {
+		c.ScanMode = "Default"
+	}
+	if c.JoernURL == "" {
+		c.JoernURL = "http://localhost:8080"
+	}
+	if c.OllamaURL == "" {
+		c.OllamaURL = "http://localhost:11434"
+	}
+	if c.TokenCap <= 0 {
+		c.TokenCap = 50_000
+	}
+}

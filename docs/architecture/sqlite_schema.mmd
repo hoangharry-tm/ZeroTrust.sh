@@ -1,0 +1,86 @@
+erDiagram
+    projects {
+        TEXT project_id PK "SHA-256 of absolute root path"
+        TEXT root_path      "absolute path on disk"
+        TEXT language        "primary language detected"
+        INTEGER first_seen_at
+        INTEGER last_scanned_at
+    }
+
+    scan_runs {
+        TEXT run_id       PK "UUID per scan invocation"
+        TEXT project_id   FK
+        INTEGER started_at
+        INTEGER finished_at
+        TEXT scan_mode    "default | thorough | full"
+        INTEGER files_scanned
+        INTEGER findings_total
+        TEXT status       "running | complete | error"
+    }
+
+    scan_state {
+        TEXT project_id   PK "FK → projects"
+        TEXT file_path    PK "relative to project root"
+        TEXT content_hash    "SHA-256 of file contents"
+        INTEGER last_scanned_at
+    }
+
+    findings {
+        TEXT finding_id    PK  "SHA-256(CWE:path:code_fingerprint)"
+        TEXT project_id    FK
+        TEXT run_id        FK  "scan run that first detected this"
+        TEXT file_path
+        INTEGER line_start
+        INTEGER line_end
+        TEXT cwe
+        TEXT severity       "BLOCK|HIGH|MEDIUM|LOW|SUPPRESSED"
+        REAL confidence
+        TEXT source_path    "PATTERN|SEMANTIC|BOTH"
+        TEXT rule_id        "OpenGrep/ast-grep rule; null for Path B"
+        TEXT matched_code
+        TEXT justification
+        TEXT suppress_reason "null unless SUPPRESSED"
+        INTEGER first_seen_at
+        INTEGER last_seen_at
+    }
+
+    ssvc_scores {
+        TEXT finding_id       PK "FK → findings"
+        TEXT exploitation     "Active | PoC | None"
+        TEXT automatable      "Yes | No"
+        TEXT technical_impact "Total | Partial"
+    }
+
+    poe_results {
+        TEXT finding_id          PK "FK → findings"
+        TEXT status              "7-value enum"
+        TEXT exploit_input
+        REAL confidence
+        TEXT business_impact_tier "Critical | High | Medium | Low"
+        TEXT dev_trace
+        TEXT exec_summary
+    }
+
+    suppressions {
+        TEXT project_id  PK "FK → projects"
+        TEXT finding_id  PK "FK → findings"
+        TEXT reason
+        INTEGER suppressed_at
+    }
+
+    cpg_cache {
+        TEXT project_id        PK "FK → projects"
+        TEXT cpg_path              "path to serialized .cpg file"
+        TEXT scope_mode        "default | thorough | full"
+        INTEGER built_at
+        INTEGER changed_functions  "count patched in last run"
+    }
+
+    projects ||--o{ scan_runs   : "has"
+    projects ||--o{ scan_state  : "tracks files"
+    projects ||--o{ findings    : "accumulates"
+    projects ||--|{ cpg_cache   : "one per project"
+    scan_runs ||--o{ findings   : "produced"
+    findings  ||--o| ssvc_scores : "scored by"
+    findings  ||--o| poe_results : "exploited by"
+    findings  ||--o| suppressions : "suppressed by"
