@@ -19,7 +19,8 @@
 //	if result.MIV.Status == miv.StatusBlock {
 //	    // Skip all LLM stages.
 //	}
-//	// Use result.ChangeSet for downstream stages.
+//	// After successful scan:
+//	ig.CommitScan(ctx, result.ProjectID, result.ChangeSet)
 package ingestion
 
 import (
@@ -44,6 +45,8 @@ type Config struct {
 
 // Result is the combined output of a parallel MIV + DI run.
 type Result struct {
+	// ProjectID is the resolved project identifier (derived if not supplied in Config).
+	ProjectID string
 	// MIV is the outcome of model integrity verification.
 	// Status == StatusBlock means all LLM invocations must be skipped.
 	MIV *miv.Result
@@ -79,6 +82,11 @@ func New(indexer *diffindex.Indexer, verifier *miv.Verifier) *Ingester {
 //   - *Result: combined MIV + DI output.
 //   - error: non-nil only if DI fails (MIV errors are captured in Result.MIV).
 func (ig *Ingester) Run(ctx context.Context, cfg Config) (*Result, error) {
+	projectID := cfg.ProjectID
+	if projectID == "" {
+		projectID = diffindex.DeriveProjectID(cfg.ProjectRoot)
+	}
+
 	var (
 		wg      sync.WaitGroup
 		mivRes  *miv.Result
@@ -100,8 +108,7 @@ func (ig *Ingester) Run(ctx context.Context, cfg Config) (*Result, error) {
 
 	go func() {
 		defer wg.Done()
-		// DI implementation wired in ML0.4
-		_, _ = cs, diffErr
+		cs, diffErr = ig.indexer.Diff(ctx, projectID, cfg.ProjectRoot)
 	}()
 
 	wg.Wait()
@@ -115,8 +122,27 @@ func (ig *Ingester) Run(ctx context.Context, cfg Config) (*Result, error) {
 	}
 
 	return &Result{
+		ProjectID: projectID,
 		MIV:       mivRes,
 		ChangeSet: cs,
 		BlockLLM:  mivRes.Status == miv.StatusBlock,
 	}, nil
+}
+
+// CommitScan persists the file states from cs to the SQLite cache and removes
+// entries for deleted files. Call this after a successful scan to advance the
+// baseline for the next incremental diff.
+//
+// Errors are non-fatal — the scan report is already written; a commit failure
+// only means the next scan will be a full scan instead of a diff.
+//
+// Parameters:
+//   - ctx: cancellation context.
+//   - projectID: the resolved project ID from Result.ProjectID.
+//   - cs: the ChangeSet from Result.ChangeSet.
+func (ig *Ingester) CommitScan(ctx context.Context, projectID string, cs *diffindex.ChangeSet) error {
+	if cs == nil {
+		return nil
+	}
+	return ig.indexer.Commit(ctx, projectID, cs)
 }

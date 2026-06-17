@@ -36,7 +36,6 @@ import (
 	"github.com/hoangharry-tm/zerotrust/internal/ingestion/diffindex"
 	"github.com/hoangharry-tm/zerotrust/internal/ingestion/miv"
 	"github.com/hoangharry-tm/zerotrust/internal/output"
-	"github.com/hoangharry-tm/zerotrust/pkg/ollama"
 	"github.com/hoangharry-tm/zerotrust/internal/patch"
 	"github.com/hoangharry-tm/zerotrust/internal/pattern/astgrep"
 	"github.com/hoangharry-tm/zerotrust/internal/pattern/instrscan"
@@ -53,6 +52,7 @@ import (
 	"github.com/hoangharry-tm/zerotrust/internal/semantic/summarizer"
 	"github.com/hoangharry-tm/zerotrust/internal/semantic/targeting"
 	"github.com/hoangharry-tm/zerotrust/internal/worker"
+	"github.com/hoangharry-tm/zerotrust/pkg/ollama"
 	"github.com/hoangharry-tm/zerotrust/pkg/sqlite"
 )
 
@@ -115,7 +115,6 @@ func newPipeline(ctx context.Context, cfg ScanConfig) (*pipeline, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open state db: %w", err)
 	}
-	_ = db
 
 	// Python worker — started once, shared by verifier, classifier, summarizer, llmscan.
 	wm, err := worker.Start(ctx, "worker/main.py")
@@ -289,6 +288,15 @@ func (p *pipeline) run(ctx context.Context, events chan<- output.Event) error {
 		return fmt.Errorf("render report: %w", err)
 	}
 
+	// Advance the differential-index baseline so the next run only re-scans changes.
+	// Non-fatal: a commit failure just means the next scan is a full scan.
+	if err := p.ingester.CommitScan(ctx, ingResult.ProjectID, ingResult.ChangeSet); err != nil {
+		output.Emit(events, output.Event{
+			Kind: output.EventLog,
+			Log:  fmt.Sprintf("warn: commit scan state: %v", err),
+		})
+	}
+
 	// Build per-severity counts for the done summary.
 	bySeverity := make(map[finding.SeverityLabel]int, 5)
 	for _, s := range scored {
@@ -307,20 +315,130 @@ func (p *pipeline) run(ctx context.Context, events chan<- output.Event) error {
 }
 
 // runPathA executes all Path A detectors concurrently and writes findings to ch.
-// Stubs for individual stages (opengrep, astgrep, joern, instrscan, verifier)
-// will be filled in ML0.5 / ML2.
-func (p *pipeline) runPathA(ctx context.Context, _ *ingestion.Result, ch finding.Channel, events chan<- output.Event) error {
+// Three goroutines run in parallel:
+//  1. OpenGrep — structural pattern matching for Python/Java/JS/Go/Ruby/PHP.
+//  2. ast-grep — pattern matching for Rust/Dart/Swift/Kotlin/C#.
+//  3. instrscan — AI agent instruction file and MCP config injection scan.
+//
+// High-confidence findings (≥0.85) are emitted directly to ch; all others
+// will be routed through the LLM Verifier (wired in ML2.1).
+func (p *pipeline) runPathA(ctx context.Context, res *ingestion.Result, ch finding.Channel, events chan<- output.Event) error {
 	output.Emit(events, output.Event{Kind: output.EventStageStart, Stage: "path a"})
-	// Individual stage goroutines (opengrep, ast-grep, Joern, instrscan) will
-	// be wired here in ML0.5 / ML2.1 when the wrappers are production-ready.
-	_ = ctx
-	_ = ch
+
+	var changed []string
+	if res.ChangeSet != nil {
+		changed = res.ChangeSet.Changed
+	}
+
+	g, gctx := errgroup.WithContext(ctx)
+
+	// OpenGrep — owns Python/Java/JS/TS/Go/Ruby/PHP
+	g.Go(func() error {
+		findings, err := p.opengrep.Scan(gctx, changed)
+		if err != nil {
+			// non-fatal: log and continue; missing binary or empty rule dir
+			output.Emit(events, output.Event{
+				Kind: output.EventLog,
+				Log:  fmt.Sprintf("warn: opengrep: %v", err),
+			})
+			return nil
+		}
+		for _, f := range findings {
+			fc := f
+			output.Emit(events, output.Event{Kind: output.EventFinding, Finding: &fc})
+			ch <- fc
+		}
+		return nil
+	})
+
+	// ast-grep — owns Rust/Dart/Swift/Kotlin/C#
+	g.Go(func() error {
+		agFiles := astgrep.FilterFiles(changed)
+		findings, err := p.astgrep.Scan(gctx, agFiles)
+		if err != nil {
+			output.Emit(events, output.Event{
+				Kind: output.EventLog,
+				Log:  fmt.Sprintf("warn: ast-grep: %v", err),
+			})
+			return nil
+		}
+		for _, f := range findings {
+			fc := f
+			output.Emit(events, output.Event{Kind: output.EventFinding, Finding: &fc})
+			ch <- fc
+		}
+		return nil
+	})
+
+	// instrscan — AI agent instruction file and MCP config injection
+	g.Go(func() error {
+		fsys := os.DirFS(p.cfg.Target)
+		instrFindings, err := p.instr.Scan(fsys)
+		if err != nil {
+			output.Emit(events, output.Event{
+				Kind: output.EventLog,
+				Log:  fmt.Sprintf("warn: instrscan: %v", err),
+			})
+			return nil
+		}
+		for _, instr := range instrFindings {
+			f := instrFindingToFinding(instr)
+			output.Emit(events, output.Event{Kind: output.EventFinding, Finding: &f})
+			ch <- f
+		}
+		return nil
+	})
+
+	if err := g.Wait(); err != nil {
+		return fmt.Errorf("path a: %w", err)
+	}
 	output.Emit(events, output.Event{
 		Kind:    output.EventStageEnd,
 		Stage:   "path a",
-		Summary: &output.StageSummary{Stage: "path a", Detail: "stub — wired in ML0.5"},
+		Summary: &output.StageSummary{Stage: "path a", Detail: fmt.Sprintf("%d files scanned", len(changed))},
 	})
 	return nil
+}
+
+// severityFromScore maps a confidence score to an SSVC-inspired SeverityLabel.
+// Must stay in sync with the thresholds in dedup/dedup.go.
+func severityFromScore(score float64) finding.SeverityLabel {
+	switch {
+	case score >= 0.92:
+		return finding.SeverityBlock
+	case score >= 0.75:
+		return finding.SeverityHigh
+	case score >= 0.60:
+		return finding.SeverityMedium
+	case score >= 0.30:
+		return finding.SeverityLow
+	default:
+		return finding.SeveritySuppressed
+	}
+}
+
+// instrFindingToFinding converts an instrscan.Finding to a canonical finding.Finding.
+// CWE-1035 (OWASP: Prompt Injection) is used for instruction-file injection signals.
+func instrFindingToFinding(f instrscan.Finding) finding.Finding {
+	var confidence float64
+	switch f.Signal {
+	case instrscan.SignalMCPSchemaViolation:
+		confidence = 0.90 // deterministic schema check — high confidence
+	case instrscan.SignalKeywordMatch:
+		confidence = 0.65
+	default: // SignalUnicodeObfuscation
+		confidence = 0.75
+	}
+	return finding.Finding{
+		Path:          f.File,
+		LineRange:     finding.LineRange{Start: f.Line, End: f.Line},
+		CWE:           "CWE-1035",
+		Confidence:    confidence,
+		SeverityLabel: severityFromScore(confidence),
+		SourcePath:    finding.SourcePattern,
+		Justification: string(f.Signal) + ": " + f.Detail,
+		RuleID:        "INSTR-" + string(f.Signal),
+	}
 }
 
 // runPathB executes the Path B semantic detection tier pipeline and writes

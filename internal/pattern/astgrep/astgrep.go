@@ -1,7 +1,7 @@
 // Package astgrep wraps the ast-grep CLI (MIT, Tree-sitter-based).
 //
 // ast-grep covers languages where OpenGrep has weak or absent community rule packs:
-// Dart, Swift, Rust, and newer languages. Language routing is strictly partitioned —
+// Dart, Swift, Rust, Kotlin, and C#. Language routing is strictly partitioned —
 // OpenGrep and ast-grep never run the same rules on the same files.
 //
 // Rule directories follow the layout in rules/astgrep/:
@@ -9,17 +9,24 @@
 //	rules/astgrep/AG-001-rust-command-injection.yaml
 //	rules/astgrep/AG-002-go-sql-sprintf.yaml   (Go supplemental rules only)
 //
-// ast-grep outputs NDJSON (one JSON object per match). Each line is decoded into
-// a RawMatch and normalised into a finding.Finding before being returned to the caller.
+// ast-grep outputs a JSON array when invoked with --json. Each element is decoded
+// into a RawMatch and normalised into a finding.Finding before being returned.
 package astgrep
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/json"
+	"fmt"
+	"os/exec"
+	"path/filepath"
+	"strings"
 
 	"github.com/hoangharry-tm/zerotrust/internal/finding"
 )
 
-// RawMatch is a single JSON object in ast-grep's NDJSON output stream.
+// RawMatch is a single JSON object in ast-grep's JSON output array.
 type RawMatch struct {
 	// RuleID is the ast-grep rule identifier (e.g. "AG-002").
 	RuleID string `json:"ruleId"`
@@ -72,25 +79,58 @@ func New(binaryPath, rulesDir string) *Runner {
 
 // Scan runs ast-grep against files and returns normalised findings.
 //
-// It invokes: ast-grep scan --json <files...> --config <rulesDir>
-// stdout is decoded as NDJSON; each RawMatch is normalised into a finding.Finding.
+// It invokes: ast-grep scan --json --config <rulesDir> <files...>
+// stdout is decoded as a JSON array; each RawMatch is normalised into a finding.Finding.
 //
 // Parameters:
 //   - ctx: cancellation context; the subprocess is killed if ctx is cancelled.
-//   - files: relative file paths to scan (the ChangeSet.Changed list, pre-filtered
-//     to languages that ast-grep owns per the language routing table).
+//   - files: relative file paths to scan (pre-filtered to ast-grep's language set via FilterFiles).
 //
 // Returns:
 //   - []finding.Finding: normalised findings from all matched rules.
 //   - error: non-nil if the subprocess fails to start or produces unparseable output.
 func (r *Runner) Scan(ctx context.Context, files []string) ([]finding.Finding, error) {
-	// implemented in G2.M2.4
-	return nil, nil
+	if len(files) == 0 {
+		return nil, nil
+	}
+
+	args := append([]string{"scan", "--json", "--config", r.rulesDir}, files...)
+	cmd := exec.CommandContext(ctx, r.binaryPath, args...)
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		// ast-grep exits 0 on success regardless of whether findings exist
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			// some versions exit 1 when findings found; treat as success
+		} else {
+			return nil, fmt.Errorf("ast-grep: %w (stderr: %s)", err, stderr.String())
+		}
+	}
+
+	// Output is a JSON array of RawMatch objects.
+	raw := stdout.Bytes()
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return nil, nil
+	}
+
+	var matches []RawMatch
+	if err := json.Unmarshal(raw, &matches); err != nil {
+		return nil, fmt.Errorf("ast-grep: parse output: %w", err)
+	}
+
+	findings := make([]finding.Finding, 0, len(matches))
+	for _, m := range matches {
+		findings = append(findings, normalise(m))
+	}
+	return findings, nil
 }
 
 // FilterFiles returns the subset of files that ast-grep owns based on file extension.
-// Languages: Rust (.rs), Dart (.dart), Swift (.swift), and any language not claimed
-// by OpenGrep. This enforces the strict language partitioning between the two tools.
+// Owned languages: Rust (.rs), Dart (.dart), Swift (.swift), Kotlin (.kt), C# (.cs).
+// This enforces the strict language partitioning between OpenGrep and ast-grep.
 //
 // Parameters:
 //   - files: the full changed file list from ChangeSet.Changed.
@@ -98,8 +138,13 @@ func (r *Runner) Scan(ctx context.Context, files []string) ([]finding.Finding, e
 // Returns:
 //   - []string: files whose language falls in ast-grep's ownership set.
 func FilterFiles(files []string) []string {
-	// implemented in G2.M2.4
-	return nil
+	out := files[:0:0]
+	for _, f := range files {
+		if astgrepOwns(filepath.Ext(f)) {
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 // Version returns the ast-grep binary version string (e.g. "0.26.0").
@@ -108,14 +153,98 @@ func FilterFiles(files []string) []string {
 // Parameters:
 //   - ctx: cancellation context.
 func (r *Runner) Version(ctx context.Context) (string, error) {
-	// implemented in G2.M2.4
-	return "", nil
+	cmd := exec.CommandContext(ctx, r.binaryPath, "--version")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("ast-grep --version: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// astgrepExts lists file extensions ast-grep owns for language routing.
+// OpenGrep owns Python/Java/JS/TS/Go/Ruby/PHP; ast-grep owns the remainder.
+var astgrepExts = map[string]bool{
+	".rs":   true, // Rust
+	".dart": true, // Dart
+	".swift": true, // Swift
+	".kt":   true, // Kotlin
+	".kts":  true, // Kotlin script
+	".cs":   true, // C#
+}
+
+// astgrepOwns reports whether the file extension belongs to ast-grep's language set.
+func astgrepOwns(ext string) bool {
+	return astgrepExts[strings.ToLower(ext)]
 }
 
 // normalise converts a RawMatch into a finding.Finding.
 // Line numbers are converted from 0-based (ast-grep) to 1-based (finding.LineRange).
-// CWE and confidence metadata are read from the rule's YAML metadata block.
+// CWE and confidence are derived from the rule ID convention (AG-NNN-cwe-NNN) or
+// fall back to severity-based defaults.
 func normalise(raw RawMatch) finding.Finding {
-	// implemented in G2.M2.4
-	return finding.Finding{}
+	confidence := confidenceFromSeverity(raw.Severity)
+	cwe := cweFromRuleID(raw.RuleID)
+
+	matched := raw.Labels["__match__"] // ast-grep capture group for the matched text
+
+	fp := sha256.Sum256([]byte(cwe + ":" + raw.File + ":" + raw.Message))
+	id := fmt.Sprintf("%x", fp[:8])
+
+	// ast-grep uses 0-based lines; finding.LineRange is 1-based.
+	return finding.Finding{
+		ID:            id,
+		Path:          raw.File,
+		LineRange:     finding.LineRange{Start: raw.Range.Start.Line + 1, End: raw.Range.End.Line + 1},
+		CWE:           cwe,
+		Confidence:    confidence,
+		SeverityLabel: severityFromScore(confidence),
+		SourcePath:    finding.SourcePattern,
+		Justification: raw.Message,
+		MatchedCode:   matched,
+		RuleID:        raw.RuleID,
+	}
+}
+
+// confidenceFromSeverity maps the ast-grep severity string to a confidence score.
+//
+//	"error"   → 0.90 (treated as HIGH confidence)
+//	"warning" → 0.65 (treated as MEDIUM confidence)
+//	"info"    → 0.40 (treated as LOW confidence)
+func confidenceFromSeverity(severity string) float64 {
+	switch strings.ToLower(severity) {
+	case "error":
+		return 0.90
+	case "warning":
+		return 0.65
+	}
+	return 0.40
+}
+
+// cweFromRuleID attempts to extract a CWE identifier from the rule ID.
+// Rule ID convention: AG-NNN[-cwe-NNN][-description].
+// Example: "AG-001-cwe-78-rust-command-injection" → "CWE-78".
+func cweFromRuleID(ruleID string) string {
+	parts := strings.Split(strings.ToLower(ruleID), "-")
+	for i, p := range parts {
+		if p == "cwe" && i+1 < len(parts) {
+			return "CWE-" + parts[i+1]
+		}
+	}
+	return ""
+}
+
+// severityFromScore maps a confidence score to an SSVC-inspired SeverityLabel.
+func severityFromScore(score float64) finding.SeverityLabel {
+	switch {
+	case score >= 0.92:
+		return finding.SeverityBlock
+	case score >= 0.75:
+		return finding.SeverityHigh
+	case score >= 0.60:
+		return finding.SeverityMedium
+	case score >= 0.30:
+		return finding.SeverityLow
+	default:
+		return finding.SeveritySuppressed
+	}
 }

@@ -29,7 +29,7 @@ All 42 rules deployed (PY-001→010, JV-001→009, GN-001→007, AG-001→016), 
 ## Layer 0 — Foundation + Fast Path
 
 **Window**: Jun 23 – Jul 3 · ~70h available · **~57h work + 13h buffer**
-**ML0.1 + ML0.1B delivered Jun 17 — 6–7 days early. Remaining: ML0.2–ML0.7.**
+**ML0.1–ML0.5 delivered Jun 17 — 6–11 days early. Remaining: ML0.6–ML0.7.**
 
 Build the Go binary skeleton, ingestion layer (MIV + DI content-hash), pattern detection wrappers, Python worker IPC, and a minimal Dedup + HTML report skeleton. Joern-free. Delivers a working end-to-end pipeline with Path A pattern findings in an HTML report before any Joern risk is taken.
 
@@ -52,14 +52,14 @@ Build the Go binary skeleton, ingestion layer (MIV + DI content-hash), pattern d
 | L0.3.T1 | MIV: SHA256 hash of GGUF model file | Jun 17 | 2.5 | Done | Streaming in 32 MB chunks; context-cancellable; `internal/ingestion/miv/hash.go` |
 | L0.3.T2 | MIV: cosign/Sigstore Rekor registry verification; bundled maintainer public key | Jun 17 | 12.0 | Done | ECDSA P-256 primary gate (stdlib); Rekor best-effort transparency check (3s timeout → ECDSA fallback); embedded `data/{registry.json,registry.json.sig,cosign.pub}`; 15 tests |
 | L0.3.T3 | MIV gates LLM calls only — CPG + pattern matching proceed regardless; wire gate into Ollama client wrapper | Jun 17 | 3.0 | Done | `ingestion.Run` calls `verifier.Verify`; `BlockLLM` flag → `ollama.Client.SetMIVBlocked()` in `scan.go` |
-| **ML0.4** | **Differential Indexer (content-hash only)** | Jun 27–28 | 5.5 | — | CPG expansion added after Joern spike (ML1 dependency) |
-| L0.4.T1 | SQLite state cache (`modernc.org/sqlite`): `project_id / file_path / content_hash / last_scanned_at / module_path / cpg_included` | Jun 27 | 3.5 | | Pure-Go; no CGo dependency |
-| L0.4.T2 | DI: content-hash diff; emit dirty-file set to pipeline; full scan on first invocation | Jun 28 | 2.0 | | One-hop CPG caller/callee expansion scheduled post-Joern spike (ML2.1.T3) |
-| **ML0.5** | **OpenGrep + ast-grep + instrscan Wrappers** | Jun 28 – Jul 1 | 10.0 | — | |
-| L0.5.T1 | OpenGrep subprocess wrapper + config file generation from G1 rules; language-partitioned routing | Jun 28–29 | 3.0 | | |
-| L0.5.T2 | ast-grep integration for language gaps (Dart, Swift, Rust, Kotlin, C#, Ruby, PHP); wire AG-005→AG-016 | Jun 29 | 3.0 | | AG-005→016 already exist from G1 bonus |
-| L0.5.T3 | Wire G1 instrscan into CLI pipeline (Unicode scan + keyword match + MCP schema) | Jun 30 | 1.0 | | Already implemented; plumbing only |
-| L0.5.T4 | Finding normalisation adapter: OpenGrep schema + Joern schema → unified Finding struct | Jul 1 | 3.0 | | Joern side stubbed until ML1 delivers real schema |
+| **ML0.4** | **Differential Indexer (content-hash only)** | Jun 17 | 5.5 | **Done** | Delivered Jun 17 — 10 days early |
+| L0.4.T1 | SQLite state cache (`modernc.org/sqlite`): `project_id / file_path / content_hash / last_scanned_at`; CRUD helpers (`GetScanState`, `UpsertScanState`, `ListScanState`, `DeleteScanState`) | Jun 17 | 3.5 | Done | Pure-Go; `INSERT OR REPLACE` upsert; 10 CRUD tests in `pkg/sqlite/sqlite_test.go` |
+| L0.4.T2 | DI: `Diff` (WalkDir + SHA-256 content-hash diff, skipDirs/binaryExts, ChangeSet.AllStates); `Commit` (upserts + evictions); `DeriveProjectID`; wired into `ingestion.Run` + `CommitScan` in `scan.go` | Jun 17 | 2.0 | Done | 14 tests in `diffindex_test.go`; one-hop CPG expansion scheduled post-Joern spike |
+| **ML0.5** | **OpenGrep + ast-grep + instrscan Wrappers** | Jun 17 | 10.0 | **Done** | Delivered Jun 17 — 11 days early |
+| L0.5.T1 | OpenGrep subprocess wrapper: `Scan`, `ScanHighConfidence`, `Version`; exit-code 0/1 handling; `normalise` (confidence HIGH→0.90/MEDIUM→0.65/LOW→0.40; CWE from metadata); language-partitioned routing | Jun 17 | 3.0 | Done | 11 tests in `opengrep_test.go`; subprocess tests deferred to ML2 integration |
+| L0.5.T2 | ast-grep integration: `Scan` (JSON array output), `FilterFiles` (owns .rs/.dart/.swift/.kt/.kts/.cs), `Version`, `normalise` (0→1-based line conversion; CWE from rule ID convention AG-NNN-cwe-NNN) | Jun 17 | 3.0 | Done | 12 tests in `astgrep_test.go` |
+| L0.5.T3 | Wire instrscan into `runPathA` (concurrent errgroup; `instrFindingToFinding` adapter; CWE-1035; MCP schema → 0.90 / keyword → 0.65 / unicode → 0.75) | Jun 17 | 1.0 | Done | OpenGrep + ast-grep + instrscan run concurrently; non-fatal binary-missing errors |
+| L0.5.T4 | Finding normalisation adapter: `severityFromScore` in `scan.go`; Joern side stubbed until ML1 delivers real schema | Jun 17 | 3.0 | Done | Joern side remains stub; `instrFindingToFinding` complete |
 | **ML0.6** | **Python Worker IPC** | Jul 1–2 | 6.5 | — | IPC built once; reused by LLM Verifier, Classifier, Summarizer, LLM Scan |
 | L0.6.T1 | Python worker `worker/main.py`: NDJSON dispatcher — `llm_verify / classify / summarize / llm_scan / ping / shutdown` | Jul 1 | 3.5 | | Handlers stubbed; only `ping` + `shutdown` implemented here; others in L2/L3 |
 | L0.6.T2 | Go worker-manager: spawn via `os/exec`; health-check ping; restart-on-crash; fallback to direct Ollama HTTP on second failure | Jul 2 | 3.0 | | Build this before any handler that depends on it |

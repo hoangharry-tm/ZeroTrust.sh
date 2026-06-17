@@ -19,7 +19,13 @@
 package opengrep
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/json"
+	"fmt"
+	"os/exec"
+	"strings"
 
 	"github.com/hoangharry-tm/zerotrust/internal/finding"
 )
@@ -53,7 +59,7 @@ type RawExtra struct {
 	Severity string `json:"severity"`
 	// Metadata contains arbitrary key-value pairs from the rule's `metadata:` block.
 	// Expected keys: cwe, confidence, owasp.
-	Metadata map[string]interface{} `json:"metadata"`
+	Metadata map[string]any `json:"metadata"`
 	// Lines is the matched source snippet.
 	Lines string `json:"lines"`
 }
@@ -102,8 +108,18 @@ func New(binaryPath, rulesDir string) *Runner {
 //   - []finding.Finding: normalised findings from all matched rules.
 //   - error: non-nil if the subprocess fails to start or returns a non-zero exit code.
 func (r *Runner) Scan(ctx context.Context, files []string) ([]finding.Finding, error) {
-	// implemented in G2.M2.4
-	return nil, nil
+	if len(files) == 0 {
+		return nil, nil
+	}
+	out, err := r.run(ctx, files)
+	if err != nil {
+		return nil, err
+	}
+	findings := make([]finding.Finding, 0, len(out.Results))
+	for _, raw := range out.Results {
+		findings = append(findings, normalise(raw))
+	}
+	return findings, nil
 }
 
 // ScanHighConfidence runs a scan restricted to rules tagged confidence: high.
@@ -117,8 +133,17 @@ func (r *Runner) Scan(ctx context.Context, files []string) ([]finding.Finding, e
 //   - []finding.Finding: only findings from high-confidence rules.
 //   - error: non-nil on subprocess or parse failure.
 func (r *Runner) ScanHighConfidence(ctx context.Context, files []string) ([]finding.Finding, error) {
-	// implemented in G2.M2.4
-	return nil, nil
+	all, err := r.Scan(ctx, files)
+	if err != nil {
+		return nil, err
+	}
+	out := all[:0]
+	for _, f := range all {
+		if f.Confidence >= 0.85 {
+			out = append(out, f)
+		}
+	}
+	return out, nil
 }
 
 // Version returns the opengrep binary version string (e.g. "1.87.0").
@@ -127,13 +152,122 @@ func (r *Runner) ScanHighConfidence(ctx context.Context, files []string) ([]find
 // Parameters:
 //   - ctx: cancellation context.
 func (r *Runner) Version(ctx context.Context) (string, error) {
-	// implemented in G2.M2.4
-	return "", nil
+	cmd := exec.CommandContext(ctx, r.binaryPath, "--version")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("opengrep --version: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// run invokes opengrep and returns parsed JSON output.
+// Exit code 0 (no findings) and exit code 1 (findings found) are both treated
+// as success. Exit codes ≥ 2 indicate a real error.
+func (r *Runner) run(ctx context.Context, files []string) (*ScanOutput, error) {
+	args := append([]string{"--json", "--config", r.rulesDir}, files...)
+	cmd := exec.CommandContext(ctx, r.binaryPath, args...)
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			// exit code 1 means findings were found — not an error
+		} else {
+			return nil, fmt.Errorf("opengrep: %w (stderr: %s)", err, stderr.String())
+		}
+	}
+
+	var out ScanOutput
+	if decErr := json.Unmarshal(stdout.Bytes(), &out); decErr != nil {
+		return nil, fmt.Errorf("opengrep: parse output: %w", decErr)
+	}
+	return &out, nil
 }
 
 // normalise converts a RawFinding into a finding.Finding.
 // The CWE, confidence, and OWASP category are extracted from Extra.Metadata.
 func normalise(raw RawFinding) finding.Finding {
-	// implemented in G2.M2.4
-	return finding.Finding{}
+	confidence := confidenceFromMetadata(raw.Extra.Metadata, raw.Extra.Severity)
+	cwe := cweFromMetadata(raw.Extra.Metadata)
+
+	fp := sha256.Sum256([]byte(cwe + ":" + raw.Path + ":" + raw.Extra.Lines))
+	id := fmt.Sprintf("%x", fp[:8])
+
+	return finding.Finding{
+		ID:            id,
+		Path:          raw.Path,
+		LineRange:     finding.LineRange{Start: raw.Start.Line, End: raw.End.Line},
+		CWE:           cwe,
+		Confidence:    confidence,
+		SeverityLabel: severityFromScore(confidence),
+		SourcePath:    finding.SourcePattern,
+		Justification: raw.Extra.Message,
+		MatchedCode:   raw.Extra.Lines,
+		RuleID:        raw.RuleID,
+	}
+}
+
+// confidenceFromMetadata maps the rule's metadata.confidence string and severity
+// to a numeric confidence score used in SSVC-inspired scoring.
+//
+//	HIGH   → 0.90  (bypasses LLM Verifier at ≥ 0.85)
+//	MEDIUM → 0.65
+//	LOW    → 0.40
+//
+// Falls back to severity-based defaults when confidence is not in metadata.
+func confidenceFromMetadata(meta map[string]any, severity string) float64 {
+	if v, ok := meta["confidence"]; ok {
+		switch strings.ToUpper(fmt.Sprint(v)) {
+		case "HIGH":
+			return 0.90
+		case "MEDIUM":
+			return 0.65
+		case "LOW":
+			return 0.40
+		}
+	}
+	switch strings.ToUpper(severity) {
+	case "ERROR":
+		return 0.65
+	case "WARNING":
+		return 0.40
+	}
+	return 0.40
+}
+
+// cweFromMetadata extracts the CWE string from the rule metadata.
+// Handles both string and slice values (some rules list multiple CWEs).
+func cweFromMetadata(meta map[string]any) string {
+	v, ok := meta["cwe"]
+	if !ok {
+		return ""
+	}
+	switch t := v.(type) {
+	case string:
+		return t
+	case []any:
+		if len(t) > 0 {
+			return fmt.Sprint(t[0])
+		}
+	}
+	return fmt.Sprint(v)
+}
+
+// severityFromScore maps a confidence score to an SSVC-inspired SeverityLabel.
+func severityFromScore(score float64) finding.SeverityLabel {
+	switch {
+	case score >= 0.92:
+		return finding.SeverityBlock
+	case score >= 0.75:
+		return finding.SeverityHigh
+	case score >= 0.60:
+		return finding.SeverityMedium
+	case score >= 0.30:
+		return finding.SeverityLow
+	default:
+		return finding.SeveritySuppressed
+	}
 }

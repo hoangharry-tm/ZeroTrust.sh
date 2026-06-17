@@ -16,7 +16,13 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"io"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/hoangharry-tm/zerotrust/pkg/sqlite"
 )
@@ -42,6 +48,9 @@ type ChangeSet struct {
 	// but absent from the current file set. The Joern incremental CPG patch
 	// must evict their nodes before running taint queries.
 	Removed []string
+	// AllStates is the complete current file-state list for every non-skipped file
+	// in the project. Pass this to Commit after a successful scan to advance the cache.
+	AllStates []FileState
 }
 
 // Indexer computes the differential file set for each scan.
@@ -60,27 +69,107 @@ func New(db *sqlite.DB) *Indexer {
 // On first scan (no cache rows) all files are returned as Changed.
 //
 // Parameters:
-//   - ctx: cancellation context; long directory walks honour it between subdirectories.
+//   - ctx: cancellation context; long directory walks honour it between files.
 //   - projectID: primary-key prefix for the SQLite scan_state table.
 //   - projectRoot: absolute path to the codebase root to walk.
 //
 // Returns:
-//   - *ChangeSet: Changed (new/modified) and Removed (deleted) file sets.
+//   - *ChangeSet: Changed (new/modified), Removed (deleted), and AllStates.
 //   - error: non-nil if projectRoot cannot be walked or SQLite access fails.
-func (i *Indexer) Diff(ctx context.Context, projectID, projectRoot string) (*ChangeSet, error) {
-	// implemented in G2.M2.2
-	return &ChangeSet{}, nil
+func (ix *Indexer) Diff(ctx context.Context, projectID, projectRoot string) (*ChangeSet, error) {
+	prior, err := ix.db.ListScanState(ctx, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("list scan state: %w", err)
+	}
+	priorMap := make(map[string]string, len(prior))
+	for _, row := range prior {
+		priorMap[row.FilePath] = row.ContentHash
+	}
+
+	now := time.Now().Unix()
+	var changed []string
+	var allStates []FileState
+	seen := make(map[string]bool)
+
+	err = filepath.WalkDir(projectRoot, func(absPath string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return nil // skip unreadable entries; don't abort walk
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
+		relPath, err := filepath.Rel(projectRoot, absPath)
+		if err != nil {
+			return nil
+		}
+
+		if d.IsDir() {
+			if relPath != "." && shouldSkip(relPath) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		if shouldSkip(relPath) {
+			return nil
+		}
+
+		hash, err := hashFile(absPath)
+		if err != nil {
+			return nil // skip unreadable files; don't abort walk
+		}
+
+		seen[relPath] = true
+		allStates = append(allStates, FileState{
+			ProjectID:     projectID,
+			FilePath:      relPath,
+			ContentHash:   hash,
+			LastScannedAt: now,
+		})
+
+		if priorMap[relPath] != hash {
+			changed = append(changed, relPath)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("walk %s: %w", projectRoot, err)
+	}
+
+	var removed []string
+	for relPath := range priorMap {
+		if !seen[relPath] {
+			removed = append(removed, relPath)
+		}
+	}
+
+	return &ChangeSet{Changed: changed, Removed: removed, AllStates: allStates}, nil
 }
 
-// Commit persists the current file states for projectID, replacing any prior state.
+// Commit persists AllStates from cs and evicts Removed entries from the cache.
 // Call this after a successful scan to advance the cache baseline for the next run.
 //
 // Parameters:
 //   - ctx: cancellation context.
 //   - projectID: primary-key prefix for the SQLite scan_state table.
-//   - states: the complete current file-state list (one entry per file in scope).
-func (i *Indexer) Commit(ctx context.Context, projectID string, states []FileState) error {
-	// implemented in G2.M2.2
+//   - cs: the ChangeSet returned by Diff for this scan.
+func (ix *Indexer) Commit(ctx context.Context, projectID string, cs *ChangeSet) error {
+	for _, s := range cs.AllStates {
+		if err := ix.db.UpsertScanState(ctx, sqlite.ScanStateRow{
+			ProjectID:     projectID,
+			FilePath:      s.FilePath,
+			ContentHash:   s.ContentHash,
+			LastScannedAt: s.LastScannedAt,
+		}); err != nil {
+			return fmt.Errorf("upsert %s: %w", s.FilePath, err)
+		}
+	}
+	for _, r := range cs.Removed {
+		if err := ix.db.DeleteScanState(ctx, projectID, r); err != nil {
+			return fmt.Errorf("delete removed %s: %w", r, err)
+		}
+	}
 	return nil
 }
 
@@ -99,24 +188,49 @@ func DeriveProjectID(projectRoot string) string {
 }
 
 // hashFile computes the SHA-256 hex digest of the file at absPath.
-//
-// Parameters:
-//   - absPath: the absolute path of the file to hash.
-//
-// Returns:
-//   - string: lowercase hex-encoded SHA-256 digest.
-//   - error: non-nil if the file cannot be opened or read.
 func hashFile(absPath string) (string, error) {
-	// implemented in G2.M2.2
-	return "", nil
+	f, err := os.Open(absPath)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close() //nolint:errcheck
+
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", fmt.Errorf("hash %s: %w", absPath, err)
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// shouldSkip reports whether a file at relPath should be excluded from the diff.
-// Skipped paths include: .git/, vendor/, node_modules/, and binary file extensions.
-//
-// Parameters:
-//   - relPath: the file path relative to projectRoot.
+// skipDirs are directory names always excluded from the diff walk.
+var skipDirs = map[string]bool{
+	".git":          true,
+	"vendor":        true,
+	"node_modules":  true,
+	".cache":        true,
+	"__pycache__":   true,
+	".pytest_cache": true,
+	".venv":         true,
+	"venv":          true,
+}
+
+// binaryExts are file extensions treated as binary — hashing them is wasteful.
+var binaryExts = map[string]bool{
+	".exe": true, ".bin": true, ".so": true, ".dylib": true, ".dll": true,
+	".o": true, ".a": true, ".lib": true,
+	".png": true, ".jpg": true, ".jpeg": true, ".gif": true, ".webp": true, ".ico": true,
+	".pdf": true, ".zip": true, ".tar": true, ".gz": true, ".bz2": true, ".xz": true,
+	".wasm": true, ".db": true, ".sqlite": true,
+}
+
+// shouldSkip reports whether a file or directory at relPath should be excluded.
+// Called for both directory entries (to skip entire subtrees) and file entries.
 func shouldSkip(relPath string) bool {
-	// implemented in G2.M2.2
-	return false
+	for part := range strings.SplitSeq(relPath, string(filepath.Separator)) {
+		if skipDirs[part] {
+			return true
+		}
+	}
+	ext := strings.ToLower(filepath.Ext(relPath))
+	return binaryExts[ext]
 }

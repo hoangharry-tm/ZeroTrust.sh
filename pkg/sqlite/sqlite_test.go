@@ -216,3 +216,140 @@ func TestConnReturnsTypedSQLDB(t *testing.T) {
 
 	var _ *sql.DB = db.Conn() // compile-time type check
 }
+
+// ─── GetScanState / UpsertScanState ─────────────────────────────────────────
+
+func TestGetScanStateNotFound(t *testing.T) {
+	db, cleanup := tempDB(t)
+	defer cleanup()
+
+	ctx := t.Context()
+	_, err := db.GetScanState(ctx, "proj", "nonexistent.go")
+	if err != sql.ErrNoRows {
+		t.Errorf("expected sql.ErrNoRows, got %v", err)
+	}
+}
+
+func TestUpsertAndGetScanState(t *testing.T) {
+	db, cleanup := tempDB(t)
+	defer cleanup()
+
+	ctx := t.Context()
+	row := ScanStateRow{
+		ProjectID:     "proj-1",
+		FilePath:      "cmd/main.go",
+		ContentHash:   "abc123",
+		LastScannedAt: 1718000000,
+	}
+	if err := db.UpsertScanState(ctx, row); err != nil {
+		t.Fatalf("UpsertScanState: %v", err)
+	}
+
+	got, err := db.GetScanState(ctx, "proj-1", "cmd/main.go")
+	if err != nil {
+		t.Fatalf("GetScanState: %v", err)
+	}
+	if got.ContentHash != "abc123" {
+		t.Errorf("hash: got %q, want %q", got.ContentHash, "abc123")
+	}
+	if got.LastScannedAt != 1718000000 {
+		t.Errorf("timestamp: got %d, want 1718000000", got.LastScannedAt)
+	}
+}
+
+func TestUpsertScanStateReplaces(t *testing.T) {
+	db, cleanup := tempDB(t)
+	defer cleanup()
+
+	ctx := t.Context()
+	base := ScanStateRow{ProjectID: "p", FilePath: "a.go", ContentHash: "old", LastScannedAt: 1}
+	if err := db.UpsertScanState(ctx, base); err != nil {
+		t.Fatalf("first upsert: %v", err)
+	}
+
+	updated := ScanStateRow{ProjectID: "p", FilePath: "a.go", ContentHash: "new", LastScannedAt: 2}
+	if err := db.UpsertScanState(ctx, updated); err != nil {
+		t.Fatalf("second upsert: %v", err)
+	}
+
+	got, err := db.GetScanState(ctx, "p", "a.go")
+	if err != nil {
+		t.Fatalf("GetScanState: %v", err)
+	}
+	if got.ContentHash != "new" {
+		t.Errorf("expected hash %q after upsert, got %q", "new", got.ContentHash)
+	}
+}
+
+// ─── ListScanState ───────────────────────────────────────────────────────────
+
+func TestListScanStateEmpty(t *testing.T) {
+	db, cleanup := tempDB(t)
+	defer cleanup()
+
+	ctx := t.Context()
+	rows, err := db.ListScanState(ctx, "proj-empty")
+	if err != nil {
+		t.Fatalf("ListScanState: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Errorf("expected 0 rows, got %d", len(rows))
+	}
+}
+
+func TestListScanStateIsolatedByProject(t *testing.T) {
+	db, cleanup := tempDB(t)
+	defer cleanup()
+
+	ctx := t.Context()
+	for _, r := range []ScanStateRow{
+		{ProjectID: "p1", FilePath: "a.go", ContentHash: "h1", LastScannedAt: 1},
+		{ProjectID: "p1", FilePath: "b.go", ContentHash: "h2", LastScannedAt: 1},
+		{ProjectID: "p2", FilePath: "c.go", ContentHash: "h3", LastScannedAt: 1},
+	} {
+		if err := db.UpsertScanState(ctx, r); err != nil {
+			t.Fatalf("upsert %v: %v", r.FilePath, err)
+		}
+	}
+
+	rows, err := db.ListScanState(ctx, "p1")
+	if err != nil {
+		t.Fatalf("ListScanState: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Errorf("expected 2 rows for p1, got %d", len(rows))
+	}
+}
+
+// ─── DeleteScanState ─────────────────────────────────────────────────────────
+
+func TestDeleteScanState(t *testing.T) {
+	db, cleanup := tempDB(t)
+	defer cleanup()
+
+	ctx := t.Context()
+	row := ScanStateRow{ProjectID: "proj", FilePath: "deleted.go", ContentHash: "h", LastScannedAt: 1}
+	if err := db.UpsertScanState(ctx, row); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	if err := db.DeleteScanState(ctx, "proj", "deleted.go"); err != nil {
+		t.Fatalf("DeleteScanState: %v", err)
+	}
+
+	_, err := db.GetScanState(ctx, "proj", "deleted.go")
+	if err != sql.ErrNoRows {
+		t.Errorf("expected ErrNoRows after delete, got %v", err)
+	}
+}
+
+func TestDeleteScanStateNonexistentIsNoop(t *testing.T) {
+	db, cleanup := tempDB(t)
+	defer cleanup()
+
+	ctx := t.Context()
+	// Deleting a row that does not exist must not error.
+	if err := db.DeleteScanState(ctx, "proj", "ghost.go"); err != nil {
+		t.Errorf("unexpected error deleting non-existent row: %v", err)
+	}
+}
