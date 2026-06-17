@@ -10,9 +10,9 @@
 
 ## G1 — OpenGrep PoC (Complete)
 
-**Window**: Jun 9–20 · ~50h · **~95% complete**
+**Window**: Jun 9–20 · ~50h · **100% complete**
 
-All 42 rules deployed (PY-001→010, JV-001→009, GN-001→007, AG-001→016), Go instrscan with 8 unit tests, Spring Boot test codebase with 12 findings across 10 rule variants, 0 FP on clean controls. Remaining: Jun 20 tech lead presentation.
+All 42 rules deployed (PY-001→010, JV-001→009, GN-001→007, AG-001→016), Go instrscan with 8 unit tests, Spring Boot test codebase with 12 findings across 10 rule variants, 0 FP on clean controls. Presentation narrative complete Jun 17 — 3 days ahead of schedule.
 
 | ID | Name | Dates | E (h) | Status | Notes |
 | :---: | --- | :---: | :---: | :---: | --- |
@@ -202,7 +202,7 @@ Complete the Dedup pipeline, SSVC scoring, HTML report, patch suggestions, and r
 
 | Layer | Window | Budget | Primary Risk |
 | --- | --- | --- | --- |
-| G1 — OpenGrep PoC | Jun 9–20 | ~50h | **~95% done** — presentation Jun 20 |
+| G1 — OpenGrep PoC | Jun 9–20 | ~50h | **100% done** — completed Jun 17, 3 days early |
 | L0 — Foundation + Fast Path | Jun 23 – Jul 3 | 57h + 13h buffer | MIV cosign / Sigstore Rekor integration |
 | L1 — Joern Spike (time-boxed) | Jul 3 – Jul 7 | 20h + 8h contingency | Joern JVM + Go CPG frontend quality |
 | L2 — Path A Complete | Jul 7 – Jul 17 | 56h + 14h buffer | Incremental CPG implementation (15h task) |
