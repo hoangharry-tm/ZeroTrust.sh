@@ -13,10 +13,17 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 )
+
+// ErrModelBlocked is returned by Generate and Chat when the Model Integrity
+// Verifier has detected a known model with a hash mismatch. All LLM calls must
+// be skipped; CPG and pattern-matching continue unaffected.
+var ErrModelBlocked = errors.New("ollama: model blocked by integrity verifier")
 
 const defaultBaseURL = "http://localhost:11434"
 
@@ -25,6 +32,7 @@ type Client struct {
 	baseURL    string
 	model      string
 	httpClient *http.Client
+	mivBlock   bool // set by SetMIVBlocked; gates Generate and Chat
 }
 
 // Options controls inference parameters for a single request.
@@ -92,6 +100,11 @@ type generateResponse struct {
 	Done     bool   `json:"done"`
 }
 
+// SetMIVBlocked marks this client as blocked by the Model Integrity Verifier.
+// After this call, all Generate and Chat invocations return ErrModelBlocked.
+// The flag is permanent for the lifetime of the client instance.
+func (c *Client) SetMIVBlocked() { c.mivBlock = true }
+
 // Generate sends prompt to the configured model and returns the full response text.
 // opts may be nil to use the server's model defaults.
 //
@@ -102,6 +115,9 @@ type generateResponse struct {
 //
 // Returns the model's response string, or an error if the HTTP request fails.
 func (c *Client) Generate(ctx context.Context, prompt string, opts *Options) (string, error) {
+	if c.mivBlock {
+		return "", ErrModelBlocked
+	}
 	body, err := json.Marshal(generateRequest{
 		Model:   c.model,
 		Prompt:  prompt,
@@ -160,8 +176,40 @@ type chatResponse struct {
 //
 // Returns the assistant's reply Message, or an error if the request fails.
 func (c *Client) Chat(ctx context.Context, messages []Message, opts *Options) (Message, error) {
-	// implemented in G2.M2.5
-	return Message{}, nil
+	if c.mivBlock {
+		return Message{}, ErrModelBlocked
+	}
+	body, err := json.Marshal(chatRequest{
+		Model:    c.model,
+		Messages: messages,
+		Stream:   false,
+		Options:  opts,
+	})
+	if err != nil {
+		return Message{}, err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/chat", bytes.NewReader(body))
+	if err != nil {
+		return Message{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return Message{}, fmt.Errorf("ollama chat: %w", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck
+
+	if resp.StatusCode != http.StatusOK {
+		return Message{}, fmt.Errorf("ollama chat: unexpected status %d", resp.StatusCode)
+	}
+
+	var cr chatResponse
+	if err := json.NewDecoder(resp.Body).Decode(&cr); err != nil {
+		return Message{}, fmt.Errorf("ollama chat decode: %w", err)
+	}
+	return cr.Message, nil
 }
 
 // ─── Utility ─────────────────────────────────────────────────────────────────
@@ -186,7 +234,21 @@ func (c *Client) Ping(ctx context.Context) error {
 //   - bool: true if the model returns parseable JSON within two attempts.
 //   - error: non-nil only for infrastructure failures (network error, server down).
 func (c *Client) BackboneCheck(ctx context.Context) (bool, error) {
-	// implemented in G3.M3.4
+	const probe = `Respond with exactly this JSON and nothing else: {"ok":true}`
+	opts := &Options{Temperature: 0.0, NumPredict: 32}
+
+	for range 2 {
+		resp, err := c.Generate(ctx, probe, opts)
+		if err != nil {
+			return false, err
+		}
+		var v struct {
+			OK bool `json:"ok"`
+		}
+		if err := json.Unmarshal([]byte(strings.TrimSpace(resp)), &v); err == nil && v.OK {
+			return true, nil
+		}
+	}
 	return false, nil
 }
 

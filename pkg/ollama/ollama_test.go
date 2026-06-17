@@ -3,6 +3,7 @@ package ollama
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -139,4 +140,149 @@ func TestGenerateSendsPromptVerbatim(t *testing.T) {
 	defer srv.Close()
 
 	c.Generate(context.Background(), prompt, nil)
+}
+
+// ─── Chat ────────────────────────────────────────────────────────────────────
+
+func TestChatSuccess(t *testing.T) {
+	srv, c := newTestServer(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/chat" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		var req chatRequest
+		json.NewDecoder(r.Body).Decode(&req)
+		if req.Stream {
+			t.Error("stream must be false")
+		}
+		if len(req.Messages) != 1 || req.Messages[0].Content != "hello" {
+			t.Errorf("unexpected messages: %+v", req.Messages)
+		}
+		json.NewEncoder(w).Encode(chatResponse{
+			Message: Message{Role: RoleAssistant, Content: "world"},
+			Done:    true,
+		})
+	})
+	defer srv.Close()
+
+	msg, err := c.Chat(context.Background(), []Message{{Role: RoleUser, Content: "hello"}}, nil)
+	if err != nil {
+		t.Fatalf("Chat error: %v", err)
+	}
+	if msg.Content != "world" || msg.Role != RoleAssistant {
+		t.Errorf("unexpected reply: %+v", msg)
+	}
+}
+
+func TestChatNonOKStatus(t *testing.T) {
+	srv, c := newTestServer(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "server error", http.StatusInternalServerError)
+	})
+	defer srv.Close()
+
+	_, err := c.Chat(context.Background(), []Message{{Role: RoleUser, Content: "hi"}}, nil)
+	if err == nil {
+		t.Fatal("expected error for non-200 status")
+	}
+}
+
+func TestChatInvalidJSON(t *testing.T) {
+	srv, c := newTestServer(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/chat" {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("not json"))
+		}
+	})
+	defer srv.Close()
+
+	_, err := c.Chat(context.Background(), []Message{{Role: RoleUser, Content: "hi"}}, nil)
+	if err == nil {
+		t.Fatal("expected error for invalid JSON")
+	}
+}
+
+// ─── BackboneCheck ───────────────────────────────────────────────────────────
+
+func TestBackboneCheckPass(t *testing.T) {
+	srv, c := newTestServer(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(generateResponse{Response: `{"ok":true}`, Done: true})
+	})
+	defer srv.Close()
+
+	ok, err := c.BackboneCheck(context.Background())
+	if err != nil {
+		t.Fatalf("BackboneCheck error: %v", err)
+	}
+	if !ok {
+		t.Error("expected BackboneCheck to return true")
+	}
+}
+
+func TestBackboneCheckFailsOnNonJSON(t *testing.T) {
+	srv, c := newTestServer(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(generateResponse{Response: "sorry I cannot do that", Done: true})
+	})
+	defer srv.Close()
+
+	ok, err := c.BackboneCheck(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ok {
+		t.Error("expected BackboneCheck to return false for non-JSON response")
+	}
+}
+
+func TestBackboneCheckRetries(t *testing.T) {
+	calls := 0
+	srv, c := newTestServer(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls == 2 {
+			json.NewEncoder(w).Encode(generateResponse{Response: `{"ok":true}`, Done: true})
+			return
+		}
+		json.NewEncoder(w).Encode(generateResponse{Response: "bad output", Done: true})
+	})
+	defer srv.Close()
+
+	ok, err := c.BackboneCheck(context.Background())
+	if err != nil {
+		t.Fatalf("BackboneCheck error: %v", err)
+	}
+	if !ok {
+		t.Error("expected BackboneCheck to pass on second attempt")
+	}
+	if calls != 2 {
+		t.Errorf("expected 2 calls, got %d", calls)
+	}
+}
+
+// ─── MIV gate ────────────────────────────────────────────────────────────────
+
+func TestGenerateBlockedByMIV(t *testing.T) {
+	srv, c := newTestServer(func(w http.ResponseWriter, r *http.Request) {
+		// should never be reached
+		t.Error("server called despite MIV block")
+		json.NewEncoder(w).Encode(generateResponse{Response: "blocked", Done: true})
+	})
+	defer srv.Close()
+
+	c.SetMIVBlocked()
+	_, err := c.Generate(context.Background(), "prompt", nil)
+	if !errors.Is(err, ErrModelBlocked) {
+		t.Errorf("expected ErrModelBlocked, got %v", err)
+	}
+}
+
+func TestChatBlockedByMIV(t *testing.T) {
+	srv, c := newTestServer(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("server called despite MIV block")
+		json.NewEncoder(w).Encode(chatResponse{Message: Message{Role: RoleAssistant, Content: "blocked"}})
+	})
+	defer srv.Close()
+
+	c.SetMIVBlocked()
+	_, err := c.Chat(context.Background(), []Message{{Role: RoleUser, Content: "hi"}}, nil)
+	if !errors.Is(err, ErrModelBlocked) {
+		t.Errorf("expected ErrModelBlocked, got %v", err)
+	}
 }

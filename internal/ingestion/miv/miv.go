@@ -2,20 +2,50 @@
 //
 // At startup MIV hashes the local GGUF model file and verifies it against a
 // cosign/Sigstore Rekor signed registry. The registry is a JSON file bundled
-// with the binary, signed with a project-controlled key whose public half is
-// embedded at build time.
+// with the binary, signed with a project-controlled ECDSA P-256 key whose
+// public half is embedded at build time.
 //
 // Tiered response (ICML 2025 GGUF backdoor threat model):
-//   - PASS:  known model ID, hash matches the signed registry entry → LLM proceeds.
-//   - WARN:  unrecognised model ID (user's own model) → LLM proceeds after user opt-in.
+//   - PASS:  known model ID, hash matches the signed registry → LLM proceeds.
+//   - WARN:  unrecognised model ID (user's own model) → LLM proceeds after opt-in.
 //   - BLOCK: known model ID, hash mismatch → all LLM calls are skipped; CPG and
 //     pattern matching continue unaffected.
 //
 // MIV gates only LLM invocations. Joern CPG builds, OpenGrep / ast-grep pattern
 // scans, and the HTML report are never blocked.
+//
+// Verification flow:
+//  1. SHA-256 hash the GGUF file (streaming in 32 MB chunks).
+//  2. Parse the GGUF header to extract the model ID (general.name).
+//  3. Verify the bundled registry signature:
+//     a. Primary: look up the registry hash in Sigstore Rekor (3s timeout).
+//     b. Fallback: verify ECDSA P-256 signature against the embedded public key.
+//     Registry signature must pass before hash comparison is trusted.
+//  4. Look up the model ID in the verified registry.
+//  5. Compare hashes → PASS / WARN / BLOCK.
 package miv
 
-import "context"
+import (
+	_ "embed"
+	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"strings"
+	"time"
+)
+
+//go:embed data/registry.json
+var embeddedRegistry []byte
+
+//go:embed data/registry.json.sig
+var embeddedRegistrySig []byte
+
+//go:embed data/cosign.pub
+var embeddedPublicKey []byte
+
+// ErrNotGGUF is returned by readGGUFModelID when the file is not a valid GGUF.
+var ErrNotGGUF = errors.New("not a GGUF file")
 
 // Status is the tiered verification outcome.
 type Status string
@@ -67,14 +97,14 @@ type RegistryEntry struct {
 
 // Verifier hashes the GGUF model file and compares it against the signed registry.
 type Verifier struct {
-	// registryPath is the path to the signed JSON registry file (bundled in binary via embed).
-	registryPath string
-	// publicKeyPath is the path to the cosign public key used to verify the registry signature.
-	publicKeyPath string
+	registryPath  string // if empty, uses embeddedRegistry
+	publicKeyPath string // if empty, uses embeddedPublicKey
+	rekorURL      string // Sigstore Rekor base URL; injectable for tests
+	httpClient    *http.Client
 }
 
 // New returns a Verifier using the bundled registry and public key at the given paths.
-// Passing empty strings causes the embedded defaults to be used (resolved in G2.M2.2).
+// Passing empty strings causes the embedded defaults to be used.
 //
 // Parameters:
 //   - registryPath: path to the signed model hash registry JSON file.
@@ -83,14 +113,17 @@ func New(registryPath, publicKeyPath string) *Verifier {
 	return &Verifier{
 		registryPath:  registryPath,
 		publicKeyPath: publicKeyPath,
+		rekorURL:      "https://rekor.sigstore.dev",
+		httpClient:    &http.Client{Timeout: 5 * time.Second},
 	}
 }
 
 // Verify runs the full integrity check pipeline for the model at modelPath:
 //  1. SHA-256 hash the GGUF file.
-//  2. Verify the registry file's cosign/Rekor signature.
-//  3. Look up the model ID (from GGUF metadata) in the verified registry.
-//  4. Compare the actual hash against the registry entry.
+//  2. Extract the model ID from the GGUF metadata (general.name).
+//  3. Verify the registry signature (Rekor primary, ECDSA fallback).
+//  4. Look up the model ID in the verified registry.
+//  5. Compare hashes → PASS / WARN / BLOCK.
 //
 // WARN does not block; BLOCK stops all LLM invocations.
 //
@@ -102,35 +135,60 @@ func New(registryPath, publicKeyPath string) *Verifier {
 //   - *Result: the verification outcome with status, hashes, and message.
 //   - error: non-nil only for infrastructure failures (file unreadable, registry malformed).
 func (v *Verifier) Verify(ctx context.Context, modelPath string) (*Result, error) {
-	// implemented in G2.M2.2
-	return &Result{Status: StatusWarn, Message: "MIV not yet implemented"}, nil
-}
+	// 1. Hash the GGUF file.
+	actualHash, err := hashGGUF(ctx, modelPath)
+	if err != nil {
+		return nil, fmt.Errorf("hash model file: %w", err)
+	}
 
-// LoadRegistry reads and verifies the signature of the registry at v.registryPath
-// and returns its entries. Returns an error if the signature is invalid.
-//
-// Parameters:
-//   - ctx: cancellation context.
-//
-// Returns:
-//   - []RegistryEntry: all entries in the verified registry.
-//   - error: non-nil if the file is unreadable or the cosign signature fails.
-func (v *Verifier) LoadRegistry(ctx context.Context) ([]RegistryEntry, error) {
-	// implemented in G2.M2.2
-	return nil, nil
-}
+	// 2. Extract model ID from GGUF metadata.
+	modelID, err := readGGUFModelID(modelPath)
+	if err != nil {
+		// Not a GGUF or unsupported version — WARN; user may opt in.
+		msg := "unrecognised model format; cannot verify integrity — LLM proceeds after user opt-in"
+		if !errors.Is(err, ErrNotGGUF) {
+			msg = fmt.Sprintf("GGUF parse error (%v); cannot verify integrity — LLM proceeds after user opt-in", err)
+		}
+		return &Result{
+			Status:     StatusWarn,
+			ActualHash: actualHash,
+			Message:    msg,
+		}, nil
+	}
 
-// hashGGUF computes the SHA-256 hex digest of the GGUF file at modelPath.
-// Large models (>10 GB) are streamed in 32 MB chunks to bound memory usage.
-//
-// Parameters:
-//   - ctx: cancellation context; cancellation halts streaming mid-file.
-//   - modelPath: absolute path to the GGUF file.
-//
-// Returns:
-//   - string: lowercase hex-encoded SHA-256 digest.
-//   - error: non-nil if the file cannot be opened or read.
-func hashGGUF(ctx context.Context, modelPath string) (string, error) {
-	// implemented in G2.M2.2
-	return "", nil
+	// 3. Load and verify the registry signature.
+	entries, err := v.LoadRegistry(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("load registry: %w", err)
+	}
+
+	// 4+5. Look up model ID and compare hashes.
+	for _, e := range entries {
+		if strings.EqualFold(e.ModelID, modelID) {
+			if e.SHA256 == actualHash {
+				return &Result{
+					Status:       StatusPass,
+					ModelID:      modelID,
+					ActualHash:   actualHash,
+					ExpectedHash: e.SHA256,
+					Message:      "model integrity verified — hash matches signed registry",
+				}, nil
+			}
+			return &Result{
+				Status:       StatusBlock,
+				ModelID:      modelID,
+				ActualHash:   actualHash,
+				ExpectedHash: e.SHA256,
+				Message:      fmt.Sprintf("hash mismatch for known model %q — all LLM calls blocked", modelID),
+			}, nil
+		}
+	}
+
+	// Model not in registry → WARN.
+	return &Result{
+		Status:     StatusWarn,
+		ModelID:    modelID,
+		ActualHash: actualHash,
+		Message:    fmt.Sprintf("model %q not in signed registry — LLM proceeds after user opt-in", modelID),
+	}, nil
 }

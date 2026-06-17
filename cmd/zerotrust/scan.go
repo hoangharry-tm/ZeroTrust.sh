@@ -36,6 +36,7 @@ import (
 	"github.com/hoangharry-tm/zerotrust/internal/ingestion/diffindex"
 	"github.com/hoangharry-tm/zerotrust/internal/ingestion/miv"
 	"github.com/hoangharry-tm/zerotrust/internal/output"
+	"github.com/hoangharry-tm/zerotrust/pkg/ollama"
 	"github.com/hoangharry-tm/zerotrust/internal/patch"
 	"github.com/hoangharry-tm/zerotrust/internal/pattern/astgrep"
 	"github.com/hoangharry-tm/zerotrust/internal/pattern/instrscan"
@@ -63,6 +64,10 @@ type pipeline struct {
 	// ingestion
 	ingester *ingestion.Ingester
 
+	// Ollama client — shared by backbone check and any direct Go-side LLM calls.
+	// SetMIVBlocked() is called after ingestion when MIV returns StatusBlock.
+	llm *ollama.Client
+
 	// Path A
 	opengrep *opengrep.Runner
 	astgrep  *astgrep.Runner
@@ -71,20 +76,20 @@ type pipeline struct {
 	verif    *verifier.Verifier
 
 	// Path B
-	target  *targeting.Targeter
-	enrich  *enrichment.Enricher
-	clf     *classifier.Gate
-	asm     *assembler.Assembler
-	sum     *summarizer.Summarizer
-	bud     *budget.Controller
-	scan    *llmscan.Scanner
-	store   *scs.Store
+	target *targeting.Targeter
+	enrich *enrichment.Enricher
+	clf    *classifier.Gate
+	asm    *assembler.Assembler
+	sum    *summarizer.Summarizer
+	bud    *budget.Controller
+	scan   *llmscan.Scanner
+	store  *scs.Store
 
 	// shared
-	w    *worker.Manager
-	dd   *dedup.Layer
-	gen  *patch.Generator
-	rep  *report.Generator
+	w   *worker.Manager
+	dd  *dedup.Layer
+	gen *patch.Generator
+	rep *report.Generator
 }
 
 // newPipeline constructs the full pipeline from cfg.
@@ -120,8 +125,11 @@ func newPipeline(ctx context.Context, cfg ScanConfig) (*pipeline, error) {
 
 	// Ingestion layer
 	indexer := diffindex.New(db)
-	mivVer := miv.New("", "") // paths resolved from embedded registry in G2
+	mivVer := miv.New("", "")
 	ingester := ingestion.New(indexer, mivVer)
+
+	// Ollama client — model-agnostic; model name from config.
+	llmClient := ollama.New(cfg.OllamaURL, cfg.ModelName)
 
 	// Path A
 	og := opengrep.New("opengrep", "rules/")
@@ -149,6 +157,7 @@ func newPipeline(ctx context.Context, cfg ScanConfig) (*pipeline, error) {
 	return &pipeline{
 		cfg:      cfg,
 		ingester: ingester,
+		llm:      llmClient,
 		opengrep: og,
 		astgrep:  ag,
 		joern:    jc,
@@ -185,6 +194,12 @@ func (p *pipeline) run(ctx context.Context, events chan<- output.Event) error {
 	if err != nil {
 		return fmt.Errorf("ingestion: %w", err)
 	}
+	// Gate all Go-side LLM calls when MIV detected a known model with a bad hash.
+	// CPG build and pattern matching proceed regardless.
+	if ingResult.BlockLLM {
+		p.llm.SetMIVBlocked()
+	}
+
 	changedCount := 0
 	if ingResult.ChangeSet != nil {
 		changedCount = len(ingResult.ChangeSet.Changed)

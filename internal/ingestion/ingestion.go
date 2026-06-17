@@ -91,13 +91,16 @@ func (ig *Ingester) Run(ctx context.Context, cfg Config) (*Result, error) {
 
 	go func() {
 		defer wg.Done()
-		// implemented in G2.M2.2
-		_, _ = mivRes, mivErr
+		if cfg.ModelPath == "" {
+			mivRes = &miv.Result{Status: miv.StatusWarn, Message: "no model path specified; MIV skipped"}
+			return
+		}
+		mivRes, mivErr = ig.verifier.Verify(ctx, cfg.ModelPath)
 	}()
 
 	go func() {
 		defer wg.Done()
-		// implemented in G2.M2.2
+		// DI implementation wired in ML0.4
 		_, _ = cs, diffErr
 	}()
 

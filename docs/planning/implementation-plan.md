@@ -46,12 +46,12 @@ Build the Go binary skeleton, ingestion layer (MIV + DI content-hash), pattern d
 | L0.1B.T2 | Minimal renderer: plain stdout, ANSI stripped in pipe, coloured in TTY; exit codes 0/1/2 | Jun 17 | 3.0 | Done | `internal/output/minimal.go`; `fatih/color` for severity labels |
 | L0.1B.T3 | TUI skeleton: Bubble Tea 2-panel layout; 5 tabs (log · findings · summary · suppressed · patches); scanning + done states | Jun 17 | 4.0 | Done | `internal/output/tui/{model,update,view}.go`; matches `docs/cli-output-design.md` spec; tree renderer added as Option C (`internal/output/tree.go`) |
 | L0.1B.T4 | Wire live pipeline events into TUI panels; keyboard navigation; Glamour for markdown | Jun 17 | 1.5 | Done | Typed `output.Event` channel; `EventStageStart/End/Finding/Log/Error/Done`; all renderers consume same channel |
-| **ML0.2** | **Ollama HTTP Client** | Jun 24 | 4.0 | — | |
-| L0.2.T1 | Ollama HTTP client wrapper (Go → `localhost:11434`); model-agnostic — model name is config, not code | Jun 24 | 4.0 | | Shared by LLM Verifier, LLM Scan, and patch generation |
-| **ML0.3** | **Model Integrity Verifier** | Jun 25–27 | 17.5 | — | |
-| L0.3.T1 | MIV: SHA256 hash of GGUF model file | Jun 25 | 2.5 | | |
-| L0.3.T2 | MIV: cosign/Sigstore Rekor registry verification; bundled maintainer public key | Jun 25–27 | 12.0 | | **Revised from 4h → 12h.** TUF root trust init + Rekor network call is non-trivial. Fallback: if Rekor call fails after 3s, use local `sha256sums.json` + `crypto/ecdsa` verify. Security model holds — registry is still signed; document the fallback path explicitly. Tiered: WARN (unrecognised ID) · BLOCK (known ID + hash mismatch) |
-| L0.3.T3 | MIV gates LLM calls only — CPG + pattern matching proceed regardless; wire gate into Ollama client wrapper | Jun 27 | 3.0 | | |
+| **ML0.2** | **Ollama HTTP Client** | Jun 17 | 4.0 | **Done** | Delivered Jun 17 — 7 days early |
+| L0.2.T1 | Ollama HTTP client wrapper (Go → `localhost:11434`); model-agnostic — model name is config, not code | Jun 17 | 4.0 | Done | `Chat` + `BackboneCheck` implemented; `ErrModelBlocked` + `SetMIVBlocked()` gate; 14 tests |
+| **ML0.3** | **Model Integrity Verifier** | Jun 17 | 17.5 | **Done** | Delivered Jun 17 — 8 days early |
+| L0.3.T1 | MIV: SHA256 hash of GGUF model file | Jun 17 | 2.5 | Done | Streaming in 32 MB chunks; context-cancellable; `internal/ingestion/miv/hash.go` |
+| L0.3.T2 | MIV: cosign/Sigstore Rekor registry verification; bundled maintainer public key | Jun 17 | 12.0 | Done | ECDSA P-256 primary gate (stdlib); Rekor best-effort transparency check (3s timeout → ECDSA fallback); embedded `data/{registry.json,registry.json.sig,cosign.pub}`; 15 tests |
+| L0.3.T3 | MIV gates LLM calls only — CPG + pattern matching proceed regardless; wire gate into Ollama client wrapper | Jun 17 | 3.0 | Done | `ingestion.Run` calls `verifier.Verify`; `BlockLLM` flag → `ollama.Client.SetMIVBlocked()` in `scan.go` |
 | **ML0.4** | **Differential Indexer (content-hash only)** | Jun 27–28 | 5.5 | — | CPG expansion added after Joern spike (ML1 dependency) |
 | L0.4.T1 | SQLite state cache (`modernc.org/sqlite`): `project_id / file_path / content_hash / last_scanned_at / module_path / cpg_included` | Jun 27 | 3.5 | | Pure-Go; no CGo dependency |
 | L0.4.T2 | DI: content-hash diff; emit dirty-file set to pipeline; full scan on first invocation | Jun 28 | 2.0 | | One-hop CPG caller/callee expansion scheduled post-Joern spike (ML2.1.T3) |
