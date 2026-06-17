@@ -40,6 +40,11 @@ Build the Go binary skeleton, ingestion layer (MIV + DI content-hash), pattern d
 | L0.1.T1 | Go module init + CLI flag parsing (`cobra`) | Jun 23 | 2.0 | | |
 | L0.1.T2 | Goroutine dispatcher: spawn Path A + Path B goroutines; Finding channel interface | Jun 23–24 | 5.0 | | Lock this interface first — every downstream component depends on it |
 | L0.1.T3 | Finding struct: `{id, path, line_range, cwe, severity_label, confidence, source_path, reason, poe_context}` | Jun 24 | 3.0 | | `poe_context` forward-compatible with future PoE layer |
+| **ML0.1B** | **CLI Output Layer** | Jun 24–25 | 10.0 | — | Auto-detect TTY; two modes |
+| L0.1B.T1 | Output mode detection: `isatty` check on `os.Stdout`; auto-select minimal (no TTY) or interactive (TTY); `--output minimal\|interactive` flag overrides | Jun 24 | 1.5 | | Enables CI/CD gating with no flag required |
+| L0.1B.T2 | Minimal renderer: plain stdout, ANSI-free, one line per stage + one line per finding; exit code 1 on any BLOCK/HIGH finding | Jun 24 | 3.0 | | Target: CI pipelines, server runs, pipe/redirect |
+| L0.1B.T3 | Interactive TUI skeleton: Bubble Tea event loop + Lip Gloss layout; 3-panel layout (pipeline progress · live findings feed · summary bar) | Jun 24–25 | 4.0 | | `github.com/charmbracelet/bubbletea` + `lipgloss` + `bubbles` |
+| L0.1B.T4 | Wire live pipeline events into TUI panels as scan progresses; keyboard navigation through findings post-scan | Jun 25 | 1.5 | | Glamour for markdown rendering in justification text |
 | **ML0.2** | **Ollama HTTP Client** | Jun 24 | 4.0 | — | |
 | L0.2.T1 | Ollama HTTP client wrapper (Go → `localhost:11434`); model-agnostic — model name is config, not code | Jun 24 | 4.0 | | Shared by LLM Verifier, LLM Scan, and patch generation |
 | **ML0.3** | **Model Integrity Verifier** | Jun 25–27 | 17.5 | — | |
