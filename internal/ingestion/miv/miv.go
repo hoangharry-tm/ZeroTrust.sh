@@ -26,8 +26,8 @@
 package miv
 
 import (
-	_ "embed"
 	"context"
+	_ "embed"
 	"errors"
 	"fmt"
 	"net/http"

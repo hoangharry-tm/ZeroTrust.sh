@@ -16,10 +16,13 @@ import (
 const maxTaintPaths = 1_000
 
 // joernGraph implements cpg.Graph via Joern HTTP JSON queries (Joern DSL over HTTP).
-// All methods use a background context internally because the cpg.Graph interface
-// does not accept contexts. The per-query HTTP timeout (default 30 s) prevents hangs.
+// ctx is the scan lifetime context propagated to every doQuery call so that
+// Ctrl-C / deadline cancellation aborts in-flight Joern queries promptly.
+// Use Client.GraphWithContext to supply a real scan context; Graph() falls back
+// to context.Background() for callers that do not have one.
 type joernGraph struct {
 	client *Client
+	ctx    context.Context //nolint:containedctx // intentional: scan lifetime, not request lifetime
 }
 
 // ─── Joern DSL query templates ────────────────────────────────────────────────
@@ -181,7 +184,7 @@ type joernFinding struct {
 // QueryNodes returns all nodes of nodeType across all ingested source files.
 func (g *joernGraph) QueryNodes(nodeType cpg.NodeType) ([]cpg.Node, error) {
 	q := nodeTypeQuery(nodeType)
-	raw, err := g.client.doQuery(context.Background(), q)
+	raw, err := g.client.doQuery(g.ctx,q)
 	if err != nil {
 		return nil, fmt.Errorf("joern: QueryNodes(%s): %w", nodeType, err)
 	}
@@ -200,7 +203,7 @@ func (g *joernGraph) QueryNodesByFile(relPath string, nodeType cpg.NodeType) ([]
 	default:
 		q = fmt.Sprintf(queryCallsByFile, escapeScalaString(relPath))
 	}
-	raw, err := g.client.doQuery(context.Background(), q)
+	raw, err := g.client.doQuery(g.ctx,q)
 	if err != nil {
 		return nil, fmt.Errorf("joern: QueryNodesByFile(%s, %s): %w", relPath, nodeType, err)
 	}
@@ -219,14 +222,14 @@ func (g *joernGraph) QueryEdges(fromID, toID string) ([]cpg.Edge, error) {
 	switch {
 	case fromID != "" && toID == "":
 		q := fmt.Sprintf(queryEdgesFrom, fromID)
-		raw, err = g.client.doQuery(context.Background(), q)
+		raw, err = g.client.doQuery(g.ctx,q)
 	case toID != "" && fromID == "":
 		q := fmt.Sprintf(queryEdgesTo, toID)
-		raw, err = g.client.doQuery(context.Background(), q)
+		raw, err = g.client.doQuery(g.ctx,q)
 	default:
 		// Both set: query from-side and filter by toID on the Go side.
 		q := fmt.Sprintf(queryEdgesFrom, fromID)
-		raw, err = g.client.doQuery(context.Background(), q)
+		raw, err = g.client.doQuery(g.ctx,q)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("joern: QueryEdges: %w", err)
@@ -252,7 +255,7 @@ func (g *joernGraph) QueryEdges(fromID, toID string) ([]cpg.Edge, error) {
 
 // GetCallGraph returns the full inter-procedural call graph.
 func (g *joernGraph) GetCallGraph() (cpg.CallGraph, error) {
-	raw, err := g.client.doQuery(context.Background(), queryAllEdges)
+	raw, err := g.client.doQuery(g.ctx,queryAllEdges)
 	if err != nil {
 		return nil, fmt.Errorf("joern: GetCallGraph: %w", err)
 	}
@@ -276,7 +279,7 @@ func (g *joernGraph) GetCallers(functionID string) ([]cpg.Node, error) {
 		return nil, fmt.Errorf("joern: GetCallers: functionID must not be empty")
 	}
 	q := fmt.Sprintf(queryCallersByID, functionID)
-	raw, err := g.client.doQuery(context.Background(), q)
+	raw, err := g.client.doQuery(g.ctx,q)
 	if err != nil {
 		return nil, fmt.Errorf("joern: GetCallers(%s): %w", functionID, err)
 	}
@@ -290,7 +293,7 @@ func (g *joernGraph) GetCallees(functionID string) ([]cpg.Node, error) {
 		return nil, fmt.Errorf("joern: GetCallees: functionID must not be empty")
 	}
 	q := fmt.Sprintf(queryCalleesByID, functionID)
-	raw, err := g.client.doQuery(context.Background(), q)
+	raw, err := g.client.doQuery(g.ctx,q)
 	if err != nil {
 		return nil, fmt.Errorf("joern: GetCallees(%s): %w", functionID, err)
 	}
@@ -358,11 +361,11 @@ func (g *joernGraph) TaintPaths(sources []cpg.TaintSource, sinks []cpg.TaintSink
 	}
 
 	// Trigger the dataflow pass — idempotent if already run.
-	if _, err := g.client.doQuery(context.Background(), queryRunTaint); err != nil {
+	if _, err := g.client.doQuery(g.ctx,queryRunTaint); err != nil {
 		return nil, fmt.Errorf("joern: TaintPaths: run.ossdataflow: %w", err)
 	}
 
-	raw, err := g.client.doQuery(context.Background(), queryFindings)
+	raw, err := g.client.doQuery(g.ctx,queryFindings)
 	if err != nil {
 		return nil, fmt.Errorf("joern: TaintPaths: query findings: %w", err)
 	}
@@ -384,6 +387,9 @@ func (g *joernGraph) TaintPaths(sources []cpg.TaintSource, sinks []cpg.TaintSink
 		first := f.Evidence[0]
 		last := f.Evidence[len(f.Evidence)-1]
 
+		// Classify the sink kind using the language-specific taint taxonomy.
+		sinkKind := classifySinkKind(last.Name, last.File)
+
 		path := cpg.TaintPath{
 			Source: cpg.TaintSource{
 				NodeID: first.ID,
@@ -393,7 +399,7 @@ func (g *joernGraph) TaintPaths(sources []cpg.TaintSource, sinks []cpg.TaintSink
 			},
 			Sink: cpg.TaintSink{
 				NodeID: last.ID,
-				Kind:   cpg.SinkSQL, // most common; refined in L2 taint taxonomy
+				Kind:   sinkKind,
 				File:   last.File,
 				Line:   last.Line,
 			},
@@ -496,4 +502,53 @@ func escapeScalaString(s string) string {
 	s = strings.ReplaceAll(s, `\`, `\\`)
 	s = strings.ReplaceAll(s, `"`, `\"`)
 	return s
+}
+
+// classifySinkKind uses the language-specific taint taxonomy to determine the
+// correct SinkKind for a Joern finding node. Falls back to generic detection
+// when the language or name is not in the taxonomy.
+func classifySinkKind(callName, filePath string) cpg.SinkKind {
+	lang, ok := DetectLanguage(filePath)
+	if !ok {
+		return classifySinkKindGeneric(callName)
+	}
+	def, found := SinkDefForCall(lang, callName)
+	if !found {
+		return classifySinkKindGeneric(callName)
+	}
+	return def.Kind
+}
+
+// classifySinkKindGeneric attempts to classify a sink call name without
+// language-specific knowledge. This is a fallback when the language is unknown.
+func classifySinkKindGeneric(callName string) cpg.SinkKind {
+	switch {
+	case containsAnyFold(callName, "query", "execute", "find", "raw", "sql"):
+		return cpg.SinkSQL
+	case containsAnyFold(callName, "exec", "system", "popen", "spawn", "Popen", "fork", "shell"):
+		return cpg.SinkCommand
+	case containsAnyFold(callName, "readObject", "unserialize", "deserialize", "pickle", "yaml.load"):
+		return cpg.SinkDeserialization
+	case containsAnyFold(callName, "write", "FileWriter", "FileOutputStream", "Create", "copy"):
+		return cpg.SinkFileWrite
+	case containsAnyFold(callName, "render", "Template"):
+		return cpg.SinkTemplate
+	case containsAnyFold(callName, "redirect", "forward"):
+		return cpg.SinkRedirect
+	case containsAnyFold(callName, "eval", "compile"):
+		return cpg.SinkEval
+	default:
+		return cpg.SinkUnknown
+	}
+}
+
+// containsAnyFold reports whether s contains any of the substrings (case-insensitive).
+func containsAnyFold(s string, substrs ...string) bool {
+	lower := strings.ToLower(s)
+	for _, sub := range substrs {
+		if strings.Contains(lower, strings.ToLower(sub)) {
+			return true
+		}
+	}
+	return false
 }

@@ -37,6 +37,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"sync"
 	"sync/atomic"
@@ -204,7 +205,11 @@ func newManager(args []string) *Manager {
 //   - ctx: cancellation context; if cancelled, the subprocess is killed.
 //   - workerPath: path to the worker entry point (e.g. "worker/main.py").
 func Start(ctx context.Context, workerPath string) (*Manager, error) {
-	m := newManager([]string{"python3", workerPath})
+	py := os.Getenv("ZEROTRUST_PYTHON")
+	if py == "" {
+		py = "python3"
+	}
+	m := newManager([]string{py, workerPath})
 	if err := m.spawn(); err != nil {
 		return nil, fmt.Errorf("worker: spawn: %w", err)
 	}

@@ -10,6 +10,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"time"
 
 	_ "modernc.org/sqlite" // register "sqlite" driver
 )
@@ -158,8 +159,15 @@ func (db *DB) DeleteScanState(ctx context.Context, projectID, filePath string) e
 //   - projectID: project identifier.
 //   - findingID: the stable dedup hash of the finding.
 func (db *DB) IsSuppressed(ctx context.Context, projectID, findingID string) (bool, error) {
-	// implemented in G4.M4.1
-	return false, nil
+	var count int
+	err := db.conn.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM suppressions WHERE project_id = ? AND finding_id = ?`,
+		projectID, findingID,
+	).Scan(&count)
+	if err != nil {
+		return false, fmt.Errorf("sqlite: IsSuppressed: %w", err)
+	}
+	return count > 0, nil
 }
 
 // AddSuppression records a new suppression decision.
@@ -169,7 +177,17 @@ func (db *DB) IsSuppressed(ctx context.Context, projectID, findingID string) (bo
 //   - ctx: cancellation context.
 //   - row: the suppression to persist.
 func (db *DB) AddSuppression(ctx context.Context, row SuppressionRow) error {
-	// implemented in G4.M4.1
+	if row.SuppressedAt == 0 {
+		row.SuppressedAt = time.Now().Unix()
+	}
+	_, err := db.conn.ExecContext(ctx,
+		`INSERT OR REPLACE INTO suppressions (project_id, finding_id, reason, suppressed_at)
+		 VALUES (?, ?, ?, ?)`,
+		row.ProjectID, row.FindingID, row.Reason, row.SuppressedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("sqlite: AddSuppression: %w", err)
+	}
 	return nil
 }
 
@@ -180,8 +198,28 @@ func (db *DB) AddSuppression(ctx context.Context, row SuppressionRow) error {
 //   - ctx: cancellation context.
 //   - projectID: project identifier.
 func (db *DB) ListSuppressions(ctx context.Context, projectID string) ([]SuppressionRow, error) {
-	// implemented in G4.M4.1
-	return nil, nil
+	rows, err := db.conn.QueryContext(ctx,
+		`SELECT project_id, finding_id, reason, suppressed_at
+		 FROM suppressions WHERE project_id = ?`,
+		projectID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: ListSuppressions: %w", err)
+	}
+	defer rows.Close() //nolint:errcheck
+
+	var result []SuppressionRow
+	for rows.Next() {
+		var r SuppressionRow
+		if err := rows.Scan(&r.ProjectID, &r.FindingID, &r.Reason, &r.SuppressedAt); err != nil {
+			return nil, fmt.Errorf("sqlite: ListSuppressions scan: %w", err)
+		}
+		result = append(result, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sqlite: ListSuppressions: %w", err)
+	}
+	return result, nil
 }
 
 // ─── schema ──────────────────────────────────────────────────────────────────

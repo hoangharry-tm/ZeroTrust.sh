@@ -52,6 +52,7 @@ import (
 	"github.com/hoangharry-tm/zerotrust/internal/semantic/summarizer"
 	"github.com/hoangharry-tm/zerotrust/internal/semantic/targeting"
 	"github.com/hoangharry-tm/zerotrust/internal/worker"
+	"github.com/hoangharry-tm/zerotrust/pkg/cpg"
 	"github.com/hoangharry-tm/zerotrust/pkg/ollama"
 	"github.com/hoangharry-tm/zerotrust/pkg/sqlite"
 )
@@ -91,6 +92,7 @@ type pipeline struct {
 	dd  *dedup.Layer
 	gen *patch.Generator
 	rep *report.Generator
+
 }
 
 // newPipeline constructs the full pipeline from cfg.
@@ -146,7 +148,7 @@ func newPipeline(ctx context.Context, cfg ScanConfig) (*pipeline, error) {
 	vf := verifier.New(wm)
 
 	// Path B — graph shared from Joern after CPG build
-	graph := jc.Graph()
+	graph := jc.GraphWithContext(ctx)
 	tgt := targeting.New(graph)
 	enr := enrichment.New(graph, "trivy", cfg.Offline)
 	clf := classifier.New(wm)
@@ -234,6 +236,56 @@ func (p *pipeline) run(ctx context.Context, events chan<- output.Event) error {
 		},
 	})
 
+	// ── 1.5. CPG BUILD / LOAD ──────────────────────────────────────────────────
+	// Build or load the CPG from the scope files. On first scan this is a full
+	// build; on repeat scans it loads a snapshot and applies incremental patches.
+	// Non-fatal: if the CPG cannot be built, taint analysis is skipped but
+	// OpenGrep + ast-grep + instrscan continue.
+	var scopeFiles []string
+	if ingResult.ChangeSet != nil && len(ingResult.ChangeSet.Changed) > 0 {
+		changed := ingResult.ChangeSet.Changed
+
+		// Detect working modules and determine scope.
+		modules := joern.DetectWorkingModules(changed)
+		if p.joern != nil {
+			graph := p.joern.GraphWithContext(ctx)
+
+			// Attempt CPG build or load + incremental patch.
+			cpgPath := cpgSnapshotPath(p.cfg.ProjectID)
+			buildErr := p.buildOrLoadCPG(ctx, cpgPath, changed, events)
+			if buildErr == nil {
+				// CPG ready — expand scope via modules.
+				depth := moduleDepthForMode(p.cfg.ScanMode)
+				if depth > 0 {
+					// First expand change set with one-hop CPG neighbours.
+					expanded, expandErr := diffindex.ExpandWithCPG(ctx, ingResult.ChangeSet, graph)
+					if expandErr == nil {
+						modules = joern.DetectWorkingModules(expanded.Changed)
+					}
+					joern.ExpandModuleScope(modules, graph, depth)
+				}
+				scopeFiles = joern.FilterScopeByLanguage(joern.FlattenScope(modules))
+			} else {
+				output.Emit(events, output.Event{
+					Kind: output.EventLog,
+					Log:  fmt.Sprintf("warn: cpg build: %v — taint analysis disabled", buildErr),
+				})
+				scopeFiles = joern.FilterScopeByLanguage(changed)
+			}
+		} else {
+			scopeFiles = changed
+		}
+	}
+
+	output.Emit(events, output.Event{
+		Kind:  output.EventStageEnd,
+		Stage: "cpg",
+		Summary: &output.StageSummary{
+			Stage:  "cpg",
+			Detail: fmt.Sprintf("%d files in scope after expansion", len(scopeFiles)),
+		},
+	})
+
 	// ── 2 + 3. PATH A ∥ PATH B ───────────────────────────────────────────────
 	// Both paths write findings to a shared buffered channel; results are
 	// collected by the drain goroutine below. Neither path gates the other.
@@ -243,7 +295,7 @@ func (p *pipeline) run(ctx context.Context, events chan<- output.Event) error {
 
 	g.Go(func() error {
 		defer func() { /* Path A done; Path B may still be running */ }()
-		return p.runPathA(gctx, ingResult, findCh, events)
+		return p.runPathA(gctx, ingResult, scopeFiles, findCh, events)
 	})
 	g.Go(func() error {
 		return p.runPathB(gctx, ingResult, findCh, events)
@@ -339,7 +391,8 @@ func (p *pipeline) run(ctx context.Context, events chan<- output.Event) error {
 // runPathA executes all Path A detectors concurrently, then runs the LLM Verifier
 // on the collected findings before writing to ch.
 //
-// Three goroutines collect into a buffer in parallel:
+// Four goroutines collect into a buffer in parallel:
+//  0. Joern CPG taint analysis — inter-procedural dataflow on scope files.
 //  1. OpenGrep — structural pattern matching for Python/Java/JS/Go/Ruby/PHP.
 //  2. ast-grep — pattern matching for Rust/Dart/Swift/Kotlin/C#.
 //  3. instrscan — AI agent instruction file and MCP config injection scan
@@ -350,7 +403,7 @@ func (p *pipeline) run(ctx context.Context, events chan<- output.Event) error {
 // The remainder go through the LLM Verifier (CoD + SCoT + ASC) before emission.
 // Verifier failures degrade gracefully: unverified findings are emitted rather than
 // silently dropped.
-func (p *pipeline) runPathA(ctx context.Context, res *ingestion.Result, ch finding.Channel, events chan<- output.Event) error {
+func (p *pipeline) runPathA(ctx context.Context, res *ingestion.Result, scopeFiles []string, ch finding.Channel, events chan<- output.Event) error {
 	output.Emit(events, output.Event{Kind: output.EventStageStart, Stage: "path a"})
 
 	var changed []string
@@ -358,7 +411,7 @@ func (p *pipeline) runPathA(ctx context.Context, res *ingestion.Result, ch findi
 		changed = res.ChangeSet.Changed
 	}
 
-	// rawBuf collects findings from all three detectors; protected by mu.
+	// rawBuf collects findings from all detectors; protected by mu.
 	var (
 		mu     sync.Mutex
 		rawBuf []finding.Finding
@@ -372,11 +425,28 @@ func (p *pipeline) runPathA(ctx context.Context, res *ingestion.Result, ch findi
 
 	g, gctx := errgroup.WithContext(ctx)
 
-	// OpenGrep — owns Python/Java/JS/TS/Go/Ruby/PHP
+	// 0. Joern CPG taint analysis — inter-procedural dataflow on scope files.
+	g.Go(func() error {
+		if len(scopeFiles) == 0 || p.joern == nil {
+			return nil
+		}
+		graph := p.joern.GraphWithContext(ctx)
+		findings, err := runJoernTaint(gctx, graph, scopeFiles)
+		if err != nil {
+			output.Emit(events, output.Event{
+				Kind: output.EventLog,
+				Log:  fmt.Sprintf("warn: joern taint: %v", err),
+			})
+			return nil
+		}
+		collect(findings)
+		return nil
+	})
+
+	// 1. OpenGrep — owns Python/Java/JS/TS/Go/Ruby/PHP
 	g.Go(func() error {
 		findings, err := p.opengrep.Scan(gctx, changed)
 		if err != nil {
-			// non-fatal: log and continue; missing binary or empty rule dir
 			output.Emit(events, output.Event{
 				Kind: output.EventLog,
 				Log:  fmt.Sprintf("warn: opengrep: %v", err),
@@ -387,7 +457,7 @@ func (p *pipeline) runPathA(ctx context.Context, res *ingestion.Result, ch findi
 		return nil
 	})
 
-	// ast-grep — owns Rust/Dart/Swift/Kotlin/C#
+	// 2. ast-grep — owns Rust/Dart/Swift/Kotlin/C#
 	g.Go(func() error {
 		agFiles := astgrep.FilterFiles(changed)
 		findings, err := p.astgrep.Scan(gctx, agFiles)
@@ -402,9 +472,7 @@ func (p *pipeline) runPathA(ctx context.Context, res *ingestion.Result, ch findi
 		return nil
 	})
 
-	// instrscan — AI agent instruction file and MCP config injection.
-	// Guard: skip entirely when no instruction files appear in the changeset,
-	// avoiding a full-tree walk on repeat scans that touched only source files.
+	// 3. instrscan — AI agent instruction file and MCP config injection.
 	g.Go(func() error {
 		if !instrscan.ContainsInstructionFile(changed) {
 			return nil
@@ -555,4 +623,183 @@ func stateDBPath() (string, error) {
 		return "", fmt.Errorf("mkdir ~/.zerotrust: %w", err)
 	}
 	return filepath.Join(dir, "scans.db"), nil
+}
+
+// ── CPG build helpers ─────────────────────────────────────────────────────────
+
+// buildOrLoadCPG builds a fresh CPG or loads an existing snapshot and applies
+// incremental patches. Returns nil on success or an error if the CPG cannot be
+// prepared (non-fatal — callers proceed without taint analysis).
+func (p *pipeline) buildOrLoadCPG(ctx context.Context, cpgPath string, changedFiles []string, events chan<- output.Event) error {
+	if p.joern == nil {
+		return fmt.Errorf("joern client not initialized")
+	}
+
+	// Check if a prior CPG snapshot exists.
+	snapshotExists := false
+	if _, err := os.Stat(cpgPath); err == nil {
+		snapshotExists = true
+	}
+
+	if snapshotExists {
+		output.Emit(events, output.Event{
+			Kind:  output.EventLog,
+			Stage: "cpg",
+			Log:   "loading prior CPG snapshot for incremental update",
+		})
+
+		// Load the prior CPG.
+		if err := p.joern.LoadCPG(ctx, cpgPath); err != nil {
+			return fmt.Errorf("load cpg: %w", err)
+		}
+
+		// Build the incremental config from changed files.
+		// Map changed files to function names via CPG queries.
+		graph := p.joern.GraphWithContext(ctx)
+		var changedFunctions []string
+		for _, f := range changedFiles {
+			nodes, err := graph.QueryNodesByFile(f, cpg.NodeMethod)
+			if err != nil || len(nodes) == 0 {
+				// If the file is new, we need a full rebuild.
+				output.Emit(events, output.Event{
+					Kind:  output.EventLog,
+					Stage: "cpg",
+					Log:   fmt.Sprintf("no prior CPG nodes for %s — falling back to full build", f),
+				})
+				return p.buildFullCPG(ctx, cpgPath, changedFiles)
+			}
+			for _, n := range nodes {
+				changedFunctions = append(changedFunctions, n.ID)
+			}
+		}
+
+		if len(changedFunctions) == 0 {
+			// No functions changed — CPG is already up to date.
+			return nil
+		}
+
+		// Apply incremental patch.
+		err := p.joern.IncrementalPatch(ctx, joern.IncrementalPatchConfig{
+			ChangedFunctions: changedFunctions,
+			RemovedFiles:     nil, // removed not tracked here
+			MaxDepth:         5,
+			HubCallerThreshold: 50,
+			SerializedCPGPath: cpgPath,
+		})
+		if err != nil {
+			// Hub module detected or patch failed — fall back to full rebuild.
+			output.Emit(events, output.Event{
+				Kind:  output.EventLog,
+				Stage: "cpg",
+				Log:   fmt.Sprintf("incremental patch aborted (%v) — full rebuild", err),
+			})
+			return p.buildFullCPG(ctx, cpgPath, changedFiles)
+		}
+
+		return nil
+	}
+
+	// No prior snapshot — full build.
+	return p.buildFullCPG(ctx, cpgPath, changedFiles)
+}
+
+// buildFullCPG builds a complete CPG from the given files and saves the snapshot.
+func (p *pipeline) buildFullCPG(ctx context.Context, cpgPath string, scopeFiles []string) error {
+	if len(scopeFiles) == 0 {
+		return fmt.Errorf("no files in scope for CPG build")
+	}
+	err := p.joern.BuildCPG(ctx, joern.BuildConfig{
+		Paths:             scopeFiles,
+		Language:          "", // auto-detect
+		SerializedCPGPath: cpgPath,
+	})
+	if err != nil {
+		return fmt.Errorf("build cpg: %w", err)
+	}
+	return nil
+}
+
+// cpgSnapshotPath returns the path to the serialized CPG snapshot for the given
+// project ID. The snapshot lives at ~/.zerotrust/{projectID}.cpg.
+func cpgSnapshotPath(projectID string) string {
+	if projectID == "" {
+		projectID = "default"
+	}
+	home, _ := os.UserHomeDir()
+	if home == "" {
+		return filepath.Join(".zerotrust", projectID+".cpg")
+	}
+	return filepath.Join(home, ".zerotrust", projectID+".cpg")
+}
+
+// moduleDepthForMode returns the neighbour-expansion depth for the given scan mode.
+func moduleDepthForMode(mode string) int {
+	switch mode {
+	case "Thorough":
+		return 3
+	case "Full":
+		return 0 // 0 means no expansion needed — entire codebase is in scope
+	default: // Default
+		return 2
+	}
+}
+
+// ── Joern taint analysis ──────────────────────────────────────────────────────
+
+// runJoernTaint performs inter-procedural taint analysis on scopeFiles using
+// the Joern CPG graph. Returns normalised Finding structs.
+func runJoernTaint(ctx context.Context, graph cpg.Graph, scopeFiles []string) ([]finding.Finding, error) {
+	// Detect the primary language from scope files.
+	lang, ok := joern.DetectLanguageFromFiles(scopeFiles)
+	if !ok {
+		return nil, nil
+	}
+	// Ensure the language has a taint config.
+	if _, hasConfig := joern.TaintConfigs[lang]; !hasConfig {
+		return nil, nil
+	}
+
+	// Build source and sink lists from CPG nodes matching our taxonomy.
+	var sources []cpg.TaintSource
+	var sinks []cpg.TaintSink
+
+	for _, f := range scopeFiles {
+		calls, err := graph.QueryNodesByFile(f, cpg.NodeCall)
+		if err != nil {
+			continue
+		}
+		for _, c := range calls {
+			// Match against source definitions.
+			if _, ok := joern.SourceDefForCall(lang, c.Name); ok {
+				sources = append(sources, cpg.TaintSource{
+					NodeID: c.ID,
+					Kind:   "http_param",
+					File:   c.File,
+					Line:   c.Line,
+				})
+			}
+			// Match against sink definitions.
+			if _, ok := joern.SinkDefForCall(lang, c.Name); ok {
+				sinks = append(sinks, cpg.TaintSink{
+					NodeID: c.ID,
+					Kind:   cpg.SinkSQL, // refined by TaintPaths via classifySinkKind
+					File:   c.File,
+					Line:   c.Line,
+				})
+			}
+		}
+	}
+
+	if len(sources) == 0 || len(sinks) == 0 {
+		return nil, nil
+	}
+
+	// Run the taint analysis.
+	paths, err := graph.TaintPaths(sources, sinks)
+	if err != nil {
+		return nil, fmt.Errorf("taint paths: %w", err)
+	}
+
+	// Normalise to Finding structs.
+	return joern.TaintPathsToFindings(paths, lang), nil
 }

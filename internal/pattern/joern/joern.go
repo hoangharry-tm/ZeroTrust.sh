@@ -285,10 +285,17 @@ func (c *Client) Ping(ctx context.Context) error {
 }
 
 // Graph returns a cpg.Graph backed by this Joern server instance.
-// The returned graph is safe to share across both detection paths concurrently.
+// Queries use context.Background(); use GraphWithContext for cancellation support.
 // Graph must be called after BuildCPG (or LoadCPG + IncrementalPatch) completes.
 func (c *Client) Graph() *joernGraph {
-	return &joernGraph{client: c}
+	return &joernGraph{client: c, ctx: context.Background()}
+}
+
+// GraphWithContext returns a cpg.Graph that propagates ctx to every Joern query.
+// Use this in production so that scan cancellation (Ctrl-C, deadline) aborts
+// in-flight CPG queries promptly rather than waiting up to queryTimeout.
+func (c *Client) GraphWithContext(ctx context.Context) *joernGraph {
+	return &joernGraph{client: c, ctx: ctx}
 }
 
 // waitReady polls POST /query with a trivial expression until the server

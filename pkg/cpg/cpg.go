@@ -38,12 +38,13 @@ type SinkKind string
 // SinkKind constants for dangerous sink classification.
 const (
 	SinkSQL             SinkKind = "sql"             // database query sink
-	SinkCommand       SinkKind = "command"         // OS command execution sink
+	SinkCommand         SinkKind = "command"         // OS command execution sink
 	SinkDeserialization SinkKind = "deserialization" // unsafe deserialization
-	SinkFileWrite     SinkKind = "file_write"      // arbitrary file write
-	SinkTemplate      SinkKind = "template"        // server-side template injection
-	SinkRedirect      SinkKind = "redirect"        // open redirect
-	SinkEval          SinkKind = "eval"            // dynamic code evaluation
+	SinkFileWrite       SinkKind = "file_write"      // arbitrary file write
+	SinkTemplate        SinkKind = "template"        // server-side template injection
+	SinkRedirect        SinkKind = "redirect"        // open redirect
+	SinkEval            SinkKind = "eval"            // dynamic code evaluation
+	SinkUnknown         SinkKind = "unknown"         // unclassified sink; callers should not score these as SQL
 )
 
 // Node is a single vertex in the Code Property Graph.
