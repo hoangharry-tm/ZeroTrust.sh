@@ -14,6 +14,12 @@
 // entire scan. Call Stop when the scan completes to send a shutdown message and
 // wait for the process to exit cleanly.
 //
+// Restart policy: if the process dies unexpectedly, one automatic restart is
+// attempted. If the restart succeeds, subsequent calls work normally (pending
+// calls from the crash window receive a transient error and must be retried by
+// the caller). If the restart fails, ErrWorkerDead is returned to all callers;
+// callers should fall back to direct Ollama HTTP.
+//
 // Message type routing (worker/main.py dispatcher):
 //
 //	"llm_verify"  → handlers/llm_verify.py   (Path A LLM Verifier)
@@ -25,11 +31,22 @@
 package worker
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"os/exec"
+	"sync"
 	"sync/atomic"
+	"time"
 )
+
+// ErrWorkerDead is returned when the worker process has crashed and the
+// automatic restart attempt also failed. Callers should fall back to direct
+// Ollama HTTP calls instead of retrying through the worker.
+var ErrWorkerDead = errors.New("worker: process dead; restart failed")
 
 // MessageType is the string label that routes a request to the correct Python handler.
 type MessageType string
@@ -82,88 +99,89 @@ type Response struct {
 }
 
 // VerifyPayload is the JSON payload for MsgLLMVerify requests.
-// It carries a single finding for false-positive classification.
 type VerifyPayload struct {
-	// FindingID is the finding.Finding.ID being verified.
-	FindingID string `json:"finding_id"`
-	// RuleID is the OpenGrep / ast-grep rule that matched.
-	RuleID string `json:"rule_id"`
-	// CWE is the CWE identifier from the rule metadata.
-	CWE string `json:"cwe"`
-	// MatchedCode is the source snippet at the finding location.
-	MatchedCode string `json:"matched_code"`
-	// Justification is the rule message / LLM context.
+	FindingID     string `json:"finding_id"`
+	RuleID        string `json:"rule_id"`
+	CWE           string `json:"cwe"`
+	MatchedCode   string `json:"matched_code"`
 	Justification string `json:"justification"`
 }
 
 // VerifyResult is the JSON result for MsgLLMVerify responses.
 type VerifyResult struct {
-	// FindingID echoes the input FindingID.
-	FindingID string `json:"finding_id"`
-	// Verdict is "confirmed" | "false_positive" | "uncertain".
-	Verdict string `json:"verdict"`
-	// Confidence is the model's self-reported confidence (0.0–1.0).
-	Confidence float64 `json:"confidence"`
-	// Justification is the CoD reasoning summary.
-	Justification string `json:"justification"`
+	FindingID     string  `json:"finding_id"`
+	Verdict       string  `json:"verdict"`
+	Confidence    float64 `json:"confidence"`
+	Justification string  `json:"justification"`
 }
 
 // ClassifyPayload is the JSON payload for MsgClassify requests.
-// Carries a batch of enriched surfaces for the UniXcoder gate.
 type ClassifyPayload struct {
-	// Surfaces holds the surface IDs and code snippets to classify.
 	Surfaces []ClassifySurface `json:"surfaces"`
 }
 
 // ClassifySurface is one surface within a ClassifyPayload.
 type ClassifySurface struct {
-	// SurfaceID matches the enrichment.EnrichedSurface.ID.
 	SurfaceID string `json:"surface_id"`
-	// Code is the function source code to classify.
-	Code string `json:"code"`
-	// Language is the source language (e.g. "python", "go").
-	Language string `json:"language"`
+	Code      string `json:"code"`
+	Language  string `json:"language"`
 }
 
 // ClassifyResult is the JSON result for MsgClassify responses.
 type ClassifyResult struct {
-	// Results holds one classification output per input surface.
 	Results []ClassifySurfaceResult `json:"results"`
 }
 
 // ClassifySurfaceResult is the classifier output for one surface.
 type ClassifySurfaceResult struct {
-	// SurfaceID echoes the input surface ID.
-	SurfaceID string `json:"surface_id"`
-	// Label is "vulnerable" | "safe" | "uncertain".
-	Label string `json:"label"`
-	// Confidence is the model's softmax score for the winning label.
+	SurfaceID  string  `json:"surface_id"`
+	Label      string  `json:"label"`
 	Confidence float64 `json:"confidence"`
 }
 
 // SummarizePayload is the JSON payload for MsgSummarize requests.
-// Holds a batch of call chains (up to 5 per request).
 type SummarizePayload struct {
-	// Chains is the batch of call chain JSON objects.
 	Chains []json.RawMessage `json:"chains"`
 }
 
 // LLMScanPayload is the JSON payload for MsgLLMScan requests.
 type LLMScanPayload struct {
-	// SurfaceID identifies the surface being scanned.
-	SurfaceID string `json:"surface_id"`
-	// Summary is the JSON-serialized summarizer.Summary for this surface.
-	Summary json.RawMessage `json:"summary"`
-	// PriorContext is accumulated SCS inferences for this surface's neighbours.
-	// Empty JSON object ({}) when no prior context is available.
+	SurfaceID    string          `json:"surface_id"`
+	Summary      json.RawMessage `json:"summary"`
 	PriorContext json.RawMessage `json:"prior_context"`
-	// Mode is "react" or "single_pass".
-	Mode string `json:"mode"`
+	Mode         string          `json:"mode"`
 }
 
 // Manager owns the long-lived Python worker subprocess and serialises all IPC.
+//
+// Lock ordering (to prevent deadlocks): writeMu → pendMu → mu. Never acquire
+// in reverse order.
 type Manager struct {
-	seq atomic.Uint64
+	seq      atomic.Uint64
+	args     []string // command + arguments, e.g. ["python3", "worker/main.py"]
+	stopping atomic.Bool
+
+	// writeMu serialises stdin writes and guards the m.stdin field.
+	writeMu sync.Mutex
+	stdin   io.WriteCloser
+
+	// pendMu guards the pending request map.
+	pendMu  sync.Mutex
+	pending map[string]chan *Response
+
+	// mu guards dead and restarted.
+	mu        sync.Mutex
+	dead      bool
+	restarted bool
+}
+
+// newManager returns an uninitialised Manager with the given spawn arguments.
+// Used by Start (production) and tests (inject a custom command).
+func newManager(args []string) *Manager {
+	return &Manager{
+		args:    args,
+		pending: make(map[string]chan *Response),
+	}
 }
 
 // Start spawns the Python worker at workerPath, waits for it to be ready
@@ -172,30 +190,191 @@ type Manager struct {
 // Parameters:
 //   - ctx: cancellation context; if cancelled, the subprocess is killed.
 //   - workerPath: path to the worker entry point (e.g. "worker/main.py").
-//
-// Returns:
-//   - *Manager: ready-to-use manager.
-//   - error: non-nil if the subprocess fails to start or the ping times out.
 func Start(ctx context.Context, workerPath string) (*Manager, error) {
-	// implemented in G2.M2.5
-	return &Manager{}, nil
+	m := newManager([]string{"python3", workerPath})
+	if err := m.spawn(); err != nil {
+		return nil, fmt.Errorf("worker: spawn: %w", err)
+	}
+	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := m.Ping(pingCtx); err != nil {
+		_ = m.Stop()
+		return nil, fmt.Errorf("worker: ping: %w", err)
+	}
+	return m, nil
+}
+
+// spawn starts the subprocess, wires its stdin/stdout, and launches the reader
+// goroutine. It does NOT ping — callers are responsible for health-checking.
+func (m *Manager) spawn() error {
+	cmd := exec.Command(m.args[0], m.args[1:]...) //nolint:gosec
+
+	stdinPipe, err := cmd.StdinPipe()
+	if err != nil {
+		return fmt.Errorf("stdin pipe: %w", err)
+	}
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		_ = stdinPipe.Close()
+		return fmt.Errorf("stdout pipe: %w", err)
+	}
+	if err := cmd.Start(); err != nil {
+		_ = stdinPipe.Close()
+		return fmt.Errorf("start: %w", err)
+	}
+
+	m.writeMu.Lock()
+	m.stdin = stdinPipe
+	m.writeMu.Unlock()
+
+	go m.readLoop(stdoutPipe, cmd)
+	return nil
+}
+
+// readLoop reads NDJSON responses from stdout and routes each one to the
+// waiting caller via its pending channel. When stdout closes (process exited),
+// it calls handleDeath to drain pending requests and attempt a restart.
+func (m *Manager) readLoop(stdout io.Reader, cmd *exec.Cmd) {
+	scanner := bufio.NewScanner(stdout)
+	scanner.Buffer(make([]byte, 1<<20), 1<<20) // 1 MB — large LLM responses
+	for scanner.Scan() {
+		var resp Response
+		if err := json.Unmarshal(scanner.Bytes(), &resp); err != nil {
+			continue // skip malformed line; don't abort
+		}
+		m.pendMu.Lock()
+		ch := m.pending[resp.ID]
+		delete(m.pending, resp.ID)
+		m.pendMu.Unlock()
+		if ch != nil {
+			ch <- &resp
+		}
+	}
+	_ = cmd.Wait() // reap the subprocess to avoid a zombie
+	m.handleDeath()
+}
+
+// handleDeath is called by the reader goroutine when the process exits.
+// It attempts one automatic restart (unless Stop was called). If the restart
+// fails, it marks the Manager as dead and drains all pending requests with errors.
+func (m *Manager) handleDeath() {
+	// Clear the stdin pipe under writeMu so new writes fail immediately.
+	m.writeMu.Lock()
+	m.stdin = nil
+	m.writeMu.Unlock()
+
+	if m.stopping.Load() {
+		// Deliberate shutdown — drain any stragglers, don't restart.
+		m.drainPending("worker stopped")
+		return
+	}
+
+	m.mu.Lock()
+	alreadyRestarted := m.restarted
+	m.mu.Unlock()
+
+	if !alreadyRestarted {
+		// One automatic restart attempt.
+		if err := m.spawn(); err == nil {
+			pingCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			if err := m.Ping(pingCtx); err == nil {
+				m.mu.Lock()
+				m.restarted = true
+				m.mu.Unlock()
+				// Drain the crash-window requests — callers must retry.
+				m.drainPending("worker restarted after crash; retry the request")
+				return
+			}
+		}
+	}
+
+	// Restart failed (or second crash): mark dead, drain everything.
+	m.mu.Lock()
+	m.dead = true
+	m.mu.Unlock()
+	m.drainPending(ErrWorkerDead.Error())
+}
+
+// drainPending closes all outstanding pending channels with an error response
+// and replaces the pending map with a fresh empty one.
+func (m *Manager) drainPending(errMsg string) {
+	m.pendMu.Lock()
+	old := m.pending
+	m.pending = make(map[string]chan *Response)
+	m.pendMu.Unlock()
+
+	for id, ch := range old {
+		ch <- &Response{ID: id, Status: ResponseError, Error: errMsg}
+	}
 }
 
 // Call sends a typed request to the worker and returns the decoded response.
-// Safe to call from multiple goroutines concurrently; requests are serialised
-// internally before being written to stdin.
+// Safe to call from multiple goroutines concurrently.
 //
 // Parameters:
-//   - ctx: cancellation context; a cancelled ctx will abort the pending request.
-//   - msgType: the handler routing label (one of the Msg* constants).
+//   - ctx: cancellation context; cancellation removes the request from the
+//     pending map and returns ctx.Err() immediately.
+//   - msgType: the handler routing label.
 //   - payload: the handler-specific request payload (marshalled to JSON).
-//
-// Returns:
-//   - *Response: the decoded response from the Python worker.
-//   - error: non-nil on ctx cancellation, worker crash, or JSON encode/decode failure.
 func (m *Manager) Call(ctx context.Context, msgType MessageType, payload any) (*Response, error) {
-	// implemented in G2.M2.5
-	return nil, fmt.Errorf("worker: not yet started")
+	m.mu.Lock()
+	if m.dead {
+		m.mu.Unlock()
+		return nil, ErrWorkerDead
+	}
+	m.mu.Unlock()
+
+	id := m.newID()
+	ch := make(chan *Response, 1)
+
+	m.pendMu.Lock()
+	m.pending[id] = ch
+	m.pendMu.Unlock()
+
+	if err := m.writeRequest(id, msgType, payload); err != nil {
+		m.pendMu.Lock()
+		delete(m.pending, id)
+		m.pendMu.Unlock()
+		return nil, err
+	}
+
+	select {
+	case resp := <-ch:
+		return resp, nil
+	case <-ctx.Done():
+		m.pendMu.Lock()
+		delete(m.pending, id)
+		m.pendMu.Unlock()
+		return nil, ctx.Err()
+	}
+}
+
+// writeRequest serialises a Request to NDJSON and writes it to stdin.
+// Holds writeMu for the entire write so concurrent callers cannot interleave bytes.
+func (m *Manager) writeRequest(id string, msgType MessageType, payload any) error {
+	var raw json.RawMessage
+	if payload != nil {
+		b, err := json.Marshal(payload)
+		if err != nil {
+			return fmt.Errorf("worker: marshal payload: %w", err)
+		}
+		raw = b
+	}
+	req := Request{ID: id, Type: msgType, Payload: raw}
+	line, err := json.Marshal(req)
+	if err != nil {
+		return fmt.Errorf("worker: marshal request: %w", err)
+	}
+	line = append(line, '\n')
+
+	m.writeMu.Lock()
+	defer m.writeMu.Unlock()
+	if m.stdin == nil {
+		return ErrWorkerDead
+	}
+	_, err = m.stdin.Write(line)
+	return err
 }
 
 // Ping sends a health-check request and returns nil if the worker is alive.
@@ -203,14 +382,39 @@ func (m *Manager) Call(ctx context.Context, msgType MessageType, payload any) (*
 // Parameters:
 //   - ctx: cancellation context.
 func (m *Manager) Ping(ctx context.Context) error {
-	// implemented in G2.M2.5
+	resp, err := m.Call(ctx, MsgPing, nil)
+	if err != nil {
+		return err
+	}
+	if resp.Status != ResponseOK {
+		return fmt.Errorf("worker: ping: %s", resp.Error)
+	}
 	return nil
 }
 
-// Stop sends a shutdown message to the worker and waits for the subprocess to exit.
+// Stop sends a shutdown message to the worker and waits up to 3 seconds for
+// the process to exit gracefully, then closes stdin.
 // It is safe to call Stop even if the worker is already dead.
 func (m *Manager) Stop() error {
-	// implemented in G2.M2.5
+	m.stopping.Store(true)
+
+	// Best-effort graceful shutdown; ignore errors (process may already be dead).
+	shutCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, _ = m.Call(shutCtx, MsgShutdown, nil)
+
+	// Close stdin — signals EOF to the Python process's stdin loop.
+	m.writeMu.Lock()
+	stdin := m.stdin
+	m.stdin = nil
+	m.writeMu.Unlock()
+	if stdin != nil {
+		_ = stdin.Close()
+	}
+
+	m.mu.Lock()
+	m.dead = true
+	m.mu.Unlock()
 	return nil
 }
 

@@ -29,7 +29,7 @@ All 42 rules deployed (PY-001→010, JV-001→009, GN-001→007, AG-001→016), 
 ## Layer 0 — Foundation + Fast Path
 
 **Window**: Jun 23 – Jul 3 · ~70h available · **~57h work + 13h buffer**
-**ML0.1–ML0.5 delivered Jun 17 — 6–11 days early. Remaining: ML0.6–ML0.7.**
+**ML0.1–ML0.7 all delivered Jun 17–18 — 6–14 days early. Layer 0 complete.**
 
 Build the Go binary skeleton, ingestion layer (MIV + DI content-hash), pattern detection wrappers, Python worker IPC, and a minimal Dedup + HTML report skeleton. Joern-free. Delivers a working end-to-end pipeline with Path A pattern findings in an HTML report before any Joern risk is taken.
 
@@ -60,13 +60,13 @@ Build the Go binary skeleton, ingestion layer (MIV + DI content-hash), pattern d
 | L0.5.T2 | ast-grep integration: `Scan` (JSON array output), `FilterFiles` (owns .rs/.dart/.swift/.kt/.kts/.cs), `Version`, `normalise` (0→1-based line conversion; CWE from rule ID convention AG-NNN-cwe-NNN) | Jun 17 | 3.0 | Done | 12 tests in `astgrep_test.go` |
 | L0.5.T3 | Wire instrscan into `runPathA` (concurrent errgroup; `instrFindingToFinding` adapter; CWE-1035; MCP schema → 0.90 / keyword → 0.65 / unicode → 0.75) | Jun 17 | 1.0 | Done | OpenGrep + ast-grep + instrscan run concurrently; non-fatal binary-missing errors |
 | L0.5.T4 | Finding normalisation adapter: `severityFromScore` in `scan.go`; Joern side stubbed until ML1 delivers real schema | Jun 17 | 3.0 | Done | Joern side remains stub; `instrFindingToFinding` complete |
-| **ML0.6** | **Python Worker IPC** | Jul 1–2 | 6.5 | — | IPC built once; reused by LLM Verifier, Classifier, Summarizer, LLM Scan |
-| L0.6.T1 | Python worker `worker/main.py`: NDJSON dispatcher — `llm_verify / classify / summarize / llm_scan / ping / shutdown` | Jul 1 | 3.5 | | Handlers stubbed; only `ping` + `shutdown` implemented here; others in L2/L3 |
-| L0.6.T2 | Go worker-manager: spawn via `os/exec`; health-check ping; restart-on-crash; fallback to direct Ollama HTTP on second failure | Jul 2 | 3.0 | | Build this before any handler that depends on it |
-| **ML0.7** | **Dedup Skeleton + HTML Report Skeleton** | Jul 2–3 | 4.0 | — | Skeleton only; completed in L4 |
-| L0.7.T1 | Dedup skeleton: gate 1 (CWE + file + line hash) + gate 2 (MD5 code fingerprint); pluggable interface for gates 3–4 | Jul 2 | 2.0 | | |
-| L0.7.T2 | HTML report skeleton: `html/template` + `embed`; severity label columns; stub data; renders without real findings | Jul 3 | 2.0 | | Full report built in L4; skeleton unblocks visual demos at any point |
-| **ML0.BUFFER** | **Buffer — MIV/IPC/infra overrun** | — | 13.0 | — | Named buffer. Absorbs Sigstore integration surprises and Go subprocess edge cases |
+| **ML0.6** | **Python Worker IPC** | Jun 18 | 6.5 | **Done** | Delivered Jun 18 — 13 days early |
+| L0.6.T1 | Python worker `worker/main.py`: NDJSON dispatcher — `llm_verify / classify / summarize / llm_scan / ping / shutdown` | Jun 18 | 3.5 | Done | Already fully implemented; handlers route to stubs in `handlers/`; `ping` + `shutdown` built-in |
+| L0.6.T2 | Go worker-manager: `Start` (spawn + 5s ping), `Call` (concurrent NDJSON RPC, ID-keyed pending map), `Ping`, `Stop` (2s graceful → stdin close); restart-on-crash (one attempt, `restarted` flag); `ErrWorkerDead` for callers to detect fallback | Jun 18 | 3.0 | Done | 15 tests in `worker_test.go`; `echo` Python inline script avoids real model dependency |
+| **ML0.7** | **Dedup Skeleton + HTML Report Skeleton** | Jun 18 | 4.0 | **Done** | Delivered Jun 18 — 14 days early |
+| L0.7.T1 | Dedup skeleton: Gate 1 (SHA-256 of CWE+path+startLine) + Gate 2 (SHA-256 of MatchedCode); cross-path +15pp boost (capped at 1.0); `AutoSuppress` (test file patterns + testDirs); `DeriveSeverityLabel` (5-tier); `ProcessWithStats` returns MergeRecords + Stats | Jun 18 | 2.0 | Done | 20 tests in `dedup_test.go`; Gates 3–4 (embedding + AST edit distance) deferred to G4 |
+| L0.7.T2 | HTML report skeleton: already fully implemented with `html/template` + `embed`; XSS-safe contextual escaping; severity columns; scope notice; file sidebar; 8 tests | Jun 18 | 2.0 | Done | Report package was pre-built; no additional work needed |
+| **ML0.BUFFER** | **Buffer — MIV/IPC/infra overrun** | — | 13.0 | — | Named buffer. All ML0.1–ML0.7 delivered Jun 17–18; buffer fully absorbed; Layer 0 complete. |
 
 ---
 

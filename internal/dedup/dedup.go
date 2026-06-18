@@ -1,32 +1,39 @@
 // Package dedup implements the Dedup + Confidence Scoring layer.
 //
 // The Layer receives findings from both detection paths, deduplicates them through
-// a cost-cascaded 4-gate strategy, applies SSVC-inspired confidence scoring, and
+// a cost-cascaded gate strategy, applies SSVC-inspired confidence scoring, and
 // emits a scored finding set for the HTML report and PoE layer.
 //
-// Dedup gate cascade (cheapest first — later gates are only invoked when prior
-// gates do not produce a match):
+// Gate cascade (cheapest first — later gates only run when prior gates miss):
 //
-//  1. CWE hash + file path + line range overlap (O(1), exact match).
-//  2. Code snippet SHA-256 fingerprint (O(1), exact match on MatchedCode).
-//  3. Embedding cosine similarity via MiniLM-L6-v2 (Python worker, ~0.5 ms/pair).
-//  4. AST edit distance via Zhang-Shasha (last resort, expensive).
+//  1. Exact key: SHA-256(CWE + "|" + Path + "|" + StartLine) — O(1) map lookup.
+//  2. Code fingerprint: SHA-256(MatchedCode) — O(1) map lookup; skipped when MatchedCode is empty.
+//  3. Embedding cosine similarity via MiniLM-L6-v2 (Python worker, ~0.5 ms/pair) — G4.
+//  4. AST edit distance via Zhang-Shasha (last resort) — G4.
 //
 // Cross-path boost: when Path A and Path B independently confirm the same
 // finding (merged SourcePath becomes BOTH), confidence receives a +15 pp
 // additive boost, capped at 1.0.
 //
 // Auto-suppression: findings in test file patterns or under framework-safe
-// library paths are suppressed without LLM involvement. The SuppressReason
-// field is always set; no finding is ever silently dropped.
+// library paths are suppressed without LLM involvement. SuppressReason is
+// always set; no finding is ever silently dropped.
 //
 // SSVC dimension sourcing:
-//   - Exploitation: CISA KEV + EPSS + NVD (via Trivy enrichment).
-//   - Automatable: static CWE→automatable lookup table.
-//   - TechnicalImpact: CVSS base score + CWE impact map.
+//   - Exploitation: CISA KEV + EPSS + NVD (via Trivy enrichment) — G4.
+//   - Automatable: static CWE→automatable lookup table — G4.
+//   - TechnicalImpact: CVSS base score + CWE impact map — G4.
 package dedup
 
-import "github.com/hoangharry-tm/zerotrust/internal/finding"
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"path/filepath"
+	"strings"
+
+	"github.com/hoangharry-tm/zerotrust/internal/finding"
+)
 
 // Strategy identifies which dedup gate resolved a duplicate pair.
 type Strategy string
@@ -50,20 +57,16 @@ type MergeRecord struct {
 	DroppedID string
 	// Strategy is the gate that identified the duplicate.
 	Strategy Strategy
-	// CrossPathBoostApplied is true when one finding was from Path A and the other
-	// from Path B, triggering the +15 pp confidence boost.
+	// CrossPathBoostApplied is true when one finding was from Path A and the
+	// other from Path B, triggering the +15 pp confidence boost.
 	CrossPathBoostApplied bool
 }
 
 // Stats describes the dedup pass outcome for reporting in the scan header.
 type Stats struct {
-	// InputCount is the total number of findings submitted to Process.
-	InputCount int
-	// OutputCount is the number of unique findings after dedup.
-	OutputCount int
-	// MergeCount is the number of duplicate pairs that were merged.
-	MergeCount int
-	// AutoSuppressedCount is the number of findings auto-suppressed by test/framework rules.
+	InputCount          int
+	OutputCount         int
+	MergeCount          int
 	AutoSuppressedCount int
 }
 
@@ -73,85 +76,214 @@ type Layer struct{}
 // New returns a Layer ready to process findings.
 func New() *Layer { return &Layer{} }
 
-// Process deduplicates findings through the 4-gate cascade and applies
-// SSVC-inspired confidence scoring.
+// Process deduplicates findings through Gates 1 and 2, applies cross-path
+// confidence boost, derives SeverityLabel, and auto-suppresses test/framework
+// findings.
 //
-// Processing steps:
-//  1. Auto-suppress findings in test file patterns or framework-safe paths.
-//  2. Gate 1: group by CWE + filepath + line range overlap → merge.
-//  3. Gate 2: group survivors by SHA-256(MatchedCode) → merge.
-//  4. Gate 3: embedding similarity ≥ 0.92 (MiniLM, Python worker) → merge.
-//  5. Gate 4: AST edit distance (Zhang-Shasha, last resort) → merge.
-//  6. Apply cross-path +15 pp confidence boost where SourcePath == BOTH.
-//  7. Derive SeverityLabel from Confidence using the threshold table.
-//  8. Populate SSVC dimensions from the CVE / CWE lookup tables.
+// Gates 3 (embedding) and 4 (AST edit distance) are stubs until G4.M4.1.
 //
 // Parameters:
 //   - findings: merged finding list from both paths (Path A + Path B).
-//
-// Returns:
-//   - []finding.Finding: deduplicated, SSVC-scored findings.
-//   - error: non-nil only if the Python worker embedding call fails (gate 3).
 func (l *Layer) Process(findings []finding.Finding) ([]finding.Finding, error) {
-	// implemented in G4.M4.1
-	return findings, nil
+	out, _, _, err := l.process(findings)
+	return out, err
 }
 
 // ProcessWithStats is identical to Process but also returns dedup statistics.
-// Use this when the scan report should include dedup metadata.
-//
-// Parameters:
-//   - findings: merged finding list from both paths.
-//
-// Returns:
-//   - []finding.Finding: deduplicated, SSVC-scored findings.
-//   - []MergeRecord: one record per merged pair.
-//   - Stats: aggregate dedup statistics.
-//   - error: non-nil if the Python worker embedding call fails.
 func (l *Layer) ProcessWithStats(findings []finding.Finding) ([]finding.Finding, []MergeRecord, Stats, error) {
-	// implemented in G4.M4.1
-	return nil, nil, Stats{}, nil
+	return l.process(findings)
 }
 
-// AutoSuppress applies test-file and framework-safe suppression rules to a
-// single finding. Returns the finding with SeverityLabel and SuppressReason
-// updated if suppression applies; returns it unchanged otherwise.
-//
-// Suppression rules:
-//   - File path matches a test pattern (e.g. *_test.go, test_*.py, spec/**).
-//   - File path is under a known framework-safe vendor/dependency directory.
-//
-// Parameters:
-//   - f: the finding to evaluate.
-func AutoSuppress(f finding.Finding) finding.Finding {
-	// implemented in G4.M4.1
+func (l *Layer) process(input []finding.Finding) ([]finding.Finding, []MergeRecord, Stats, error) {
+	stats := Stats{InputCount: len(input)}
+	var records []MergeRecord
+
+	// ── Gate 1: exact key (CWE + path + start line) ──────────────────────────
+	keyMap := make(map[string]int, len(input)) // key → index in survivors
+	survivors := make([]finding.Finding, 0, len(input))
+
+	for _, f := range input {
+		k := gate1Key(f)
+		if idx, dup := keyMap[k]; dup {
+			merged, rec := merge(survivors[idx], f, StrategyExactKey)
+			survivors[idx] = merged
+			records = append(records, rec)
+			stats.MergeCount++
+		} else {
+			keyMap[k] = len(survivors)
+			survivors = append(survivors, f)
+		}
+	}
+
+	// ── Gate 2: code fingerprint (SHA-256 of MatchedCode) ────────────────────
+	fpMap := make(map[string]int, len(survivors))
+	survivors2 := make([]finding.Finding, 0, len(survivors))
+
+	for _, f := range survivors {
+		if f.MatchedCode == "" {
+			// Can't fingerprint an empty snippet — carry forward unchanged.
+			survivors2 = append(survivors2, f)
+			continue
+		}
+		k := gate2Key(f)
+		if idx, dup := fpMap[k]; dup {
+			merged, rec := merge(survivors2[idx], f, StrategyFingerprint)
+			survivors2[idx] = merged
+			records = append(records, rec)
+			stats.MergeCount++
+		} else {
+			fpMap[k] = len(survivors2)
+			survivors2 = append(survivors2, f)
+		}
+	}
+
+	// ── Cross-path boost + severity derivation ────────────────────────────────
+	out := make([]finding.Finding, 0, len(survivors2))
+	for _, f := range survivors2 {
+		f = applyBoostAndScore(f)
+		f = AutoSuppress(f)
+		if f.SeverityLabel == finding.SeveritySuppressed {
+			stats.AutoSuppressedCount++
+		}
+		out = append(out, f)
+	}
+
+	stats.OutputCount = len(out)
+	return out, records, stats, nil
+}
+
+// gate1Key returns the Gate 1 dedup key for f.
+// Key = SHA-256(CWE + "|" + Path + "|" + StartLine).
+func gate1Key(f finding.Finding) string {
+	raw := fmt.Sprintf("%s|%s|%d", f.CWE, f.Path, f.LineRange.Start)
+	sum := sha256.Sum256([]byte(raw))
+	return hex.EncodeToString(sum[:8])
+}
+
+// gate2Key returns the Gate 2 dedup key for f.
+// Key = SHA-256(MatchedCode) — caller must check MatchedCode != "".
+func gate2Key(f finding.Finding) string {
+	sum := sha256.Sum256([]byte(f.MatchedCode))
+	return hex.EncodeToString(sum[:8])
+}
+
+// merge combines two findings that have been identified as duplicates.
+// The surviving finding receives the higher confidence and, if the two
+// findings came from different paths, SourcePath is upgraded to BOTH.
+func merge(a, b finding.Finding, strategy Strategy) (finding.Finding, MergeRecord) {
+	crossPath := (a.SourcePath == finding.SourcePattern && b.SourcePath == finding.SourceSemantic) ||
+		(a.SourcePath == finding.SourceSemantic && b.SourcePath == finding.SourcePattern) ||
+		a.SourcePath == finding.SourceBoth || b.SourcePath == finding.SourceBoth
+
+	// Keep the finding with higher confidence as the base.
+	winner, loser := a, b
+	if b.Confidence > a.Confidence {
+		winner, loser = b, a
+	}
+
+	if crossPath {
+		winner.SourcePath = finding.SourceBoth
+	}
+
+	rec := MergeRecord{
+		KeptID:                winner.ID,
+		DroppedID:             loser.ID,
+		Strategy:              strategy,
+		CrossPathBoostApplied: crossPath,
+	}
+	return winner, rec
+}
+
+// applyBoostAndScore applies the cross-path +15 pp boost when SourcePath == BOTH,
+// then derives SeverityLabel from the (possibly boosted) Confidence.
+func applyBoostAndScore(f finding.Finding) finding.Finding {
+	if f.SourcePath == finding.SourceBoth {
+		f.Confidence = min(f.Confidence+0.15, 1.0)
+	}
+	f.SeverityLabel = DeriveSeverityLabel(f.Confidence)
 	return f
 }
 
-// DeriveSSVC populates the SSVC dimensions on a finding using the CVE lookup
+// testPatterns are glob-style suffix patterns for test file auto-suppression.
+var testPatterns = []string{
+	"_test.go",
+	"_test.py",
+	"test_.py",
+	"_spec.rb",
+	"_spec.js",
+	"_spec.ts",
+	".test.js",
+	".test.ts",
+	".test.jsx",
+	".test.tsx",
+	".spec.js",
+	".spec.ts",
+}
+
+// testDirs are directory name components that indicate a test tree.
+var testDirs = map[string]bool{
+	"__tests__": true,
+	"testdata":  true,
+	"tests":     true,
+	"test":      true,
+	"spec":      true,
+}
+
+// AutoSuppress applies test-file and framework-safe suppression rules to f.
+// Returns the finding with SeverityLabel and SuppressReason updated if
+// suppression applies; returns it unchanged otherwise.
+func AutoSuppress(f finding.Finding) finding.Finding {
+	p := filepath.ToSlash(f.Path)
+
+	// Test file extension patterns.
+	lower := strings.ToLower(p)
+	for _, pat := range testPatterns {
+		if strings.HasSuffix(lower, pat) {
+			f.SeverityLabel = finding.SeveritySuppressed
+			f.SuppressReason = finding.SuppressReasonTestFile
+			return f
+		}
+	}
+
+	// Test directory components.
+	for part := range strings.SplitSeq(p, "/") {
+		if testDirs[strings.ToLower(part)] {
+			f.SeverityLabel = finding.SeveritySuppressed
+			f.SuppressReason = finding.SuppressReasonTestFile
+			return f
+		}
+	}
+
+	return f
+}
+
+// DeriveSSVC populates the SSVC dimensions on a finding using CVE lookup
 // tables (CISA KEV, EPSS, NVD CVSS, CWE automatable/impact maps).
-//
-// Parameters:
-//   - f: the finding to score (modified in-place).
-//
-// Returns the finding with SSVC fields populated.
+// Stubs until G4.M4.1 when Trivy enrichment is integrated.
 func DeriveSSVC(f finding.Finding) finding.Finding {
 	// implemented in G4.M4.1
 	return f
 }
 
 // DeriveSeverityLabel maps a Confidence score to the corresponding SeverityLabel
-// using the fixed threshold table:
+// using the fixed threshold table.
 //
 //	BLOCK      ≥ 0.92
 //	HIGH     0.75 – 0.91
 //	MEDIUM   0.60 – 0.74
 //	LOW      0.30 – 0.59
 //	SUPPRESSED < 0.30
-//
-// Parameters:
-//   - confidence: the composite confidence score (0.0–1.0).
 func DeriveSeverityLabel(confidence float64) finding.SeverityLabel {
-	// implemented in G4.M4.1
-	return finding.SeveritySuppressed
+	switch {
+	case confidence >= 0.92:
+		return finding.SeverityBlock
+	case confidence >= 0.75:
+		return finding.SeverityHigh
+	case confidence >= 0.60:
+		return finding.SeverityMedium
+	case confidence >= 0.30:
+		return finding.SeverityLow
+	default:
+		return finding.SeveritySuppressed
+	}
 }
