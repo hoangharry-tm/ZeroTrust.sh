@@ -73,6 +73,7 @@ Build the Go binary skeleton, ingestion layer (MIV + DI content-hash), pattern d
 ## Layer 1 — Joern Spike (Time-Boxed)
 
 **Window**: Jul 3 – Jul 7 · **strictly time-boxed 4 days / 20h**
+**Go code delivered Jun 18 — ~2 weeks early. Binary install in progress.**
 
 Prove Joern works in this environment before committing any production Joern work. The spike either closes with a working CPG query interface and golden-file tests, or it doesn't — there is no partial credit. Decision is binary on Jul 7.
 
@@ -82,12 +83,12 @@ Prove Joern works in this environment before committing any production Joern wor
 
 | ID | Name | Dates | E (h) | Status | Notes |
 | :---: | --- | :---: | :---: | :---: | --- |
-| **ML1** | **Joern Spike** | Jul 3–7 | 20.0 | — | Time-boxed. No production Joern work until spike closes. |
-| L1.T1 | Joern install + JVM (Java 11+) + version-pin; confirm `joern --server` starts and responds | Jul 3 | 3.0 | | Expect environment pain; budget it here, not later |
-| L1.T2 | Go subprocess: spawn Joern HTTP server (`localhost:8080`); health-check + retry loop; pre-start at CLI launch alongside MIV+DI | Jul 4 | 4.0 | | |
-| L1.T3 | CPG build on Spring Boot test codebase (one real Java file); validate Go frontend output quality on a known-vulnerable snippet | Jul 4–5 | 4.0 | | Validate the Go frontend too — documented in CLAUDE.md as "less battle-tested"; if Go CPG is unreliable, document and scope Joern to Java/Python only |
-| L1.T4 | Shared CPG query interface: `QueryNodes(type)`, `QueryEdges(src, dst)`, `GetCallGraph()` + fixture CPG + golden-file integration tests | Jul 5–7 | 9.0 | | **Revised from 3.5h → 9h.** Highest-risk interface: 3 consumers depend on it (taint layer, targeting, assembler). Golden-file tests are non-negotiable — they are the evidence that the spike passed |
-| **ML1.BUFFER** | **Spike overrun contingency** | — | 8.0 | — | Part of the 4-day window. If spike finishes early, pull forward L2.T1 (taint taxonomy research) |
+| **ML1** | **Joern Spike** | Jun 18 / Jul 3–7 | 20.0 | **Go code Done Jun 18** | Go client complete 2 weeks early; binary install + integration tests pending |
+| L1.T1 | Joern install + JVM (Java 17) + version-pin; confirm `joern-server --host 127.0.0.1 --port 8080` starts and responds | Jun 18 | 3.0 | **In Progress** | `JOERN_VERSION=v4.0.559` pinned in Makefile; `docs/joern-http-api.md` written; binary install running |
+| L1.T2 | Go subprocess: spawn Joern HTTP server; health-check + retry loop; pre-start at CLI launch alongside MIV+DI | Jun 18 | 4.0 | **Done** | Functional options + Start/Stop/Ping + crash watcher (atomic.Bool) + SIGTERM→SIGKILL; `checkPortAvailable` (ErrPortInUse); `validateServerURL` (loopback-only); wired into scan.go; 10 unit tests |
+| L1.T3 | CPG build on Spring Boot test codebase; validate Go frontend quality on known-vulnerable snippet | Jun 18 | 4.0 | **Done (unit)** | `BuildCPG` + `IncrementalPatch` (depth-5 BFS) + `SaveCPG`/`LoadCPG`; path traversal guard on raw components; `ErrHubModuleDetected`; integration run pending binary install |
+| L1.T4 | Shared CPG query interface: all 9 `cpg.Graph` methods + fixture CPG + golden-file integration tests | Jun 18 | 9.0 | **Done (unit)** | `graph.go`: QueryNodes/QueryNodesByFile/QueryEdges/GetCallGraph/GetCallers/GetCallees/GetNeighboursAtDepth (BFS ≤6)/TaintPaths (capped 1000)/PreFlaggedSinks; 30 unit tests; `joern_integration_test.go` ready (5 tests, `//go:build integration`); pending `make test-integration` |
+| **ML1.BUFFER** | **Spike overrun contingency** | — | 8.0 | — | Partially absorbed by early delivery. If integration tests surface API gaps, use buffer to fix queries and re-run. |
 
 ---
 
@@ -209,8 +210,8 @@ Complete the Dedup pipeline, SSVC scoring, HTML report, patch suggestions, and r
 | Layer | Window | Budget | Primary Risk |
 | --- | --- | --- | --- |
 | G1 — OpenGrep PoC | Jun 9–20 | ~50h | **100% done** — completed Jun 17, 3 days early |
-| L0 — Foundation + Fast Path | Jun 23 – Jul 3 | 57h + 13h buffer | **ML0.1 + ML0.1B done Jun 17** (early); ML0.2–ML0.7 remaining; MIV cosign / Sigstore Rekor integration is next primary risk |
-| L1 — Joern Spike (time-boxed) | Jul 3 – Jul 7 | 20h + 8h contingency | Joern JVM + Go CPG frontend quality |
+| L0 — Foundation + Fast Path | Jun 23 – Jul 3 | 57h + 13h buffer | **100% done Jun 17–18** — all ML0.1–ML0.7 delivered 5–14 days early |
+| L1 — Joern Spike (time-boxed) | Jun 18 / Jul 3–7 | 20h + 8h contingency | **Go code done Jun 18 (2 weeks early)** — binary install + `make test-integration` pending |
 | L2 — Path A Complete | Jul 7 – Jul 17 | 56h + 14h buffer | Incremental CPG implementation (15h task) |
 | L3 — Path B | Jul 17 – Jul 28 | 69h + 8h buffer | BOLAZ taint model (12h task); A-18 calibration |
 | L4 — Dedup + Report + Integration | Jul 28 – Aug 6 | 50h + 13h buffer | SSVC 3-API sourcing; compressed 9-day window |
