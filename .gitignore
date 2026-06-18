@@ -34,3 +34,5 @@ docs/api/
 # temporary folder
 .tmp
 .tmp/**/*
+/zt
+build/
