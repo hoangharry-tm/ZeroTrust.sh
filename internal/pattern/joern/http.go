@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // queryRequest is the JSON body sent to POST /query.
@@ -15,98 +16,213 @@ type queryRequest struct {
 	Query string `json:"query"`
 }
 
-// queryResponse is the JSON body returned by POST /query.
-// The Stdout field contains the string representation of the evaluated
-// Joern/Scala expression — for queries ending in .toList.toJson this will be
-// a JSON array or object string; for simple expressions it may be a raw scalar.
-type queryResponse struct {
+// querySubmitResponse is the JSON body returned by POST /query.
+// The server returns only success+uuid immediately; the result must be
+// fetched separately via GET /result/{uuid}.
+type querySubmitResponse struct {
+	UUID    string `json:"uuid"`
+	Success bool   `json:"success"`
+}
+
+// queryResultResponse is the JSON body returned by GET /result/{uuid}.
+// Stdout is the ANSI-annotated REPL output; for queries ending in .toList.toJson
+// it contains a JSON array string wrapped in a Scala string literal.
+type queryResultResponse struct {
 	UUID    string `json:"uuid"`
 	Success bool   `json:"success"`
 	Stdout  string `json:"stdout"`
 	Stderr  string `json:"stderr"`
 }
 
-// doQuery sends a Joern DSL expression to POST /query and returns the raw
-// stdout bytes. The caller is responsible for further JSON decoding.
+// resultPollInterval is how long to wait between GET /result/{uuid} retries.
+const resultPollInterval = 200 * time.Millisecond
+
+// doQuery sends a Joern DSL expression to POST /query, then polls
+// GET /result/{uuid} until the result is ready. Returns the raw stdout bytes
+// suitable for further JSON decoding.
 //
 // Returns ErrJoernCrashed if the subprocess has exited, ErrMalformedResponse
-// if the HTTP response cannot be parsed, and a wrapped error if the server
-// reports success=false. All non-2xx HTTP statuses are treated as errors.
+// if either HTTP response cannot be parsed, and a wrapped error if the server
+// reports success=false.
 func (c *Client) doQuery(ctx context.Context, query string) ([]byte, error) {
 	if c.crashed.Load() {
 		return nil, ErrJoernCrashed
 	}
 
+	uuid, err := c.postQuery(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	return c.fetchResult(ctx, uuid)
+}
+
+// postQuery submits the query and returns its UUID.
+func (c *Client) postQuery(ctx context.Context, query string) (string, error) {
 	body, err := json.Marshal(queryRequest{Query: query})
 	if err != nil {
-		return nil, fmt.Errorf("joern: marshal query: %w", err)
+		return "", fmt.Errorf("joern: marshal query: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		c.serverURL+"/query", bytes.NewReader(body))
 	if err != nil {
-		return nil, fmt.Errorf("joern: build request: %w", err)
+		return "", fmt.Errorf("joern: build request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("joern: HTTP request: %w", err)
+		return "", fmt.Errorf("joern: POST /query: %w", err)
 	}
 	defer resp.Body.Close() //nolint:errcheck
 
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20)) // 4 MB cap
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10)) // 64 KB
 	if err != nil {
-		return nil, fmt.Errorf("joern: read response body: %w", err)
+		return "", fmt.Errorf("joern: read POST /query body: %w", err)
 	}
-
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("%w: HTTP %d — %s",
+		return "", fmt.Errorf("%w: POST /query HTTP %d — %s",
 			ErrMalformedResponse, resp.StatusCode, truncate(raw, 256))
 	}
 
-	var qr queryResponse
-	if err := json.Unmarshal(raw, &qr); err != nil {
-		return nil, fmt.Errorf("%w: %w — raw body: %s",
+	var sub querySubmitResponse
+	if err := json.Unmarshal(raw, &sub); err != nil {
+		return "", fmt.Errorf("%w: POST /query parse: %w — body: %s",
 			ErrMalformedResponse, err, truncate(raw, 256))
 	}
-
-	if !qr.Success {
-		return nil, fmt.Errorf("joern: query failed: %s", truncate([]byte(qr.Stderr), 512))
+	if !sub.Success {
+		return "", fmt.Errorf("joern: POST /query returned success=false — body: %s", truncate(raw, 256))
 	}
-
-	return []byte(parseStdout(qr.Stdout)), nil
+	if sub.UUID == "" {
+		return "", fmt.Errorf("%w: POST /query returned empty uuid", ErrMalformedResponse)
+	}
+	return sub.UUID, nil
 }
 
-// doGet performs a GET request to the given path and returns the status code.
-// Used exclusively for health checks (GET /ready).
-func (c *Client) doGet(ctx context.Context, path string) (int, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.serverURL+path, nil)
-	if err != nil {
-		return 0, fmt.Errorf("joern: build GET request: %w", err)
+// fetchResult polls GET /result/{uuid} until the server returns a completed
+// result (success=true with non-empty stdout) or the context is cancelled.
+//
+// The Joern server completes simple queries (~1 ms) immediately but CPG
+// traversals may take seconds. We poll at resultPollInterval until done.
+func (c *Client) fetchResult(ctx context.Context, uuid string) ([]byte, error) {
+	url := c.serverURL + "/result/" + uuid //nolint:gocritic // not a net/url — simple string concat
+
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, fmt.Errorf("joern: fetch result cancelled: %w", err)
+		}
+		if c.crashed.Load() {
+			return nil, ErrJoernCrashed
+		}
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return nil, fmt.Errorf("joern: build GET /result request: %w", err)
+		}
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			// Server may transiently return errors while processing — keep polling.
+			select {
+			case <-ctx.Done():
+				return nil, fmt.Errorf("joern: fetch result cancelled: %w", ctx.Err())
+			case <-time.After(resultPollInterval):
+				continue
+			}
+		}
+
+		raw, readErr := io.ReadAll(io.LimitReader(resp.Body, 4<<20)) // 4 MB cap
+		_ = resp.Body.Close()                                        //nolint:errcheck
+		if readErr != nil {
+			return nil, fmt.Errorf("joern: read GET /result body: %w", readErr)
+		}
+
+		if resp.StatusCode == http.StatusAccepted || resp.StatusCode == http.StatusNoContent {
+			// 202/204 means still processing — poll again.
+			select {
+			case <-ctx.Done():
+				return nil, fmt.Errorf("joern: fetch result cancelled: %w", ctx.Err())
+			case <-time.After(resultPollInterval):
+				continue
+			}
+		}
+
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return nil, fmt.Errorf("%w: GET /result HTTP %d — %s",
+				ErrMalformedResponse, resp.StatusCode, truncate(raw, 256))
+		}
+
+		var qr queryResultResponse
+		if err := json.Unmarshal(raw, &qr); err != nil {
+			return nil, fmt.Errorf("%w: GET /result parse: %w — body: %s",
+				ErrMalformedResponse, err, truncate(raw, 256))
+		}
+		// Joern returns success=false with empty stdout+stderr for ~30s during
+		// cold-start REPL initialization. Treat this as "still processing".
+		if !qr.Success && qr.Stdout == "" && qr.Stderr == "" {
+			select {
+			case <-ctx.Done():
+				return nil, fmt.Errorf("joern: fetch result cancelled: %w", ctx.Err())
+			case <-time.After(resultPollInterval):
+				continue
+			}
+		}
+		if !qr.Success {
+			return nil, fmt.Errorf("joern: query failed: %s", truncate([]byte(qr.Stderr), 512))
+		}
+
+		// Empty stdout on 200 means the server hasn't finished processing yet.
+		// Poll again after a short delay.
+		if qr.Stdout == "" {
+			select {
+			case <-ctx.Done():
+				return nil, fmt.Errorf("joern: fetch result cancelled: %w", ctx.Err())
+			case <-time.After(resultPollInterval):
+				continue
+			}
+		}
+
+		return []byte(parseStdout(qr.Stdout)), nil
 	}
-	resp, err := c.httpClient.Do(req)
+}
+
+// doQueryPing sends a trivial query to verify the server is alive and accepting
+// requests. Used by Ping and waitReady instead of GET /ready (which Joern does
+// not expose).
+//
+// Returns nil if the server responds successfully, ErrJoernUnreachable if the
+// POST fails (connection refused), or any other error on unexpected failures.
+func (c *Client) doQueryPing(ctx context.Context) error {
+	_, err := c.doQuery(ctx, "1+1")
 	if err != nil {
-		return 0, fmt.Errorf("joern: GET %s: %w", path, err)
+		return fmt.Errorf("%w: %w", ErrJoernUnreachable, err)
 	}
-	defer resp.Body.Close() //nolint:errcheck
-	_, _ = io.Copy(io.Discard, resp.Body)
-	return resp.StatusCode, nil
+	return nil
 }
 
 // parseStdout extracts the JSON payload from a Joern stdout string.
 // Joern's HTTP server may return:
+//
 //   - A bare JSON value:         [{"id":"1",...}]
 //   - A Scala string literal:    "[{\"id\":\"1\",...}]"  (with outer quotes)
-//   - A REPL-annotated value:    res0: String = "[{...}]"
+//   - A REPL-annotated value:    val res0: String = "[{...}]"
+//   - ANSI-annotated REPL text:  val [36mres0[0m: String = "[{...}]"
 //
-// parseStdout normalises all three forms to the bare JSON value.
+// parseStdout normalises all forms to the bare JSON value.
 func parseStdout(s string) string {
 	s = strings.TrimSpace(s)
 
-	// REPL annotation: "res0: Type = <value>" — strip prefix up to " = "
-	if idx := strings.Index(s, " = "); idx != -1 {
-		s = strings.TrimSpace(s[idx+3:])
+	// Strip ANSI escape sequences before further processing.
+	s = stripANSI(s)
+
+	// REPL annotation: "resN: Type = <value>" — strip prefix up to " = "
+	if idx := strings.LastIndex(s, " = "); idx != -1 {
+		// Use LastIndex to find the assignment closest to the actual value,
+		// skipping any preamble from the REPL session.
+		candidate := strings.TrimSpace(s[idx+3:])
+		if len(candidate) > 0 && (candidate[0] == '[' || candidate[0] == '{' || candidate[0] == '"') {
+			s = candidate
+		}
 	}
 
 	// Scala string literal: outer double-quotes with escaped inner quotes
@@ -118,6 +234,31 @@ func parseStdout(s string) string {
 	}
 
 	return s
+}
+
+// stripANSI removes ANSI CSI escape sequences (colour codes, cursor movement, etc.)
+// from s. This is a simple state-machine approach sufficient for Joern REPL output.
+func stripANSI(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	inEscape := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if inEscape {
+			// CSI sequences end with a letter in [A-Za-z]
+			if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') {
+				inEscape = false
+			}
+			continue
+		}
+		if c == '\x1b' && i+1 < len(s) && s[i+1] == '[' {
+			inEscape = true
+			i++ // skip the '['
+			continue
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
 }
 
 // truncate returns up to n bytes of b as a string, appending "…" if truncated.

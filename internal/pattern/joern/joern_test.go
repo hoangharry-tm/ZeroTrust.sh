@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,33 +17,49 @@ import (
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
-// mockServer starts an httptest.Server that responds to /ready and /query.
+// mockServer starts an httptest.Server implementing the Joern async HTTP API:
+//   - POST /query         → submit request, returns {success:true, uuid:"<id>"}
+//   - GET  /result/{uuid} → poll for result, returns {success:bool, stdout:"...", ...}
+//
 // queryFn is called with the raw query string; it returns the stdout payload
-// to embed in the response (already a JSON string, not double-encoded).
+// and whether the query should succeed.
 func mockServer(t *testing.T, queryFn func(query string) (stdout string, success bool)) *httptest.Server {
 	t.Helper()
+	// pending holds submitted results keyed by uuid for GET /result/{uuid} retrieval.
+	var mu sync.Mutex
+	pending := make(map[string]queryResultResponse)
+
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/ready":
-			w.WriteHeader(http.StatusOK)
-		case "/query":
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/query":
 			var req queryRequest
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 				http.Error(w, "bad request", http.StatusBadRequest)
 				return
 			}
 			stdout, ok := queryFn(req.Query)
-			resp := queryResponse{
-				UUID:    "test-uuid",
-				Success: ok,
-				Stdout:  stdout,
-				Stderr:  "",
-			}
+			uuid := fmt.Sprintf("test-uuid-%d", len(pending)+1)
+			result := queryResultResponse{UUID: uuid, Success: ok, Stdout: stdout}
 			if !ok {
-				resp.Stderr = "mock server: query rejected"
+				result.Stderr = "mock server: query rejected"
 			}
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(resp)
+			mu.Lock()
+			pending[uuid] = result
+			mu.Unlock()
+			_ = json.NewEncoder(w).Encode(querySubmitResponse{UUID: uuid, Success: true})
+
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/result/"):
+			uuid := strings.TrimPrefix(r.URL.Path, "/result/")
+			mu.Lock()
+			result, ok := pending[uuid]
+			mu.Unlock()
+			if !ok {
+				http.NotFound(w, r)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(result)
+
 		default:
 			http.NotFound(w, r)
 		}
@@ -274,11 +291,59 @@ func TestDoQuery_NonOKStatus(t *testing.T) {
 }
 
 func TestDoQuery_ServerReportsFailure(t *testing.T) {
+	// success=false with non-empty stderr → real failure, must error.
 	srv := mockServer(t, func(_ string) (string, bool) { return "", false })
 	c := newTestClient(t, srv)
 	_, err := c.doQuery(context.Background(), "bad query")
 	if err == nil {
-		t.Error("doQuery: expected error for success=false, got nil")
+		t.Error("doQuery: expected error for success=false with stderr, got nil")
+	}
+}
+
+func TestDoQuery_InitTimePollsUntilSuccess(t *testing.T) {
+	// Simulates Joern cold-start: success=false + empty stdout+stderr for the
+	// first N polls, then a real result. fetchResult must keep polling.
+	const initPolls = 5
+	var calls int
+	var mu sync.Mutex
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/query":
+			_ = json.NewEncoder(w).Encode(querySubmitResponse{UUID: "init-uuid", Success: true})
+		case r.Method == http.MethodGet && r.URL.Path == "/result/init-uuid":
+			mu.Lock()
+			n := calls
+			calls++
+			mu.Unlock()
+			if n < initPolls {
+				// Simulate Joern REPL not ready yet: success=false, no stderr.
+				_ = json.NewEncoder(w).Encode(queryResultResponse{UUID: "init-uuid", Success: false})
+			} else {
+				_ = json.NewEncoder(w).Encode(queryResultResponse{
+					UUID: "init-uuid", Success: true, Stdout: `val res0: Int = 2`,
+				})
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	c, err := New(WithServerURL(srv.URL), WithQueryTimeout(2*time.Second), WithPingRetries(3))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := c.doQuery(ctx, "1+1")
+	if err != nil {
+		t.Fatalf("doQuery: %v (expected success after init polls)", err)
+	}
+	if string(out) == "" {
+		t.Error("doQuery: expected non-empty result, got empty")
 	}
 }
 

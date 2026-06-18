@@ -8,7 +8,7 @@
 //	make test-integration
 //
 // Prerequisites:
-//  1. Joern installed: joern-server binary in PATH (see Makefile JOERN_BIN).
+//  1. Joern installed: joern binary in PATH (Homebrew: brew install joern) (see Makefile JOERN_BIN).
 //  2. Java 11+ available.
 //  3. No other process bound on JOERN_TEST_PORT (default 18080).
 //
@@ -30,7 +30,7 @@ import (
 
 const (
 	integrationPort    = 18080
-	integrationBin     = "joern-server"
+	integrationBin     = "joern" // Homebrew installs as "joern --server", not "joern-server"
 	integrationTimeout = 5 * time.Minute // JVM cold-start can be slow
 )
 
@@ -66,7 +66,7 @@ func startIntegrationClient(t *testing.T) *Client {
 		WithPort(integrationPort),
 		WithBuildTimeout(integrationTimeout),
 		WithQueryTimeout(2*time.Minute),
-		WithPingRetries(60), // 30 s total at 500 ms intervals
+		WithPingRetries(120), // 60 s total at 500 ms intervals (Joern REPL init takes ~35 s cold)
 	)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -112,7 +112,9 @@ func buildTestCPG(t *testing.T, c *Client) {
 func TestIntegration_StartAndPing(t *testing.T) {
 	c := startIntegrationClient(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// Joern REPL may still be processing queries after Start() returns;
+	// use the same generous timeout as the integration client itself.
+	ctx, cancel := context.WithTimeout(context.Background(), integrationTimeout)
 	defer cancel()
 
 	if err := c.Ping(ctx); err != nil {

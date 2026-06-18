@@ -48,6 +48,7 @@ package joern
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -62,7 +63,7 @@ import (
 // defaults for all configurable timeouts and retry counts.
 const (
 	defaultServerURL    = "http://127.0.0.1:8080"
-	defaultBinaryPath   = "joern-server"
+	defaultBinaryPath   = "joern" // Homebrew installs as "joern", not "joern-server"
 	defaultHost         = "127.0.0.1"
 	defaultPort         = 8080
 	defaultPingRetries  = 12
@@ -99,18 +100,26 @@ func WithBuildTimeout(d time.Duration) Option { return func(c *Client) { c.build
 
 // WithPingRetries sets how many times Ping retries before returning
 // ErrJoernUnreachable. Each attempt waits 500 ms. Defaults to 12 (total 6 s).
+// Note: on cold start, the first successful attempt may block ~30 s internally
+// (Joern REPL initialization) before returning — this counts as one retry.
 func WithPingRetries(n int) Option { return func(c *Client) { c.pingRetries = n } }
+
+// WithSubprocessStderr routes the Joern JVM's stderr to w (default: io.Discard).
+// All CPG data arrives via the HTTP API; the JVM's own output is startup
+// classpath noise. Pass os.Stderr here when debugging Joern startup failures.
+func WithSubprocessStderr(w io.Writer) Option { return func(c *Client) { c.subprocessStderr = w } }
 
 // Client wraps the Joern HTTP server API and optionally manages its subprocess.
 // All exported methods are safe to call concurrently.
 type Client struct {
-	serverURL    string
-	binaryPath   string
-	host         string
-	port         int
-	pingRetries  int
-	queryTimeout time.Duration
-	buildTimeout time.Duration
+	serverURL        string
+	binaryPath       string
+	host             string
+	port             int
+	pingRetries      int
+	queryTimeout     time.Duration
+	buildTimeout     time.Duration
+	subprocessStderr io.Writer // JVM stderr sink; defaults to io.Discard
 
 	httpClient *http.Client
 
@@ -119,7 +128,7 @@ type Client struct {
 	mu      sync.Mutex
 	cmd     *exec.Cmd
 	done    chan struct{} // closed when the subprocess exits
-	crashed atomic.Bool   // set by the crash-watcher goroutine
+	crashed atomic.Bool  // set by the crash-watcher goroutine
 }
 
 // New returns a Client configured with the given options.
@@ -128,13 +137,14 @@ type Client struct {
 // Returns ErrInvalidServerURL if the resolved URL host is not loopback.
 func New(opts ...Option) (*Client, error) {
 	c := &Client{
-		serverURL:    defaultServerURL,
-		binaryPath:   defaultBinaryPath,
-		host:         defaultHost,
-		port:         defaultPort,
-		pingRetries:  defaultPingRetries,
-		queryTimeout: defaultQueryTimeout,
-		buildTimeout: defaultBuildTimeout,
+		serverURL:        defaultServerURL,
+		binaryPath:       defaultBinaryPath,
+		host:             defaultHost,
+		port:             defaultPort,
+		pingRetries:      defaultPingRetries,
+		queryTimeout:     defaultQueryTimeout,
+		buildTimeout:     defaultBuildTimeout,
+		subprocessStderr: io.Discard,
 	}
 	for _, o := range opts {
 		o(c)
@@ -170,13 +180,19 @@ func (c *Client) Start(ctx context.Context) error {
 	}
 
 	// Build the subprocess command. Always bind to loopback.
+	// Joern (Homebrew) uses --server mode: joern --server --server-host H --server-port P
+	//
+	// Use exec.Command (not exec.CommandContext) so the subprocess lifetime is
+	// not tied to the Start caller's context. waitReady uses ctx for polling
+	// timeout; the process itself lives until Stop() calls SIGTERM/SIGKILL.
 	//nolint:gosec // binaryPath comes from config, not user input at scan time
-	cmd := exec.CommandContext(ctx, c.binaryPath,
-		"--host", c.host,
-		"--port", strconv.Itoa(c.port),
+	cmd := exec.Command(c.binaryPath,
+		"--server",
+		"--server-host", c.host,
+		"--server-port", strconv.Itoa(c.port),
 	)
-	cmd.Stdout = os.Stderr // route JVM output to stderr so it doesn't pollute stdout
-	cmd.Stderr = os.Stderr
+	cmd.Stdout = io.Discard           // JVM stdout is startup noise; data arrives via HTTP API
+	cmd.Stderr = c.subprocessStderr  // caller-configurable; defaults to io.Discard
 
 	if err := cmd.Start(); err != nil {
 		c.mu.Unlock()
@@ -240,7 +256,8 @@ func (c *Client) Stop(ctx context.Context) error {
 // Returns ErrJoernCrashed if the managed subprocess has exited, or
 // ErrJoernUnreachable if all retry attempts fail.
 //
-// Ping does not require a CPG to be loaded; it sends a trivial expression.
+// Ping sends a trivial "1+1" expression via POST /query + GET /result/{uuid}.
+// Joern does not expose a /ready or /health endpoint.
 func (c *Client) Ping(ctx context.Context) error {
 	if c.crashed.Load() {
 		return ErrJoernCrashed
@@ -252,14 +269,10 @@ func (c *Client) Ping(ctx context.Context) error {
 			return fmt.Errorf("joern: ping cancelled: %w", err)
 		}
 
-		code, err := c.doGet(ctx, "/ready")
-		if err == nil && code == http.StatusOK {
+		if err := c.doQueryPing(ctx); err == nil {
 			return nil
-		}
-		if err != nil {
+		} else { //nolint:revive // keep lastErr in scope
 			lastErr = err
-		} else {
-			lastErr = fmt.Errorf("joern: /ready returned HTTP %d", code)
 		}
 
 		select {
@@ -278,7 +291,8 @@ func (c *Client) Graph() *joernGraph {
 	return &joernGraph{client: c}
 }
 
-// waitReady polls GET /ready until it returns 200 or the context is cancelled.
+// waitReady polls POST /query with a trivial expression until the server
+// accepts it or the context is cancelled. Joern does not expose /ready or /health.
 func (c *Client) waitReady(ctx context.Context) error {
 	for i := 0; i < c.pingRetries; i++ {
 		if ctx.Err() != nil {
@@ -288,8 +302,7 @@ func (c *Client) waitReady(ctx context.Context) error {
 			return ErrJoernCrashed
 		}
 
-		code, err := c.doGet(ctx, "/ready")
-		if err == nil && code == http.StatusOK {
+		if err := c.doQueryPing(ctx); err == nil {
 			return nil
 		}
 
