@@ -10,12 +10,21 @@ Package verifier implements the LLM Verifier for Path A.
 
 The Verifier receives normalised findings from OpenGrep \+ ast\-grep and Joern taint analysis and uses CoD \(Chain of Draft\) \+ SCoT \(Structured Chain of Thought\) reasoning with XGrammar\-2\-enforced JSON output to classify each finding as confirmed, false\_positive, or uncertain.
 
-High\-confidence rules \(tagged confidence: high in the rule YAML\) bypass this verifier entirely and are sent directly to the dedup layer.
+### High\\\-confidence bypass
 
-Adaptive self\-consistency \(ASC\): uncertain verdicts trigger two additional independent samples from the model; the majority verdict wins. If all three samples are uncertain the finding is emitted as SUPPRESSED with reason "uncertain".
+Findings whose Confidence is at or above HighConfidenceThreshold \(0.90\) are deterministic rule matches — they skip the LLM entirely and go straight to the dedup layer. The caller is responsible for the partition; this package provides the threshold constant and the Verify function for the remainder.
+
+### Adaptive Self\\\-Consistency \\\(ASC\\\)
+
+ASC runs entirely in the Python worker: uncertain verdicts trigger up to two additional independent resamples at escalating temperatures, and a majority vote selects the final verdict. The Go side receives the resolved verdict and an ASCRounds field recording how many extra rounds were run.
+
+### Concurrency model
+
+Verify fans out one worker.Call per finding using an errgroup. Worker.Call is safe for concurrent use; the Python worker processes requests sequentially over its NDJSON stdin loop, so goroutines queue naturally. Individual LLM failures are non\-fatal: the affected finding receives a fallback uncertain result at a penalty\-adjusted confidence, and the batch continues.
 
 ## Index
 
+- [Constants](<#constants>)
 - [func ApplyResults\(findings \[\]finding.Finding, results \[\]Result\) \[\]finding.Finding](<#ApplyResults>)
 - [type ASCConfig](<#ASCConfig>)
 - [type Result](<#Result>)
@@ -26,44 +35,49 @@ Adaptive self\-consistency \(ASC\): uncertain verdicts trigger two additional in
   - [func \(v \*Verifier\) Verify\(ctx context.Context, findings \[\]finding.Finding\) \(\[\]Result, error\)](<#Verifier.Verify>)
 
 
+## Constants
+
+<a name="HighConfidenceThreshold"></a>HighConfidenceThreshold is the minimum confidence at which a finding bypasses the LLM Verifier and goes directly to the dedup layer. Findings at or above this score come from deterministic rules that have near\-zero false\-positive rates; LLM verification adds cost without benefit.
+
+```go
+const HighConfidenceThreshold = 0.90
+```
+
 <a name="ApplyResults"></a>
-## func [ApplyResults](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/verifier/verifier.go#L125>)
+## func [ApplyResults](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/verifier/verifier.go#L187>)
 
 ```go
 func ApplyResults(findings []finding.Finding, results []Result) []finding.Finding
 ```
 
-ApplyResults merges verifier results back onto the input findings, updating Confidence, SeverityLabel, and SuppressReason where appropriate.
+ApplyResults merges verifier Results back onto the input findings slice, updating Confidence, SeverityLabel, SuppressReason, and Justification.
 
-Findings classified as false\_positive are converted to SUPPRESSED with SuppressReasonFrameworkSafe \(conservative label for false positives\). Confirmed findings have their Confidence updated from the verifier score.
+Mapping:
 
-Parameters:
+- confirmed → confidence updated; SeverityLabel re\-derived.
+- false\_positive → SeveritySuppressed \+ SuppressReasonFrameworkSafe.
+- uncertain → SeveritySuppressed \+ SuppressReasonUncertain.
 
-- findings: the original input finding slice \(modified in\-place\).
-- results: the verifier result slice returned by Verify \(same order/length\).
-
-Returns:
-
-- \[\]finding.Finding: the updated finding slice.
+The returned slice has the same length and order as findings. If the lengths diverge \(caller bug\), findings is returned unchanged.
 
 <a name="ASCConfig"></a>
-## type [ASCConfig](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/verifier/verifier.go#L53-L60>)
+## type [ASCConfig](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/verifier/verifier.go#L77-L84>)
 
-ASCConfig controls adaptive self\-consistency re\-sampling behaviour.
+ASCConfig controls Adaptive Self\-Consistency resampling.
 
 ```go
 type ASCConfig struct {
     // MaxRounds is the maximum number of additional samples for uncertain verdicts.
-    // Default 2 (producing 3 total samples; majority-vote selects the winner).
+    // Default 2: produces up to 3 total samples; majority vote selects the winner.
     MaxRounds int
-    // ConfidenceThreshold is the minimum confidence required to avoid re-sampling.
+    // ConfidenceThreshold is the minimum confidence that avoids resampling.
     // Verdicts with confidence below this value trigger ASC even if not uncertain.
     ConfidenceThreshold float64
 }
 ```
 
 <a name="Result"></a>
-## type [Result](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/verifier/verifier.go#L38-L50>)
+## type [Result](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/verifier/verifier.go#L62-L74>)
 
 Result carries the verifier output for one finding.
 
@@ -71,20 +85,20 @@ Result carries the verifier output for one finding.
 type Result struct {
     // FindingID links this result to the input finding (finding.Finding.ID).
     FindingID string
-    // Verdict is the LLM's classification.
+    // Verdict is the LLM's classification after optional ASC.
     Verdict Verdict
     // Confidence is the LLM's self-reported confidence score (0.0–1.0).
     Confidence float64
-    // Justification is the LLM's CoD reasoning summary (1–2 sentences).
+    // Justification is the LLM's CoD reasoning summary (≤200 chars).
     Justification string
-    // ASCRounds is the number of self-consistency re-sampling rounds performed.
-    // 0 means the initial verdict was not uncertain; 1 or 2 means ASC was triggered.
+    // ASCRounds is the number of extra self-consistency rounds executed.
+    // 0 means the initial verdict was accepted directly.
     ASCRounds int
 }
 ```
 
 <a name="Verdict"></a>
-## type [Verdict](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/verifier/verifier.go#L25>)
+## type [Verdict](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/verifier/verifier.go#L49>)
 
 Verdict is the LLM Verifier classification for a single finding.
 
@@ -101,13 +115,13 @@ const (
     // VerdictFalsePositive means the LLM determined this is a false positive.
     VerdictFalsePositive Verdict = "false_positive"
     // VerdictUncertain means the LLM could not reach a confident conclusion.
-    // Adaptive self-consistency re-sampling is triggered for uncertain verdicts.
+    // After ASC, if all samples remain uncertain, the finding is suppressed.
     VerdictUncertain Verdict = "uncertain"
 )
 ```
 
 <a name="Verifier"></a>
-## type [Verifier](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/verifier/verifier.go#L63-L68>)
+## type [Verifier](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/verifier/verifier.go#L87-L90>)
 
 Verifier applies LLM reasoning to filter false positives from pattern findings.
 
@@ -118,51 +132,34 @@ type Verifier struct {
 ```
 
 <a name="New"></a>
-### func [New](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/verifier/verifier.go#L74>)
+### func [New](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/verifier/verifier.go#L93>)
 
 ```go
 func New(w *worker.Manager) *Verifier
 ```
 
-New returns a Verifier backed by the Python worker with default ASC settings.
-
-Parameters:
-
-- w: the shared Python worker manager.
+New returns a Verifier backed by w with default ASC settings.
 
 <a name="NewWithASC"></a>
-### func [NewWithASC](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/verifier/verifier.go#L89>)
+### func [NewWithASC](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/verifier/verifier.go#L101>)
 
 ```go
 func NewWithASC(w *worker.Manager, asc ASCConfig) *Verifier
 ```
 
-NewWithASC returns a Verifier with custom adaptive self\-consistency settings.
-
-Parameters:
-
-- w: the shared Python worker manager.
-- asc: self\-consistency configuration.
+NewWithASC returns a Verifier with custom ASC configuration.
 
 <a name="Verifier.Verify"></a>
-### func \(\*Verifier\) [Verify](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/verifier/verifier.go#L107>)
+### func \(\*Verifier\) [Verify](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/verifier/verifier.go#L115>)
 
 ```go
 func (v *Verifier) Verify(ctx context.Context, findings []finding.Finding) ([]Result, error)
 ```
 
-Verify classifies each finding in the input slice using CoD \+ SCoT reasoning. Returns one Result per input finding in the same order.
+Verify classifies each finding using CoD \+ SCoT reasoning via the Python worker. Returns one Result per input finding in the same order.
 
-Uncertain results trigger ASC re\-sampling \(up to ASCConfig.MaxRounds additional samples\). If all samples are uncertain the result carries VerdictUncertain and the caller is responsible for emitting a SUPPRESSED finding.
+Individual LLM failures are non\-fatal: the affected finding receives a fallback uncertain result at 80% of its original confidence, allowing the batch to complete even when the model is slow or temporarily unavailable. The only hard error is a total worker failure \(ErrWorkerDead\).
 
-Parameters:
-
-- ctx: cancellation context; honours deadline for each LLM call.
-- findings: the normalised finding set from OpenGrep \+ ast\-grep \+ Joern taint.
-
-Returns:
-
-- \[\]Result: one result per input finding, in the same order.
-- error: non\-nil only for unrecoverable worker communication failures.
+Findings are dispatched concurrently; the caller must ensure ctx carries an appropriate deadline — a per\-scan timeout is strongly recommended.
 
 Generated by [gomarkdoc](<https://github.com/princjef/gomarkdoc>)

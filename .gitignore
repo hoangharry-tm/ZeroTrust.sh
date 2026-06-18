@@ -18,6 +18,10 @@ dist/
 report.html
 .zerotrust-suppressions.yaml
 
+# docs/api/ is NOT where Go API docs live — godocs/api/ is.
+# This entry prevents accidentally regenerating into the wrong location.
+docs/api/
+
 # IDE
 .idea/
 .vscode/

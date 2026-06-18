@@ -8,60 +8,147 @@ import "github.com/hoangharry-tm/zerotrust/internal/pattern/joern"
 
 Package joern wraps the Joern CPG engine HTTP API \(Apache 2.0\).
 
-Joern is pre\-started at CLI launch \(before file ingestion\) to eliminate JVM cold\-start latency. It builds the Universal Code Property Graph \(AST \+ CFG \+ PDG \+ call graph\) for all in\-scope source files and serves inter\-procedural taint queries via an HTTP JSON API.
+### Architecture
+
+Joern is pre\-started at CLI launch \(before file ingestion\) to eliminate JVM cold\-start latency. It builds the Universal Code Property Graph \(AST \+ CFG \+ PDG \+ call graph\) for all in\-scope source files and serves inter\-procedural taint queries via an HTTP JSON API on 127.0.0.1 only.
 
 The CPG is shared between both detection paths via the pkg/cpg.Graph interface:
 
-- Path A's Joern taint analysis queries TaintPaths directly.
-- Path B's Heuristic Targeting and Call Chain Assembler query nodes and edges.
+- Path A's Joern taint analysis calls TaintPaths directly.
+- Path B's Heuristic Targeting and Call Chain Assembler call QueryNodes, GetCallGraph, GetCallers, GetCallees, and GetNeighboursAtDepth.
 
-Incremental CPG patching \(repeat scans\): On repeat scans, the CPG is loaded from a serialized snapshot and patched with a depth\-5 BFS update rooted at each changed function \(IncrementalPatch\). Depth 5 is the taint\-correctness bound from Li et al. \(ICSE 2024\) and Effendi et al. \(SOAP/PLDI 2025, Joern core team\). If any changed function has ≥50 callers \(hub module\), a full CPG rebuild is triggered instead.
+### Subprocess lifecycle
+
+A Client can operate in two modes:
+
+1. Externally managed — created with New\(\) and pointed at a pre\-running Joern server \(CI, Docker, local dev\). No subprocess is spawned; Start and Stop are no\-ops. Use WithServerURL to set the base URL.
+
+2. Self\-managed — created with New\(WithBinaryPath\("joern\-server"\), ...\). Call Start\(ctx\) to spawn the subprocess; it will be killed on Stop. Start validates port availability, binds the server to 127.0.0.1, and polls /ready until the JVM is warm. Stop sends SIGTERM → waits → SIGKILL to prevent subprocess leaks.
+
+### Security contract
+
+- The HTTP server ALWAYS binds to 127.0.0.1 \(loopback only\), never 0.0.0.0.
+- New\(\) rejects any serverURL whose host is not localhost / 127.0.0.1 / ::1.
+- Start\(\) refuses to bind a port already in use \(ErrPortInUse\), preventing silent attachment to an unknown existing process.
+- The managed subprocess is always cleaned up: Stop escalates SIGTERM → SIGKILL if the process does not exit within the configured timeout.
+
+### Incremental CPG patching
+
+On repeat scans the CPG is loaded from a serialized snapshot and patched with a depth\-5 BFS update rooted at each changed function \(IncrementalPatch\). Depth 5 is the taint\-correctness bound from Li et al. \(ICSE 2024\) and Effendi et al. \(SOAP/PLDI 2025, Joern core team\). If any changed function has ≥ 50 callers \(hub module\), ErrHubModuleDetected is returned and the caller must fall back to BuildCPG for a full rebuild.
 
 ## Index
 
 - [Variables](<#variables>)
 - [type BuildConfig](<#BuildConfig>)
 - [type Client](<#Client>)
-  - [func New\(serverURL string\) \*Client](<#New>)
+  - [func New\(opts ...Option\) \(\*Client, error\)](<#New>)
   - [func \(c \*Client\) BuildCPG\(ctx context.Context, cfg BuildConfig\) error](<#Client.BuildCPG>)
-  - [func \(c \*Client\) Graph\(\) cpg.Graph](<#Client.Graph>)
+  - [func \(c \*Client\) Graph\(\) \*joernGraph](<#Client.Graph>)
   - [func \(c \*Client\) IncrementalPatch\(ctx context.Context, cfg IncrementalPatchConfig\) error](<#Client.IncrementalPatch>)
   - [func \(c \*Client\) LoadCPG\(ctx context.Context, srcPath string\) error](<#Client.LoadCPG>)
   - [func \(c \*Client\) Ping\(ctx context.Context\) error](<#Client.Ping>)
   - [func \(c \*Client\) SaveCPG\(ctx context.Context, destPath string\) error](<#Client.SaveCPG>)
+  - [func \(c \*Client\) Start\(ctx context.Context\) error](<#Client.Start>)
+  - [func \(c \*Client\) Stop\(ctx context.Context\) error](<#Client.Stop>)
 - [type IncrementalPatchConfig](<#IncrementalPatchConfig>)
+- [type Option](<#Option>)
+  - [func WithBinaryPath\(path string\) Option](<#WithBinaryPath>)
+  - [func WithBuildTimeout\(d time.Duration\) Option](<#WithBuildTimeout>)
+  - [func WithHost\(host string\) Option](<#WithHost>)
+  - [func WithPingRetries\(n int\) Option](<#WithPingRetries>)
+  - [func WithPort\(port int\) Option](<#WithPort>)
+  - [func WithQueryTimeout\(d time.Duration\) Option](<#WithQueryTimeout>)
+  - [func WithServerURL\(u string\) Option](<#WithServerURL>)
 
 
 ## Variables
 
-<a name="ErrHubModuleDetected"></a>ErrHubModuleDetected is returned by IncrementalPatch when a changed function exceeds HubCallerThreshold. The caller must fall back to a full CPG rebuild.
+<a name="ErrPortInUse"></a>Sentinel errors returned by the Joern client. Callers must use errors.Is / errors.As — never string matching.
 
 ```go
-var ErrHubModuleDetected = &hubModuleError{}
+var (
+    // ErrPortInUse is returned by Start when the target port is already
+    // bound by another process. The caller should retry with a different port
+    // or stop the existing listener.
+    ErrPortInUse = errors.New("joern: port already in use on 127.0.0.1")
+
+    // ErrJoernUnreachable is returned by Ping when the server does not respond
+    // successfully within the configured retry window.
+    ErrJoernUnreachable = errors.New("joern: server unreachable after retries")
+
+    // ErrJoernCrashed is returned when the managed subprocess has exited
+    // unexpectedly. Any further method call on the client returns this error.
+    // Callers should stop the client and start a fresh one.
+    ErrJoernCrashed = errors.New("joern: server process exited unexpectedly")
+
+    // ErrBuildTimeout is returned by BuildCPG when the build does not complete
+    // within the configured timeout (default 120 s). Large codebases may require
+    // a longer timeout via WithBuildTimeout.
+    ErrBuildTimeout = errors.New("joern: CPG build timed out")
+
+    // ErrDepthExceeded is returned by GetNeighboursAtDepth when depth > 6.
+    // The bound of 6 is the taint-correctness cap from Effendi et al.
+    // (SOAP/PLDI 2025, Joern core team). Callers must not pass a higher value.
+    ErrDepthExceeded = errors.New("joern: BFS depth exceeds maximum of 6 (SOAP/PLDI 2025 bound)")
+
+    // ErrHubModuleDetected is returned by IncrementalPatch when a changed
+    // function has ≥ HubCallerThreshold callers. The caller must fall back to a
+    // full CPG rebuild via BuildCPG.
+    ErrHubModuleDetected = &hubModuleError{}
+
+    // ErrMalformedResponse is returned when the server's HTTP response cannot
+    // be parsed as the expected JSON schema. The raw body is included in the
+    // wrapped error for debuggability.
+    ErrMalformedResponse = errors.New("joern: malformed response from server")
+
+    // ErrPathTraversal is returned by BuildCPG when any entry in BuildConfig.Paths
+    // contains a ".." component, which could escape the project root.
+    ErrPathTraversal = errors.New("joern: path contains traversal component (../)")
+
+    // ErrEmptyPaths is returned by BuildCPG when BuildConfig.Paths is empty.
+    ErrEmptyPaths = errors.New("joern: BuildConfig.Paths must not be empty")
+
+    // ErrAlreadyStarted is returned by Start when a subprocess is already
+    // running under this client. Call Stop first.
+    ErrAlreadyStarted = errors.New("joern: subprocess already running — call Stop first")
+
+    // ErrNotManaged is returned by Stop when the client was not started with
+    // Start (i.e. it connects to an externally managed Joern instance).
+    ErrNotManaged = errors.New("joern: no managed subprocess — this client connects to an external server")
+
+    // ErrInvalidServerURL is returned by New when the server URL resolves to a
+    // non-localhost host. Remote Joern instances are not supported; all CPG
+    // communication must stay on loopback.
+    ErrInvalidServerURL = errors.New("joern: server URL must be localhost (127.0.0.1 / ::1) — remote instances are not supported")
+)
 ```
 
 <a name="BuildConfig"></a>
-## type [BuildConfig](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/joern.go#L35-L44>)
+## type [BuildConfig](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/cpg.go#L13-L26>)
 
-BuildConfig controls how Joern builds the initial CPG.
+BuildConfig controls how Joern builds the initial Code Property Graph.
 
 ```go
 type BuildConfig struct {
-    // Paths is the list of source file or directory paths to ingest.
+    // Paths is the list of source files or directories to ingest.
+    // Must be non-empty; paths containing ".." are rejected (ErrPathTraversal).
     Paths []string
-    // Language overrides Joern's auto-detection (e.g. "python", "javasrc", "golang").
+
+    // Language overrides Joern's auto-detection.
+    // Accepted values: "JAVASRC", "PYTHONSRC", "GOLANG", "JSSRC", "RUBYSRC".
     // Empty string uses auto-detection.
     Language string
-    // SerializedCPGPath is the file path where the built CPG will be serialized
-    // for use in subsequent incremental patches. Empty string disables serialization.
+
+    // SerializedCPGPath is the file path where the finished CPG is persisted for
+    // incremental patching on repeat scans. Empty string skips serialization.
     SerializedCPGPath string
 }
 ```
 
 <a name="Client"></a>
-## type [Client](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/joern.go#L29-L32>)
+## type [Client](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/joern.go#L106-L123>)
 
-Client wraps the Joern HTTP server API.
+Client wraps the Joern HTTP server API and optionally manages its subprocess. All exported methods are safe to call concurrently.
 
 ```go
 type Client struct {
@@ -70,119 +157,203 @@ type Client struct {
 ```
 
 <a name="New"></a>
-### func [New](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/joern.go#L76>)
+### func [New](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/joern.go#L129>)
 
 ```go
-func New(serverURL string) *Client
+func New(opts ...Option) (*Client, error)
 ```
 
-New returns a Client targeting the Joern server at serverURL. If serverURL is empty, localhost:8080 is used.
+New returns a Client configured with the given options. Defaults: serverURL=http://127.0.0.1:8080, no managed subprocess.
 
-Parameters:
-
-- serverURL: base URL of the Joern HTTP server \(e.g. "http://localhost:8080"\).
+Returns ErrInvalidServerURL if the resolved URL host is not loopback.
 
 <a name="Client.BuildCPG"></a>
-### func \(\*Client\) [BuildCPG](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/joern.go#L91>)
+### func \(\*Client\) [BuildCPG](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/cpg.go#L60>)
 
 ```go
 func (c *Client) BuildCPG(ctx context.Context, cfg BuildConfig) error
 ```
 
-BuildCPG requests Joern to build a Code Property Graph from the given source paths. This is the full \(non\-incremental\) build used on first scan or after hub detection.
+BuildCPG requests Joern to build a full Code Property Graph from the given source paths. This is the first\-scan operation; repeat scans use LoadCPG \+ IncrementalPatch.
 
-Parameters:
+The call blocks until the CPG build completes or the context expires. Large codebases may require WithBuildTimeout to extend the default 120 s cap.
 
-- ctx: cancellation context; CPG builds can take minutes for large codebases.
-- cfg: build configuration including source paths and optional CPG serialization path.
+Input validation:
 
-Returns non\-nil error if Joern rejects the request or the HTTP call fails.
+- Paths must be non\-empty \(ErrEmptyPaths\).
+- No path may contain ".." components \(ErrPathTraversal\).
 
 <a name="Client.Graph"></a>
-### func \(\*Client\) [Graph](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/joern.go#L146>)
+### func \(\*Client\) [Graph](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/joern.go#L277>)
 
 ```go
-func (c *Client) Graph() cpg.Graph
+func (c *Client) Graph() *joernGraph
 ```
 
-Graph returns a cpg.Graph backed by this Joern server instance. The returned graph is safe to share across both detection paths concurrently. Graph\(\) must be called after BuildCPG \(or LoadCPG \+ IncrementalPatch\) completes.
+Graph returns a cpg.Graph backed by this Joern server instance. The returned graph is safe to share across both detection paths concurrently. Graph must be called after BuildCPG \(or LoadCPG \+ IncrementalPatch\) completes.
 
 <a name="Client.IncrementalPatch"></a>
-### func \(\*Client\) [IncrementalPatch](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/joern.go#L105>)
+### func \(\*Client\) [IncrementalPatch](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/cpg.go#L112>)
 
 ```go
 func (c *Client) IncrementalPatch(ctx context.Context, cfg IncrementalPatchConfig) error
 ```
 
-IncrementalPatch applies a depth\-5 BFS patch to the loaded CPG, updating only the inter\-procedural graph neighbourhood of each changed function.
+IncrementalPatch applies a depth\-bounded BFS patch to the loaded CPG, updating only the inter\-procedural graph neighbourhood of each changed function.
 
-Returns ErrHubModuleDetected if any changed function exceeds cfg.HubCallerThreshold. In that case the caller must invoke BuildCPG for a full rebuild.
-
-Parameters:
-
-- ctx: cancellation context.
-- cfg: patch configuration including changed functions, removed files, and depth cap.
+Must be called after LoadCPG. Returns ErrHubModuleDetected if any function in ChangedFunctions has ≥ HubCallerThreshold callers — in that case the caller must invoke BuildCPG for a full rebuild instead.
 
 <a name="Client.LoadCPG"></a>
-### func \(\*Client\) [LoadCPG](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/joern.go#L128>)
+### func \(\*Client\) [LoadCPG](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/cpg.go#L172>)
 
 ```go
 func (c *Client) LoadCPG(ctx context.Context, srcPath string) error
 ```
 
-LoadCPG instructs Joern to load a previously serialized CPG snapshot from srcPath. Must be called before IncrementalPatch on repeat scans.
-
-Parameters:
-
-- ctx: cancellation context.
-- srcPath: absolute path to the serialized CPG file.
+LoadCPG instructs Joern to load a previously serialized CPG snapshot. Must be called before IncrementalPatch on repeat scans.
 
 <a name="Client.Ping"></a>
-### func \(\*Client\) [Ping](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/joern.go#L138>)
+### func \(\*Client\) [Ping](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/joern.go#L244>)
 
 ```go
 func (c *Client) Ping(ctx context.Context) error
 ```
 
-Ping checks that the Joern HTTP server is reachable and responsive. Returns nil if the server responds with HTTP 200 to a health\-check request.
+Ping verifies that the Joern HTTP server is reachable and accepting queries. Returns ErrJoernCrashed if the managed subprocess has exited, or ErrJoernUnreachable if all retry attempts fail.
 
-Parameters:
-
-- ctx: cancellation context.
+Ping does not require a CPG to be loaded; it sends a trivial expression.
 
 <a name="Client.SaveCPG"></a>
-### func \(\*Client\) [SaveCPG](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/joern.go#L117>)
+### func \(\*Client\) [SaveCPG](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/cpg.go#L159>)
 
 ```go
 func (c *Client) SaveCPG(ctx context.Context, destPath string) error
 ```
 
-SaveCPG serializes the current CPG state to the file at destPath. Called after BuildCPG or IncrementalPatch completes to persist the snapshot for the next scan's IncrementalPatch.
+SaveCPG serializes the current in\-memory CPG to destPath for use in subsequent IncrementalPatch calls on repeat scans.
 
-Parameters:
+<a name="Client.Start"></a>
+### func \(\*Client\) [Start](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/joern.go#L160>)
 
-- ctx: cancellation context.
-- destPath: absolute path where the serialized CPG will be written.
+```go
+func (c *Client) Start(ctx context.Context) error
+```
+
+Start spawns the joern\-server subprocess bound to 127.0.0.1:\<port\>, waits for it to become ready, and returns nil on success.
+
+Start validates port availability before spawning \(ErrPortInUse if occupied\). The server process is monitored by a background goroutine; if it exits unexpectedly, all subsequent method calls return ErrJoernCrashed.
+
+Callers must call Stop when the client is no longer needed. Returns ErrAlreadyStarted if called a second time without an intervening Stop.
+
+<a name="Client.Stop"></a>
+### func \(\*Client\) [Stop](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/joern.go#L208>)
+
+```go
+func (c *Client) Stop(ctx context.Context) error
+```
+
+Stop sends SIGTERM to the managed subprocess, waits up to the configured stop timeout, then escalates to SIGKILL. Stop is idempotent and safe to call even if Start was never called \(returns ErrNotManaged in that case\).
+
+Always cleans up internal state so the client can be restarted via Start.
 
 <a name="IncrementalPatchConfig"></a>
-## type [IncrementalPatchConfig](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/joern.go#L47-L59>)
+## type [IncrementalPatchConfig](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/cpg.go#L29-L48>)
 
 IncrementalPatchConfig controls the depth\-5 BFS CPG patch for repeat scans.
 
 ```go
 type IncrementalPatchConfig struct {
-    // ChangedFunctions lists the function identifiers (Joern METHOD node names) to patch from.
+    // ChangedFunctions lists Joern METHOD node full names to patch from.
     ChangedFunctions []string
-    // RemovedFiles lists source files that have been deleted; their nodes must be evicted.
+
+    // RemovedFiles lists source files that were deleted; their nodes are evicted.
     RemovedFiles []string
-    // MaxDepth is the BFS traversal depth (default 5; must not exceed 6 per SOAP 2025).
+
+    // MaxDepth is the BFS traversal depth (default 5; must not exceed 6).
+    // Depth 5 is the taint-correctness bound from Li et al. (ICSE 2024) and
+    // Effendi et al. (SOAP/PLDI 2025, Joern core team).
     MaxDepth int
-    // HubCallerThreshold is the max callers a function may have before triggering full rebuild.
-    // Default 50; exceeding this causes IncrementalPatch to return ErrHubModuleDetected.
+
+    // HubCallerThreshold is the maximum caller count a function may have before
+    // the incremental patch is aborted. Default 50; exceeding it returns
+    // ErrHubModuleDetected and the caller must fall back to BuildCPG.
     HubCallerThreshold int
-    // SerializedCPGPath is the file path from which the existing CPG snapshot is loaded.
+
+    // SerializedCPGPath is the path from which the prior CPG snapshot is loaded.
     SerializedCPGPath string
 }
 ```
+
+<a name="Option"></a>
+## type [Option](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/joern.go#L76>)
+
+Option configures a Client.
+
+```go
+type Option func(*Client)
+```
+
+<a name="WithBinaryPath"></a>
+### func [WithBinaryPath](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/joern.go#L85>)
+
+```go
+func WithBinaryPath(path string) Option
+```
+
+WithBinaryPath sets the path to the joern\-server binary used by Start. Defaults to "joern\-server" \(resolved via PATH\).
+
+<a name="WithBuildTimeout"></a>
+### func [WithBuildTimeout](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/joern.go#L98>)
+
+```go
+func WithBuildTimeout(d time.Duration) Option
+```
+
+WithBuildTimeout sets the maximum duration for a full CPG build. Defaults to 120 s.
+
+<a name="WithHost"></a>
+### func [WithHost](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/joern.go#L89>)
+
+```go
+func WithHost(host string) Option
+```
+
+WithHost sets the interface that joern\-server binds to. Must be a loopback address; defaults to 127.0.0.1.
+
+<a name="WithPingRetries"></a>
+### func [WithPingRetries](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/joern.go#L102>)
+
+```go
+func WithPingRetries(n int) Option
+```
+
+WithPingRetries sets how many times Ping retries before returning ErrJoernUnreachable. Each attempt waits 500 ms. Defaults to 12 \(total 6 s\).
+
+<a name="WithPort"></a>
+### func [WithPort](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/joern.go#L92>)
+
+```go
+func WithPort(port int) Option
+```
+
+WithPort sets the TCP port for the subprocess. Defaults to 8080.
+
+<a name="WithQueryTimeout"></a>
+### func [WithQueryTimeout](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/joern.go#L95>)
+
+```go
+func WithQueryTimeout(d time.Duration) Option
+```
+
+WithQueryTimeout sets the per\-query HTTP timeout. Defaults to 30 s.
+
+<a name="WithServerURL"></a>
+### func [WithServerURL](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/joern.go#L81>)
+
+```go
+func WithServerURL(u string) Option
+```
+
+WithServerURL sets the base URL of the Joern HTTP server. The host must be localhost, 127.0.0.1, or ::1; any other host causes New to return ErrInvalidServerURL.
 
 Generated by [gomarkdoc](<https://github.com/princjef/gomarkdoc>)

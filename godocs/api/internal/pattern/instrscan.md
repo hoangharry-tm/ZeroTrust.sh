@@ -16,12 +16,22 @@ Tier 3 -- Sandboxed LLM meta-audit (Python worker, Approach 2+)
 
 ## Index
 
+- [func ContainsInstructionFile\(files \[\]string\) bool](<#ContainsInstructionFile>)
 - [type Finding](<#Finding>)
 - [type Scanner](<#Scanner>)
   - [func New\(\) \*Scanner](<#New>)
   - [func \(s \*Scanner\) Scan\(fsys fs.FS\) \(\[\]Finding, error\)](<#Scanner.Scan>)
 - [type SignalType](<#SignalType>)
 
+
+<a name="ContainsInstructionFile"></a>
+## func [ContainsInstructionFile](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/instrscan/instrscan.go#L122>)
+
+```go
+func ContainsInstructionFile(files []string) bool
+```
+
+ContainsInstructionFile reports whether any path in files is an instruction file or MCP config that instrscan can analyse. The orchestrator uses this to skip the scanner entirely on changesets that contain no relevant files.
 
 <a name="Finding"></a>
 ## type [Finding](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/instrscan/instrscan.go#L32-L41>)
@@ -60,7 +70,7 @@ func New() *Scanner
 New returns a Scanner ready to walk an fs.FS.
 
 <a name="Scanner.Scan"></a>
-### func \(\*Scanner\) [Scan](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/instrscan/instrscan.go#L120>)
+### func \(\*Scanner\) [Scan](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/instrscan/instrscan.go#L132>)
 
 ```go
 func (s *Scanner) Scan(fsys fs.FS) ([]Finding, error)

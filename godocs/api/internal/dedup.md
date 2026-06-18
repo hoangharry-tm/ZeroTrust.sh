@@ -42,7 +42,7 @@ SSVC dimension sourcing:
 
 
 <a name="AutoSuppress"></a>
-## func [AutoSuppress](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/dedup/dedup.go#L235>)
+## func [AutoSuppress](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/dedup/dedup.go#L239>)
 
 ```go
 func AutoSuppress(f finding.Finding) finding.Finding
@@ -51,7 +51,7 @@ func AutoSuppress(f finding.Finding) finding.Finding
 AutoSuppress applies test\-file and framework\-safe suppression rules to f. Returns the finding with SeverityLabel and SuppressReason updated if suppression applies; returns it unchanged otherwise.
 
 <a name="DeriveSSVC"></a>
-## func [DeriveSSVC](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/dedup/dedup.go#L263>)
+## func [DeriveSSVC](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/dedup/dedup.go#L267>)
 
 ```go
 func DeriveSSVC(f finding.Finding) finding.Finding
@@ -60,7 +60,7 @@ func DeriveSSVC(f finding.Finding) finding.Finding
 DeriveSSVC populates the SSVC dimensions on a finding using CVE lookup tables \(CISA KEV, EPSS, NVD CVSS, CWE automatable/impact maps\). Stubs until G4.M4.1 when Trivy enrichment is integrated.
 
 <a name="DeriveSeverityLabel"></a>
-## func [DeriveSeverityLabel](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/dedup/dedup.go#L276>)
+## func [DeriveSeverityLabel](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/dedup/dedup.go#L280>)
 
 ```go
 func DeriveSeverityLabel(confidence float64) finding.SeverityLabel

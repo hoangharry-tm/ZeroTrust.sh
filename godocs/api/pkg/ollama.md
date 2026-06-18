@@ -37,7 +37,7 @@ var ErrModelBlocked = errors.New("ollama: model blocked by integrity verifier")
 ```
 
 <a name="Client"></a>
-## type [Client](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/ollama/ollama.go#L31-L36>)
+## type [Client](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/ollama/ollama.go#L32-L37>)
 
 Client wraps the Ollama REST API at a single model endpoint.
 
@@ -48,7 +48,7 @@ type Client struct {
 ```
 
 <a name="New"></a>
-### func [New](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/ollama/ollama.go#L78>)
+### func [New](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/ollama/ollama.go#L79>)
 
 ```go
 func New(baseURL, model string) *Client
@@ -64,7 +64,7 @@ text, err := c.Generate(ctx, "Summarize: ...", nil)
 ```
 
 <a name="Client.BackboneCheck"></a>
-### func \(\*Client\) [BackboneCheck](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/ollama/ollama.go#L236>)
+### func \(\*Client\) [BackboneCheck](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/ollama/ollama.go#L237>)
 
 ```go
 func (c *Client) BackboneCheck(ctx context.Context) (bool, error)
@@ -84,7 +84,7 @@ Returns:
 - error: non\-nil only for infrastructure failures \(network error, server down\).
 
 <a name="Client.Chat"></a>
-### func \(\*Client\) [Chat](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/ollama/ollama.go#L178>)
+### func \(\*Client\) [Chat](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/ollama/ollama.go#L179>)
 
 ```go
 func (c *Client) Chat(ctx context.Context, messages []Message, opts *Options) (Message, error)
@@ -101,7 +101,7 @@ Parameters:
 Returns the assistant's reply Message, or an error if the request fails.
 
 <a name="Client.Generate"></a>
-### func \(\*Client\) [Generate](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/ollama/ollama.go#L117>)
+### func \(\*Client\) [Generate](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/ollama/ollama.go#L118>)
 
 ```go
 func (c *Client) Generate(ctx context.Context, prompt string, opts *Options) (string, error)
@@ -118,7 +118,7 @@ Parameters:
 Returns the model's response string, or an error if the HTTP request fails.
 
 <a name="Client.ModelName"></a>
-### func \(\*Client\) [ModelName](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/ollama/ollama.go#L256>)
+### func \(\*Client\) [ModelName](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/ollama/ollama.go#L257>)
 
 ```go
 func (c *Client) ModelName() string
@@ -127,7 +127,7 @@ func (c *Client) ModelName() string
 ModelName returns the model identifier this client was configured with.
 
 <a name="Client.Ping"></a>
-### func \(\*Client\) [Ping](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/ollama/ollama.go#L219>)
+### func \(\*Client\) [Ping](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/ollama/ollama.go#L220>)
 
 ```go
 func (c *Client) Ping(ctx context.Context) error
@@ -136,7 +136,7 @@ func (c *Client) Ping(ctx context.Context) error
 Ping checks that the Ollama server is reachable and the configured model is loaded. Returns nil if the server responds with HTTP 200.
 
 <a name="Client.SetMIVBlocked"></a>
-### func \(\*Client\) [SetMIVBlocked](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/ollama/ollama.go#L106>)
+### func \(\*Client\) [SetMIVBlocked](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/ollama/ollama.go#L107>)
 
 ```go
 func (c *Client) SetMIVBlocked()
@@ -145,7 +145,7 @@ func (c *Client) SetMIVBlocked()
 SetMIVBlocked marks this client as blocked by the Model Integrity Verifier. After this call, all Generate and Chat invocations return ErrModelBlocked. The flag is permanent for the lifetime of the client instance.
 
 <a name="Message"></a>
-## type [Message](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/ollama/ollama.go#L66-L69>)
+## type [Message](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/ollama/ollama.go#L67-L70>)
 
 Message is a single turn in a multi\-turn chat conversation.
 
@@ -157,7 +157,7 @@ type Message struct {
 ```
 
 <a name="Options"></a>
-## type [Options](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/ollama/ollama.go#L44-L53>)
+## type [Options](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/ollama/ollama.go#L45-L54>)
 
 Options controls inference parameters for a single request. Zero values fall back to Ollama's model defaults.
 
@@ -181,7 +181,7 @@ type Options struct {
 ```
 
 <a name="Role"></a>
-## type [Role](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/ollama/ollama.go#L56>)
+## type [Role](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/ollama/ollama.go#L57>)
 
 Role identifies the speaker in a chat turn.
 

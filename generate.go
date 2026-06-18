@@ -7,7 +7,8 @@
 //	pkgsite .
 package zerotrust
 
-// Regenerate Markdown API reference docs under docs/api/.
+// Regenerate Markdown API reference docs under godocs/api/.
+// IMPORTANT: generated docs always go to godocs/api/, never docs/api/.
 // gomarkdoc reads Go doc comments and writes one .md file per package.
 // The version used is the one pinned in go.mod via tools.go.
 //

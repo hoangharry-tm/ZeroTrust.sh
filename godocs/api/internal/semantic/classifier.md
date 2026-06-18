@@ -10,44 +10,77 @@ Package classifier wraps the UniXcoder\-Base\-Nine vulnerability classifier \(Pa
 
 UniXcoder\-Base\-Nine \(\~125M parameters, CPU\-only\) is a code understanding model fine\-tuned on BigVul. It gates surfaces before the expensive LLM reasoning tier, targeting \~75–85% elimination of surfaces that reach this stage.
 
-A\-18 blocking dependency: BigVul F1 is measured on C/C\+\+ data and is not a valid claim for Python / Java / JS / Go. CVEFixes fine\-tuning and per\-language benchmark validation are required before publishing accuracy figures. Until then the classifier operates in high\-recall mode \(low classification threshold\).
+### A\\\-18 blocking dependency
 
-Language support:
+BigVul F1 \(94.73%\) is measured on C/C\+\+ only and is NOT a valid claim for Python / Java / JS / Go. CVEFixes fine\-tuning and per\-language benchmark validation are required before publishing accuracy figures. Until then the classifier operates in high\-recall mode: the escalation threshold is set conservatively \(default 0.80\) so uncertain verdicts escalate to the LLM rather than being silently dismissed.
 
-- Supported \(classifier runs\): Python, Java, JavaScript/TypeScript, Go, Ruby, PHP.
-- Unsupported \(routed directly to LLM\): Rust, Kotlin, Swift, C\#.
+### Language support
 
-IDOR escalation: surfaces marked IsIDORCandidate always escalate to the LLM tier regardless of the classifier verdict.
+Supported \(classifier runs\): Python, Java, JavaScript, TypeScript, Go, Ruby, PHP. Unsupported \(routed directly to LLM\): Rust, Kotlin, Swift, C\#.
+
+### IDOR escalation
+
+Surfaces marked IsIDORCandidate always escalate to the LLM tier regardless of the classifier verdict. The classifier result is still recorded for observability.
+
+### Routing summary
+
+```
+IDOR candidate          → Escalate=true,  EscalateReason="idor_candidate"
+Unsupported language    → Escalate=true,  EscalateReason="unsupported_language"
+Classifier: uncertain   → Escalate=true,  EscalateReason="uncertain"
+Classifier: safe        → Escalate=false  (surface exits Path B)
+Classifier: vulnerable  → Escalate=true,  EscalateReason="vulnerable" (→ LLM scan)
+```
 
 ## Index
 
 - [func IsSupported\(lang string\) bool](<#IsSupported>)
+- [type EscalateReason](<#EscalateReason>)
 - [type Gate](<#Gate>)
   - [func New\(w \*worker.Manager\) \*Gate](<#New>)
   - [func NewWithThreshold\(w \*worker.Manager, threshold float64\) \*Gate](<#NewWithThreshold>)
   - [func \(g \*Gate\) Classify\(ctx context.Context, surfaces \[\]enrichment.EnrichedSurface\) \(\[\]Result, error\)](<#Gate.Classify>)
 - [type Label](<#Label>)
 - [type Result](<#Result>)
-- [type SupportedLanguage](<#SupportedLanguage>)
 
 
 <a name="IsSupported"></a>
-## func [IsSupported](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/classifier/classifier.go#L124>)
+## func [IsSupported](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/classifier/classifier.go#L93>)
 
 ```go
 func IsSupported(lang string) bool
 ```
 
-IsSupported reports whether the classifier supports the given language. Unsupported languages are routed directly to the LLM tier.
+IsSupported reports whether lang is handled by the UniXcoder classifier. Unsupported languages bypass the classifier and route directly to the LLM tier. lang is normalised to lowercase before the lookup.
 
-Parameters:
+<a name="EscalateReason"></a>
+## type [EscalateReason](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/classifier/classifier.go#L64>)
 
-- lang: the source language string \(e.g. "go", "python", "rust"\).
+EscalateReason describes why a surface must proceed past the classifier gate.
+
+```go
+type EscalateReason string
+```
+
+<a name="EscalateIDOR"></a>
+
+```go
+const (
+    // EscalateIDOR means the surface is an IDOR candidate; always escalates.
+    EscalateIDOR EscalateReason = "idor_candidate"
+    // EscalateUnsupportedLang means the source language has no classifier support.
+    EscalateUnsupportedLang EscalateReason = "unsupported_language"
+    // EscalateUncertain means the classifier confidence fell below the threshold.
+    EscalateUncertain EscalateReason = "uncertain"
+    // EscalateVulnerable means the classifier predicted the surface is vulnerable.
+    EscalateVulnerable EscalateReason = "vulnerable"
+)
+```
 
 <a name="Gate"></a>
-## type [Gate](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/classifier/classifier.go#L74-L80>)
+## type [Gate](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/classifier/classifier.go#L113-L116>)
 
-Gate applies the UniXcoder classifier to a batch of surfaces.
+Gate applies the UniXcoder classifier to a batch of enriched surfaces.
 
 ```go
 type Gate struct {
@@ -56,62 +89,49 @@ type Gate struct {
 ```
 
 <a name="New"></a>
-### func [New](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/classifier/classifier.go#L86>)
+### func [New](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/classifier/classifier.go#L121>)
 
 ```go
 func New(w *worker.Manager) *Gate
 ```
 
-New returns a Gate backed by the Python worker with a default escalation threshold of 0.80.
-
-Parameters:
-
-- w: the shared Python worker manager.
+New returns a Gate with the default escalation threshold of 0.80. In high\-recall mode, only surfaces classified with confidence ≥ 0.80 as safe exit Path B; everything else escalates to the LLM tier.
 
 <a name="NewWithThreshold"></a>
-### func [NewWithThreshold](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/classifier/classifier.go#L95>)
+### func [NewWithThreshold](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/classifier/classifier.go#L127>)
 
 ```go
 func NewWithThreshold(w *worker.Manager, threshold float64) *Gate
 ```
 
-NewWithThreshold returns a Gate with a custom escalation confidence threshold.
-
-Parameters:
-
-- w: the shared Python worker manager.
-- threshold: confidence below which verdicts are treated as uncertain \(0.0–1.0\).
+NewWithThreshold returns a Gate with a custom escalation threshold. Raise the threshold to reduce false negatives; lower it to reduce LLM cost.
 
 <a name="Gate.Classify"></a>
-### func \(\*Gate\) [Classify](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/classifier/classifier.go#L114>)
+### func \(\*Gate\) [Classify](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/classifier/classifier.go#L177>)
 
 ```go
 func (g *Gate) Classify(ctx context.Context, surfaces []enrichment.EnrichedSurface) ([]Result, error)
 ```
 
-Classify classifies each surface and returns one Result per input surface.
+Classify classifies each surface and returns one Result per input surface in order.
 
-Routing rules applied in order:
+Routing rules applied before classifier invocation:
 
-1. If surface.IsIDORCandidate → Escalate=true, EscalateReason="idor\_candidate".
-2. If surface language is unsupported → Escalate=true, EscalateReason="unsupported\_language".
-3. Run UniXcoder; if confidence \< escalationThreshold → Label=LabelUncertain, Escalate=true.
-4. If Label=LabelSafe and confidence ≥ threshold → Escalate=false \(surface exits Path B\).
+1. IDOR candidates → Escalate immediately \(classifier still runs for observability\).
+2. Unsupported languages → Escalate immediately \(no classifier call\).
 
-Parameters:
+After classifier verdict:
 
-- ctx: cancellation context.
-- surfaces: the enriched surfaces from the enrichment stage.
+3. confidence \< escalationThreshold → LabelUncertain, Escalate=true.
+4. LabelVulnerable → Escalate=true \(LLM scan confirms or refutes\).
+5. LabelSafe, confidence ≥ threshold → Escalate=false \(surface exits Path B\).
 
-Returns:
-
-- \[\]Result: one result per input surface, in the same order.
-- error: non\-nil only for worker communication failures.
+Supported and unsupported language surfaces are dispatched concurrently: supported surfaces go to the Python worker in one batch; unsupported surfaces receive their result immediately without an IPC round\-trip.
 
 <a name="Label"></a>
-## type [Label](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/classifier/classifier.go#L29>)
+## type [Label](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/classifier/classifier.go#L49>)
 
-Label is the 3\-band classification output.
+Label is the 3\-band classification output from UniXcoder.
 
 ```go
 type Label string
@@ -122,18 +142,19 @@ type Label string
 ```go
 const (
     // LabelVulnerable means the classifier predicts the surface is vulnerable.
+    // These surfaces are forwarded to the Call Chain Assembler + LLM tier.
     LabelVulnerable Label = "vulnerable"
-    // LabelSafe means the classifier predicts the surface is not vulnerable.
-    // High-confidence safe verdicts skip LLM entirely and are emitted as LOW or suppressed.
+    // LabelSafe means the classifier predicts the surface is benign.
+    // High-confidence safe verdicts exit Path B without LLM cost.
     LabelSafe Label = "safe"
-    // LabelUncertain means the classifier confidence is below the escalation threshold.
-    // Uncertain surfaces are forwarded to the Call Chain Assembler + LLM tier.
+    // LabelUncertain means confidence is below the escalation threshold.
+    // Uncertain surfaces are forwarded to the LLM tier (high-recall guarantee).
     LabelUncertain Label = "uncertain"
 )
 ```
 
 <a name="Result"></a>
-## type [Result](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/classifier/classifier.go#L58-L71>)
+## type [Result](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/classifier/classifier.go#L99-L110>)
 
 Result is the classifier output for one surface.
 
@@ -141,40 +162,15 @@ Result is the classifier output for one surface.
 type Result struct {
     // SurfaceID matches the input enrichment.EnrichedSurface.ID.
     SurfaceID string
-    // Label is the 3-band classification.
+    // Label is the 3-band classification from UniXcoder.
     Label Label
-    // Confidence is the model's softmax probability for the winning label (0.0–1.0).
+    // Confidence is the model's probability for the winning label (0.0–1.0).
     Confidence float64
-    // Escalate is true when the surface must proceed to the LLM tier regardless
-    // of Label (IDOR candidate, unsupported language, or uncertain verdict).
+    // Escalate is true when the surface must proceed to the LLM tier.
     Escalate bool
-    // EscalateReason describes why Escalate is true ("idor_candidate",
-    // "unsupported_language", "uncertain").
-    EscalateReason string
+    // EscalateReason describes why the surface escalated (empty when Escalate=false).
+    EscalateReason EscalateReason
 }
-```
-
-<a name="SupportedLanguage"></a>
-## type [SupportedLanguage](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/classifier/classifier.go#L44>)
-
-SupportedLanguage is the set of languages the UniXcoder classifier handles. Languages not in this set are always routed directly to the LLM tier.
-
-```go
-type SupportedLanguage string
-```
-
-<a name="LangPython"></a>SupportedLanguage constants for languages handled by the UniXcoder classifier.
-
-```go
-const (
-    LangPython     SupportedLanguage = "python"
-    LangJava       SupportedLanguage = "java"
-    LangJavaScript SupportedLanguage = "javascript"
-    LangTypeScript SupportedLanguage = "typescript"
-    LangGo         SupportedLanguage = "go"
-    LangRuby       SupportedLanguage = "ruby"
-    LangPHP        SupportedLanguage = "php"
-)
 ```
 
 Generated by [gomarkdoc](<https://github.com/princjef/gomarkdoc>)

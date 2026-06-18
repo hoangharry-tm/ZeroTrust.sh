@@ -10,6 +10,7 @@ Package finding defines the canonical Finding type and the channel through which
 
 ## Index
 
+- [func ComputeID\(cwe, path, matchedCode string\) string](<#ComputeID>)
 - [type Channel](<#Channel>)
 - [type Finding](<#Finding>)
 - [type LineRange](<#LineRange>)
@@ -18,12 +19,24 @@ Package finding defines the canonical Finding type and the channel through which
 - [type PoeContext](<#PoeContext>)
 - [type SSVCDimensions](<#SSVCDimensions>)
 - [type SeverityLabel](<#SeverityLabel>)
+  - [func SeverityFromConfidence\(confidence float64\) SeverityLabel](<#SeverityFromConfidence>)
 - [type SourcePath](<#SourcePath>)
 - [type SuppressReason](<#SuppressReason>)
 
 
+<a name="ComputeID"></a>
+## func [ComputeID](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/finding/finding.go#L192>)
+
+```go
+func ComputeID(cwe, path, matchedCode string) string
+```
+
+ComputeID returns the canonical stable dedup hash for a finding. All producers \(opengrep, ast\-grep, Path B\) must use this function so that Gate 1 dedup and cross\-path confidence boosting recognise the same finding regardless of which path produced it.
+
+Formula: hex\(SHA\-256\(CWE \+ ":" \+ path \+ ":" \+ matchedCode\)\)
+
 <a name="Channel"></a>
-## type [Channel](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/finding/finding.go#L160>)
+## type [Channel](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/finding/finding.go#L165>)
 
 Channel is the typed channel through which pipeline stages emit findings. Producers close the channel when they have no more findings to emit.
 
@@ -32,7 +45,7 @@ type Channel chan Finding
 ```
 
 <a name="Finding"></a>
-## type [Finding](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/finding/finding.go#L126-L156>)
+## type [Finding](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/finding/finding.go#L131-L161>)
 
 Finding is the normalised vulnerability record produced by both detection paths and consumed by the dedup layer, the HTML report, and the PoE layer.
 
@@ -73,7 +86,7 @@ type Finding struct {
 ```
 
 <a name="LineRange"></a>
-## type [LineRange](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/finding/finding.go#L71-L76>)
+## type [LineRange](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/finding/finding.go#L76-L81>)
 
 LineRange is an inclusive line span within a source file.
 
@@ -87,7 +100,7 @@ type LineRange struct {
 ```
 
 <a name="PoEResult"></a>
-## type [PoEResult](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/finding/finding.go#L104-L118>)
+## type [PoEResult](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/finding/finding.go#L109-L123>)
 
 PoEResult is the Proof\-of\-Exploitability output from Approach 3's sandbox layer.
 
@@ -110,7 +123,7 @@ type PoEResult struct {
 ```
 
 <a name="PoEStatus"></a>
-## type [PoEStatus](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/finding/finding.go#L57>)
+## type [PoEStatus](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/finding/finding.go#L62>)
 
 PoEStatus tracks the outcome of the Proof\-of\-Exploitability attempt \(Approach 3\).
 
@@ -133,7 +146,7 @@ const (
 ```
 
 <a name="PoeContext"></a>
-## type [PoeContext](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/finding/finding.go#L92-L101>)
+## type [PoeContext](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/finding/finding.go#L97-L106>)
 
 PoeContext carries the structured exploit context consumed by Approach 3's PoE Eligibility Classifier and Red Team Agent.
 
@@ -151,7 +164,7 @@ type PoeContext struct {
 ```
 
 <a name="SSVCDimensions"></a>
-## type [SSVCDimensions](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/finding/finding.go#L81-L88>)
+## type [SSVCDimensions](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/finding/finding.go#L86-L93>)
 
 SSVCDimensions carries the three SSVC\-inspired scoring inputs for a finding. Values are sourced from CISA KEV / EPSS / NVD \(Exploitation\), a CWE automatable\-exploitation table \(Automatable\), and CVSS / CWE map \(TechnicalImpact\).
 
@@ -167,7 +180,7 @@ type SSVCDimensions struct {
 ```
 
 <a name="SeverityLabel"></a>
-## type [SeverityLabel](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/finding/finding.go#L18>)
+## type [SeverityLabel](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/finding/finding.go#L23>)
 
 SeverityLabel is the SSVC\-inspired five\-tier output label.
 
@@ -199,8 +212,17 @@ const (
 )
 ```
 
+<a name="SeverityFromConfidence"></a>
+### func [SeverityFromConfidence](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/finding/finding.go#L171>)
+
+```go
+func SeverityFromConfidence(confidence float64) SeverityLabel
+```
+
+SeverityFromConfidence maps a composite confidence score \(0.0–1.0\) to the canonical SSVC\-inspired five\-tier SeverityLabel. All pipeline stages that need to derive a label from a score must use this function so the thresholds stay in exactly one place.
+
 <a name="SourcePath"></a>
-## type [SourcePath](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/finding/finding.go#L30>)
+## type [SourcePath](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/finding/finding.go#L35>)
 
 SourcePath identifies which detection path produced a finding.
 
@@ -219,7 +241,7 @@ const (
 ```
 
 <a name="SuppressReason"></a>
-## type [SuppressReason](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/finding/finding.go#L41>)
+## type [SuppressReason](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/finding/finding.go#L46>)
 
 SuppressReason describes why a finding was suppressed rather than reported. It is always set when SeverityLabel == SeveritySuppressed.
 

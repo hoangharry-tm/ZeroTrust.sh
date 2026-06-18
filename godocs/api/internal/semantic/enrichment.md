@@ -20,15 +20,51 @@ Auto\-flagging: surfaces with an exact CVE match \(CVSS ≥ 7.0\) are promoted t
 
 ## Index
 
+- [func ApplyCVEMatches\(surfaces \[\]EnrichedSurface, cvesByPkg map\[string\]\[\]CVEMatch\)](<#ApplyCVEMatches>)
+- [func AutoFlagSeverity\(cvss float64\) finding.SeverityLabel](<#AutoFlagSeverity>)
 - [type CVEMatch](<#CVEMatch>)
 - [type EnrichedSurface](<#EnrichedSurface>)
 - [type Enricher](<#Enricher>)
   - [func New\(graph cpg.Graph, trivyPath string, offlineMode bool\) \*Enricher](<#New>)
-  - [func \(e \*Enricher\) DetectIDORFlows\(ctx context.Context, surface targeting.Surface\) \(\[\]ResourceIDFlow, error\)](<#Enricher.DetectIDORFlows>)
-  - [func \(e \*Enricher\) Enrich\(ctx context.Context, surfaces \[\]targeting.Surface, projectRoot string\) \(\[\]EnrichedSurface, error\)](<#Enricher.Enrich>)
+  - [func \(e \*Enricher\) DetectIDORFlows\(\_ context.Context, \_ targeting.Surface\) \(\[\]ResourceIDFlow, error\)](<#Enricher.DetectIDORFlows>)
+  - [func \(e \*Enricher\) Enrich\(\_ context.Context, \_ \[\]targeting.Surface, \_ string\) \(\[\]EnrichedSurface, error\)](<#Enricher.Enrich>)
   - [func \(e \*Enricher\) RunTrivy\(ctx context.Context, projectRoot string\) \(map\[string\]\[\]CVEMatch, error\)](<#Enricher.RunTrivy>)
 - [type ResourceIDFlow](<#ResourceIDFlow>)
 
+
+<a name="ApplyCVEMatches"></a>
+## func [ApplyCVEMatches](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/enrichment/trivy.go#L183>)
+
+```go
+func ApplyCVEMatches(surfaces []EnrichedSurface, cvesByPkg map[string][]CVEMatch)
+```
+
+ApplyCVEMatches enriches a surface slice with CVE data from a Trivy result map and sets AutoFlagged on surfaces whose highest CVSS score is ≥ autoFlagThreshold.
+
+The match is by package name: a surface is matched to a CVE when the surface's source file is in a module directory that contains the vulnerable package \(best\-effort heuristic; exact module→CVE mapping requires Joern and is done in the full Enrich implementation\).
+
+Parameters:
+
+- surfaces: the EnrichedSurface slice to mutate in\-place.
+- cvesByPkg: the map returned by RunTrivy.
+
+<a name="AutoFlagSeverity"></a>
+## func [AutoFlagSeverity](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/enrichment/trivy.go#L159>)
+
+```go
+func AutoFlagSeverity(cvss float64) finding.SeverityLabel
+```
+
+AutoFlagSeverity maps a CVSS score to the SSVC\-inspired SeverityLabel for a CVE auto\-flagged surface. Surfaces below autoFlagThreshold are not auto\-flagged and this function should not be called for them.
+
+Mapping \(L3.1.T5\):
+
+```
+≥ 9.0 → SeverityBlock
+7.0–8.9 → SeverityHigh
+4.0–6.9 → SeverityMedium  (below threshold — included for completeness)
+< 4.0   → SeverityLow     (below threshold — included for completeness)
+```
 
 <a name="CVEMatch"></a>
 ## type [CVEMatch](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/enrichment/enrichment.go#L33-L44>)
@@ -51,14 +87,21 @@ type CVEMatch struct {
 ```
 
 <a name="EnrichedSurface"></a>
-## type [EnrichedSurface](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/enrichment/enrichment.go#L59-L75>)
+## type [EnrichedSurface](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/enrichment/enrichment.go#L60-L83>)
 
-EnrichedSurface adds CVE, call graph, and IDOR metadata to a targeting.Surface.
+EnrichedSurface adds CVE, call graph, source code, and IDOR metadata to a targeting.Surface.
 
 ```go
 type EnrichedSurface struct {
     // Surface is the base surface from Heuristic Targeting.
     targeting.Surface
+    // Code is the full source text of the function at this surface, fetched from
+    // the Joern CPG. The UniXcoder classifier uses this as its primary input.
+    Code string
+    // Language is the programming language of the surface's source file, derived
+    // from the file extension (e.g. "go", "python", "java"). Used by the classifier
+    // to route unsupported languages directly to the LLM tier.
+    Language string
     // CVEMatches holds all CVEs affecting dependencies used by this surface.
     // Sorted by descending CVSS score.
     CVEMatches []CVEMatch
@@ -76,7 +119,7 @@ type EnrichedSurface struct {
 ```
 
 <a name="Enricher"></a>
-## type [Enricher](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/enrichment/enrichment.go#L78-L85>)
+## type [Enricher](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/enrichment/enrichment.go#L86-L93>)
 
 Enricher adds CVE, call graph, and IDOR data to a surface list.
 
@@ -87,7 +130,7 @@ type Enricher struct {
 ```
 
 <a name="New"></a>
-### func [New](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/enrichment/enrichment.go#L93>)
+### func [New](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/enrichment/enrichment.go#L101>)
 
 ```go
 func New(graph cpg.Graph, trivyPath string, offlineMode bool) *Enricher
@@ -102,10 +145,10 @@ Parameters:
 - offlineMode: true disables all outbound network requests during CVE lookup.
 
 <a name="Enricher.DetectIDORFlows"></a>
-### func \(\*Enricher\) [DetectIDORFlows](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/enrichment/enrichment.go#L142>)
+### func \(\*Enricher\) [DetectIDORFlows](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/enrichment/enrichment.go#L135>)
 
 ```go
-func (e *Enricher) DetectIDORFlows(ctx context.Context, surface targeting.Surface) ([]ResourceIDFlow, error)
+func (e *Enricher) DetectIDORFlows(_ context.Context, _ targeting.Surface) ([]ResourceIDFlow, error)
 ```
 
 DetectIDORFlows applies the zero\-trust resource ID heuristic to a single surface. Returns the list of resource ID flows detected \(empty slice means no IDOR signal\).
@@ -116,10 +159,10 @@ Parameters:
 - surface: the surface to analyse.
 
 <a name="Enricher.Enrich"></a>
-### func \(\*Enricher\) [Enrich](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/enrichment/enrichment.go#L116>)
+### func \(\*Enricher\) [Enrich](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/enrichment/enrichment.go#L124>)
 
 ```go
-func (e *Enricher) Enrich(ctx context.Context, surfaces []targeting.Surface, projectRoot string) ([]EnrichedSurface, error)
+func (e *Enricher) Enrich(_ context.Context, _ []targeting.Surface, _ string) ([]EnrichedSurface, error)
 ```
 
 Enrich augments surfaces with CVE matches, call graph edges, and IDOR signals.
@@ -145,23 +188,23 @@ Returns:
 - error: non\-nil if Trivy fails to start or CPG queries fail.
 
 <a name="Enricher.RunTrivy"></a>
-### func \(\*Enricher\) [RunTrivy](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/enrichment/enrichment.go#L131>)
+### func \(\*Enricher\) [RunTrivy](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/enrichment/trivy.go#L82>)
 
 ```go
 func (e *Enricher) RunTrivy(ctx context.Context, projectRoot string) (map[string][]CVEMatch, error)
 ```
 
-RunTrivy executes the Trivy binary against projectRoot and returns all CVE matches. Results are keyed by package name for efficient surface\-to\-CVE mapping.
+RunTrivy executes the Trivy binary against projectRoot and returns all CVE matches keyed by lowercase package name.
 
 Parameters:
 
-- ctx: cancellation context.
+- ctx: cancellation context; Trivy is killed if ctx is cancelled.
 - projectRoot: absolute path to the directory containing dependency manifests.
 
 Returns:
 
-- map\[string\]\[\]CVEMatch: CVE matches keyed by package name.
-- error: non\-nil if Trivy fails to start or its JSON output is malformed.
+- map\[string\]\[\]CVEMatch: CVE matches keyed by lowercase package name. The map is always non\-nil on a clean return even if no CVEs are found.
+- error: non\-nil if the Trivy binary cannot be found, exits non\-zero with no output, or its JSON output is malformed. A non\-zero exit with valid JSON \(Trivy returns exit code 1 when vulnerabilities are found\) is treated as success.
 
 <a name="ResourceIDFlow"></a>
 ## type [ResourceIDFlow](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/enrichment/enrichment.go#L48-L56>)

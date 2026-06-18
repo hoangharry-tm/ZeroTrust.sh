@@ -63,7 +63,7 @@ var ErrWorkerDead = errors.New("worker: process dead; restart failed")
 ```
 
 <a name="ClassifyPayload"></a>
-## type [ClassifyPayload](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/worker/worker.go#L119-L121>)
+## type [ClassifyPayload](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/worker/worker.go#L132-L134>)
 
 ClassifyPayload is the JSON payload for MsgClassify requests.
 
@@ -74,7 +74,7 @@ type ClassifyPayload struct {
 ```
 
 <a name="ClassifyResult"></a>
-## type [ClassifyResult](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/worker/worker.go#L131-L133>)
+## type [ClassifyResult](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/worker/worker.go#L144-L146>)
 
 ClassifyResult is the JSON result for MsgClassify responses.
 
@@ -85,7 +85,7 @@ type ClassifyResult struct {
 ```
 
 <a name="ClassifySurface"></a>
-## type [ClassifySurface](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/worker/worker.go#L124-L128>)
+## type [ClassifySurface](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/worker/worker.go#L137-L141>)
 
 ClassifySurface is one surface within a ClassifyPayload.
 
@@ -98,7 +98,7 @@ type ClassifySurface struct {
 ```
 
 <a name="ClassifySurfaceResult"></a>
-## type [ClassifySurfaceResult](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/worker/worker.go#L136-L140>)
+## type [ClassifySurfaceResult](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/worker/worker.go#L149-L153>)
 
 ClassifySurfaceResult is the classifier output for one surface.
 
@@ -111,7 +111,7 @@ type ClassifySurfaceResult struct {
 ```
 
 <a name="LLMScanPayload"></a>
-## type [LLMScanPayload](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/worker/worker.go#L148-L153>)
+## type [LLMScanPayload](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/worker/worker.go#L161-L166>)
 
 LLMScanPayload is the JSON payload for MsgLLMScan requests.
 
@@ -125,7 +125,7 @@ type LLMScanPayload struct {
 ```
 
 <a name="Manager"></a>
-## type [Manager](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/worker/worker.go#L159-L176>)
+## type [Manager](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/worker/worker.go#L172-L189>)
 
 Manager owns the long\-lived Python worker subprocess and serialises all IPC.
 
@@ -138,7 +138,7 @@ type Manager struct {
 ```
 
 <a name="Start"></a>
-### func [Start](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/worker/worker.go#L193>)
+### func [Start](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/worker/worker.go#L206>)
 
 ```go
 func Start(ctx context.Context, workerPath string) (*Manager, error)
@@ -152,7 +152,7 @@ Parameters:
 - workerPath: path to the worker entry point \(e.g. "worker/main.py"\).
 
 <a name="Manager.Call"></a>
-### func \(\*Manager\) [Call](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/worker/worker.go#L320>)
+### func \(\*Manager\) [Call](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/worker/worker.go#L334>)
 
 ```go
 func (m *Manager) Call(ctx context.Context, msgType MessageType, payload any) (*Response, error)
@@ -167,7 +167,7 @@ Parameters:
 - payload: the handler\-specific request payload \(marshalled to JSON\).
 
 <a name="Manager.Ping"></a>
-### func \(\*Manager\) [Ping](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/worker/worker.go#L384>)
+### func \(\*Manager\) [Ping](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/worker/worker.go#L398>)
 
 ```go
 func (m *Manager) Ping(ctx context.Context) error
@@ -180,7 +180,7 @@ Parameters:
 - ctx: cancellation context.
 
 <a name="Manager.Stop"></a>
-### func \(\*Manager\) [Stop](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/worker/worker.go#L398>)
+### func \(\*Manager\) [Stop](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/worker/worker.go#L412>)
 
 ```go
 func (m *Manager) Stop() error
@@ -271,7 +271,7 @@ const (
 ```
 
 <a name="SummarizePayload"></a>
-## type [SummarizePayload](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/worker/worker.go#L143-L145>)
+## type [SummarizePayload](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/worker/worker.go#L156-L158>)
 
 SummarizePayload is the JSON payload for MsgSummarize requests.
 
@@ -282,7 +282,7 @@ type SummarizePayload struct {
 ```
 
 <a name="VerifyPayload"></a>
-## type [VerifyPayload](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/worker/worker.go#L102-L108>)
+## type [VerifyPayload](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/worker/worker.go#L102-L118>)
 
 VerifyPayload is the JSON payload for MsgLLMVerify requests.
 
@@ -293,11 +293,21 @@ type VerifyPayload struct {
     CWE           string `json:"cwe"`
     MatchedCode   string `json:"matched_code"`
     Justification string `json:"justification"`
+    // FilePath is the project-relative source file that contains the finding.
+    // Included in the prompt for context; may be empty for synthetic findings.
+    FilePath string `json:"file_path,omitempty"`
+    // ASCMaxRounds is the maximum number of Adaptive Self-Consistency resampling
+    // rounds to run on uncertain verdicts. 0 disables ASC.
+    ASCMaxRounds int `json:"asc_max_rounds"`
+    // ASCConfidenceThreshold is the minimum confidence that avoids ASC.
+    // Verdicts with confidence below this value trigger resampling even if
+    // the verdict is not "uncertain".
+    ASCConfidenceThreshold float64 `json:"asc_confidence_threshold"`
 }
 ```
 
 <a name="VerifyResult"></a>
-## type [VerifyResult](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/worker/worker.go#L111-L116>)
+## type [VerifyResult](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/worker/worker.go#L121-L129>)
 
 VerifyResult is the JSON result for MsgLLMVerify responses.
 
@@ -307,6 +317,9 @@ type VerifyResult struct {
     Verdict       string  `json:"verdict"`
     Confidence    float64 `json:"confidence"`
     Justification string  `json:"justification"`
+    // ASCRounds is the number of extra Adaptive Self-Consistency resampling
+    // rounds that were executed. 0 means the initial verdict was accepted directly.
+    ASCRounds int `json:"asc_rounds"`
 }
 ```
 
