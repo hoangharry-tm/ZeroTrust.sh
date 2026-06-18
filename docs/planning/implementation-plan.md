@@ -109,12 +109,12 @@ Complete Path A: Joern production integration (taint taxonomy, module segmentati
 | L2.1.T4 | Module segmentation: detect working modules + depth-2 module neighbors; Tree-sitter pre-flag dangerous sinks in all modules regardless of depth | Jul 10–11 | 4.0 | | Scan modes: Default (depth-2) · `--thorough` (depth-3 + sink-flagged) · `--full` (entire codebase) |
 | L2.1.T5 | Incremental CPG: serialize to `~/.zerotrust/{project_id}.cpg`; repeat scans use `importCpg` + depth-5 BFS patch; hub-module fallback (≥50 callers → full rebuild); invalidate on Joern version change | Jul 11–12 | 15.0 | | **Revised from 4h → 15h.** The paper describes the algorithm, not a callable API. importCpg + BFS patch construction requires substantial Go-side graph traversal. Hub-module detection requires call-graph degree query. This is the most implementation-intensive Joern task. |
 | L2.1.T6 | Integration test: CPG non-empty; taint paths detected on synthetic codebase; repeat scan only processes changed files | Jul 12 | 2.5 | | |
-| **ML2.2** | **Python Worker: XGrammar-2 + LLM Verifier** | Jul 12–15 | 13.0 | — | |
-| L2.2.T1 | XGrammar-2 verdict schema: `{verdict: confirmed\|false_positive\|uncertain, confidence: float, justification: ≤200 chars}` — malformed output impossible by construction | Jul 12–13 | 3.5 | | |
-| L2.2.T2 | LLM Verifier handler in Python worker: SCoT + CoD taint-flow prompt; wire `llm_verify` dispatcher type | Jul 13–14 | 4.0 | | |
-| L2.2.T3 | Adaptive Self-Consistency escalation on uncertain: resample ×2, majority-vote verdict, average confidence; ~1.3× overhead bound | Jul 14 | 2.0 | | |
-| L2.2.T4 | High-confidence rule bypass: rules tagged `confidence: high` route directly to Dedup, skip verifier | Jul 14 | 2.0 | | |
-| L2.2.T5 | Latency benchmark: target < 2s per finding round-trip; log p50/p95 to `docs/benchmarks/latency_path_a.md` | Jul 15 | 1.5 | | |
+| **ML2.2** | **Python Worker: XGrammar-2 + LLM Verifier** | Jul 12–15 | 13.0 | **Go+Python done Jun 18** | T1–T4 complete 3+ weeks early; T5 deferred to ML2.3 integration test (requires live Ollama) |
+| L2.2.T1 | XGrammar-2 verdict schema: `{verdict: confirmed\|false_positive\|uncertain, confidence: float, justification: ≤200 chars}` — malformed output impossible by construction | Jul 12–13 | 3.5 | Done Jun 18 | `worker/models/xgrammar.py` `GrammarEnforcer[T]`; optional xgrammar import (Python 3.13 fallback); `worker/schemas/verdict.py` Pydantic model |
+| L2.2.T2 | LLM Verifier handler in Python worker: SCoT + CoD taint-flow prompt; wire `llm_verify` dispatcher type | Jul 13–14 | 4.0 | Done Jun 18 | `worker/handlers/llm_verify.py`; lazy singletons; JSON-mode retry; 10 tests in `worker/tests/test_llm_verify.py` |
+| L2.2.T3 | Adaptive Self-Consistency escalation on uncertain: resample ×2, majority-vote verdict, average confidence; ~1.3× overhead bound | Jul 14 | 2.0 | Done Jun 18 | `_run_asc()` in `llm_verify.py`; temps [0.35, 0.6]; majority vote; `asc_rounds` propagated to Go |
+| L2.2.T4 | High-confidence rule bypass: rules tagged `confidence: high` route directly to Dedup, skip verifier | Jul 14 | 2.0 | Done Jun 18 | `verifier.HighConfidenceThreshold=0.90`; `internal/pattern/verifier/verifier.go`; `runPathA` partition logic; `ApplyResults`; 12 Go tests |
+| L2.2.T5 | Latency benchmark: target < 2s per finding round-trip; log p50/p95 to `docs/benchmarks/latency_path_a.md` | Jul 15 | 1.5 | Deferred | Requires live Ollama + Joern binary; deferred to ML2.3 integration test |
 | **ML2.3** | **Finding Normalisation + Integration Test** | Jul 15–16 | 3.5 | — | |
 | L2.3.T1 | Complete finding normalisation adapter: Joern schema → unified Finding struct (OpenGrep side done in L0) | Jul 15 | 2.0 | | |
 | L2.3.T2 | Path A end-to-end integration test: OpenGrep + Joern findings → LLM Verifier → Dedup skeleton → HTML skeleton | Jul 16 | 1.5 | | |
@@ -212,7 +212,7 @@ Complete the Dedup pipeline, SSVC scoring, HTML report, patch suggestions, and r
 | G1 — OpenGrep PoC | Jun 9–20 | ~50h | **100% done** — completed Jun 17, 3 days early |
 | L0 — Foundation + Fast Path | Jun 23 – Jul 3 | 57h + 13h buffer | **100% done Jun 17–18** — all ML0.1–ML0.7 delivered 5–14 days early |
 | L1 — Joern Spike (time-boxed) | Jun 18 / Jul 3–7 | 20h + 8h contingency | **Go code done Jun 18 (2 weeks early)** — binary install + `make test-integration` pending |
-| L2 — Path A Complete | Jul 7 – Jul 17 | 56h + 14h buffer | Incremental CPG implementation (15h task) |
+| L2 — Path A Complete | Jul 7 – Jul 17 | 56h + 14h buffer | **ML2.2 done Jun 18 (3+ weeks early)**; ML2.1 + ML2.3 remain; Incremental CPG (15h task) is primary risk |
 | L3 — Path B | Jul 17 – Jul 28 | 69h + 8h buffer | BOLAZ taint model (12h task); A-18 calibration |
 | L4 — Dedup + Report + Integration | Jul 28 – Aug 6 | 50h + 13h buffer | SSVC 3-API sourcing; compressed 9-day window |
 | **Total** | **Jun 23 – Aug 6** | **252h work + 56h buffer = 308h** | |

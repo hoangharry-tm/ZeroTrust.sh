@@ -5,21 +5,45 @@
 // Thought) reasoning with XGrammar-2-enforced JSON output to classify each
 // finding as confirmed, false_positive, or uncertain.
 //
-// High-confidence rules (tagged confidence: high in the rule YAML) bypass this
-// verifier entirely and are sent directly to the dedup layer.
+// # High-confidence bypass
 //
-// Adaptive self-consistency (ASC): uncertain verdicts trigger two additional
-// independent samples from the model; the majority verdict wins. If all three
-// samples are uncertain the finding is emitted as SUPPRESSED with
-// reason "uncertain".
+// Findings whose Confidence is at or above HighConfidenceThreshold (0.90) are
+// deterministic rule matches — they skip the LLM entirely and go straight to
+// the dedup layer. The caller is responsible for the partition; this package
+// provides the threshold constant and the Verify function for the remainder.
+//
+// # Adaptive Self-Consistency (ASC)
+//
+// ASC runs entirely in the Python worker: uncertain verdicts trigger up to two
+// additional independent resamples at escalating temperatures, and a majority
+// vote selects the final verdict. The Go side receives the resolved verdict and
+// an ASCRounds field recording how many extra rounds were run.
+//
+// # Concurrency model
+//
+// Verify fans out one worker.Call per finding using an errgroup. Worker.Call is
+// safe for concurrent use; the Python worker processes requests sequentially
+// over its NDJSON stdin loop, so goroutines queue naturally. Individual LLM
+// failures are non-fatal: the affected finding receives a fallback uncertain
+// result at a penalty-adjusted confidence, and the batch continues.
 package verifier
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+
+	"golang.org/x/sync/errgroup"
 
 	"github.com/hoangharry-tm/zerotrust/internal/finding"
 	"github.com/hoangharry-tm/zerotrust/internal/worker"
 )
+
+// HighConfidenceThreshold is the minimum confidence at which a finding
+// bypasses the LLM Verifier and goes directly to the dedup layer.
+// Findings at or above this score come from deterministic rules that have
+// near-zero false-positive rates; LLM verification adds cost without benefit.
+const HighConfidenceThreshold = 0.90
 
 // Verdict is the LLM Verifier classification for a single finding.
 type Verdict string
@@ -30,7 +54,7 @@ const (
 	// VerdictFalsePositive means the LLM determined this is a false positive.
 	VerdictFalsePositive Verdict = "false_positive"
 	// VerdictUncertain means the LLM could not reach a confident conclusion.
-	// Adaptive self-consistency re-sampling is triggered for uncertain verdicts.
+	// After ASC, if all samples remain uncertain, the finding is suppressed.
 	VerdictUncertain Verdict = "uncertain"
 )
 
@@ -38,91 +62,164 @@ const (
 type Result struct {
 	// FindingID links this result to the input finding (finding.Finding.ID).
 	FindingID string
-	// Verdict is the LLM's classification.
+	// Verdict is the LLM's classification after optional ASC.
 	Verdict Verdict
 	// Confidence is the LLM's self-reported confidence score (0.0–1.0).
 	Confidence float64
-	// Justification is the LLM's CoD reasoning summary (1–2 sentences).
+	// Justification is the LLM's CoD reasoning summary (≤200 chars).
 	Justification string
-	// ASCRounds is the number of self-consistency re-sampling rounds performed.
-	// 0 means the initial verdict was not uncertain; 1 or 2 means ASC was triggered.
+	// ASCRounds is the number of extra self-consistency rounds executed.
+	// 0 means the initial verdict was accepted directly.
 	ASCRounds int
 }
 
-// ASCConfig controls adaptive self-consistency re-sampling behaviour.
+// ASCConfig controls Adaptive Self-Consistency resampling.
 type ASCConfig struct {
 	// MaxRounds is the maximum number of additional samples for uncertain verdicts.
-	// Default 2 (producing 3 total samples; majority-vote selects the winner).
+	// Default 2: produces up to 3 total samples; majority vote selects the winner.
 	MaxRounds int
-	// ConfidenceThreshold is the minimum confidence required to avoid re-sampling.
+	// ConfidenceThreshold is the minimum confidence that avoids resampling.
 	// Verdicts with confidence below this value trigger ASC even if not uncertain.
 	ConfidenceThreshold float64
 }
 
 // Verifier applies LLM reasoning to filter false positives from pattern findings.
 type Verifier struct {
-	// w is the Python worker that runs the LLM Verifier handler.
-	w *worker.Manager
-	// asc controls adaptive self-consistency re-sampling.
+	w   *worker.Manager
 	asc ASCConfig
 }
 
-// New returns a Verifier backed by the Python worker with default ASC settings.
-//
-// Parameters:
-//   - w: the shared Python worker manager.
+// New returns a Verifier backed by w with default ASC settings.
 func New(w *worker.Manager) *Verifier {
 	return &Verifier{
-		w: w,
-		asc: ASCConfig{
-			MaxRounds:           2,
-			ConfidenceThreshold: 0.70,
-		},
+		w:   w,
+		asc: ASCConfig{MaxRounds: 2, ConfidenceThreshold: 0.70},
 	}
 }
 
-// NewWithASC returns a Verifier with custom adaptive self-consistency settings.
-//
-// Parameters:
-//   - w: the shared Python worker manager.
-//   - asc: self-consistency configuration.
+// NewWithASC returns a Verifier with custom ASC configuration.
 func NewWithASC(w *worker.Manager, asc ASCConfig) *Verifier {
 	return &Verifier{w: w, asc: asc}
 }
 
-// Verify classifies each finding in the input slice using CoD + SCoT reasoning.
-// Returns one Result per input finding in the same order.
+// Verify classifies each finding using CoD + SCoT reasoning via the Python
+// worker. Returns one Result per input finding in the same order.
 //
-// Uncertain results trigger ASC re-sampling (up to ASCConfig.MaxRounds additional
-// samples). If all samples are uncertain the result carries VerdictUncertain and
-// the caller is responsible for emitting a SUPPRESSED finding.
+// Individual LLM failures are non-fatal: the affected finding receives a
+// fallback uncertain result at 80% of its original confidence, allowing the
+// batch to complete even when the model is slow or temporarily unavailable.
+// The only hard error is a total worker failure (ErrWorkerDead).
 //
-// Parameters:
-//   - ctx: cancellation context; honours deadline for each LLM call.
-//   - findings: the normalised finding set from OpenGrep + ast-grep + Joern taint.
-//
-// Returns:
-//   - []Result: one result per input finding, in the same order.
-//   - error: non-nil only for unrecoverable worker communication failures.
+// Findings are dispatched concurrently; the caller must ensure ctx carries an
+// appropriate deadline — a per-scan timeout is strongly recommended.
 func (v *Verifier) Verify(ctx context.Context, findings []finding.Finding) ([]Result, error) {
-	// implemented in G2.M2.5
-	return nil, nil
+	if len(findings) == 0 {
+		return nil, nil
+	}
+
+	results := make([]Result, len(findings))
+
+	g, gctx := errgroup.WithContext(ctx)
+	for i, f := range findings {
+		g.Go(func() error {
+			payload := worker.VerifyPayload{
+				FindingID:              f.ID,
+				RuleID:                 f.RuleID,
+				CWE:                    f.CWE,
+				MatchedCode:            f.MatchedCode,
+				Justification:          f.Justification,
+				FilePath:               f.Path,
+				ASCMaxRounds:           v.asc.MaxRounds,
+				ASCConfidenceThreshold: v.asc.ConfidenceThreshold,
+			}
+
+			resp, err := v.w.Call(gctx, worker.MsgLLMVerify, payload)
+			if err != nil {
+				if err == worker.ErrWorkerDead {
+					// Hard failure: the entire worker is gone. Surface immediately
+					// so the batch fails rather than producing silent garbage results.
+					return fmt.Errorf("verifier: worker dead: %w", err)
+				}
+				// Transient failure (context cancelled, IPC error): degrade gracefully.
+				results[i] = fallbackResult(f)
+				return nil
+			}
+			if resp.Status == worker.ResponseError {
+				// Application-level error from the Python handler: degrade gracefully.
+				results[i] = fallbackResult(f)
+				return nil
+			}
+
+			var vr worker.VerifyResult
+			if err := json.Unmarshal(resp.Result, &vr); err != nil {
+				// Malformed response: degrade gracefully rather than abort.
+				results[i] = fallbackResult(f)
+				return nil
+			}
+
+			results[i] = Result{
+				FindingID:     f.ID,
+				Verdict:       Verdict(vr.Verdict),
+				Confidence:    vr.Confidence,
+				Justification: vr.Justification,
+				ASCRounds:     vr.ASCRounds,
+			}
+			return nil
+		})
+	}
+
+	if err := g.Wait(); err != nil {
+		return nil, err
+	}
+	return results, nil
 }
 
-// ApplyResults merges verifier results back onto the input findings, updating
-// Confidence, SeverityLabel, and SuppressReason where appropriate.
+// ApplyResults merges verifier Results back onto the input findings slice,
+// updating Confidence, SeverityLabel, SuppressReason, and Justification.
 //
-// Findings classified as false_positive are converted to SUPPRESSED with
-// SuppressReasonFrameworkSafe (conservative label for false positives).
-// Confirmed findings have their Confidence updated from the verifier score.
+// Mapping:
+//   - confirmed     → confidence updated; SeverityLabel re-derived.
+//   - false_positive → SeveritySuppressed + SuppressReasonFrameworkSafe.
+//   - uncertain      → SeveritySuppressed + SuppressReasonUncertain.
 //
-// Parameters:
-//   - findings: the original input finding slice (modified in-place).
-//   - results: the verifier result slice returned by Verify (same order/length).
-//
-// Returns:
-//   - []finding.Finding: the updated finding slice.
+// The returned slice has the same length and order as findings. If the lengths
+// diverge (caller bug), findings is returned unchanged.
 func ApplyResults(findings []finding.Finding, results []Result) []finding.Finding {
-	// implemented in G2.M2.5
-	return findings
+	if len(findings) != len(results) {
+		return findings
+	}
+	out := make([]finding.Finding, len(findings))
+	for i, f := range findings {
+		r := results[i]
+		if r.Justification != "" {
+			f.Justification = r.Justification
+		}
+		switch r.Verdict {
+		case VerdictConfirmed:
+			f.Confidence = r.Confidence
+			f.SeverityLabel = finding.SeverityFromConfidence(r.Confidence)
+		case VerdictFalsePositive:
+			f.Confidence = r.Confidence
+			f.SeverityLabel = finding.SeveritySuppressed
+			f.SuppressReason = finding.SuppressReasonFrameworkSafe
+		case VerdictUncertain:
+			f.Confidence = r.Confidence
+			f.SeverityLabel = finding.SeveritySuppressed
+			f.SuppressReason = finding.SuppressReasonUncertain
+		default:
+			// Unknown verdict (e.g. fallback zero-value): leave finding unchanged.
+		}
+		out[i] = f
+	}
+	return out
+}
+
+// fallbackResult returns a graceful-degradation Result for a finding when the
+// LLM call fails. Confidence is penalised by 20% to signal reduced certainty.
+func fallbackResult(f finding.Finding) Result {
+	return Result{
+		FindingID:  f.ID,
+		Verdict:    VerdictUncertain,
+		Confidence: f.Confidence * 0.80,
+	}
 }

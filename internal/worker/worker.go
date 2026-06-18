@@ -105,6 +105,16 @@ type VerifyPayload struct {
 	CWE           string `json:"cwe"`
 	MatchedCode   string `json:"matched_code"`
 	Justification string `json:"justification"`
+	// FilePath is the project-relative source file that contains the finding.
+	// Included in the prompt for context; may be empty for synthetic findings.
+	FilePath string `json:"file_path,omitempty"`
+	// ASCMaxRounds is the maximum number of Adaptive Self-Consistency resampling
+	// rounds to run on uncertain verdicts. 0 disables ASC.
+	ASCMaxRounds int `json:"asc_max_rounds"`
+	// ASCConfidenceThreshold is the minimum confidence that avoids ASC.
+	// Verdicts with confidence below this value trigger resampling even if
+	// the verdict is not "uncertain".
+	ASCConfidenceThreshold float64 `json:"asc_confidence_threshold"`
 }
 
 // VerifyResult is the JSON result for MsgLLMVerify responses.
@@ -113,6 +123,9 @@ type VerifyResult struct {
 	Verdict       string  `json:"verdict"`
 	Confidence    float64 `json:"confidence"`
 	Justification string  `json:"justification"`
+	// ASCRounds is the number of extra Adaptive Self-Consistency resampling
+	// rounds that were executed. 0 means the initial verdict was accepted directly.
+	ASCRounds int `json:"asc_rounds"`
 }
 
 // ClassifyPayload is the JSON payload for MsgClassify requests.

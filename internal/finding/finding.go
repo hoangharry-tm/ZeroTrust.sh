@@ -164,6 +164,25 @@ type Finding struct {
 // Producers close the channel when they have no more findings to emit.
 type Channel chan Finding
 
+// SeverityFromConfidence maps a composite confidence score (0.0–1.0) to the
+// canonical SSVC-inspired five-tier SeverityLabel. All pipeline stages that
+// need to derive a label from a score must use this function so the thresholds
+// stay in exactly one place.
+func SeverityFromConfidence(confidence float64) SeverityLabel {
+	switch {
+	case confidence >= 0.92:
+		return SeverityBlock
+	case confidence >= 0.75:
+		return SeverityHigh
+	case confidence >= 0.60:
+		return SeverityMedium
+	case confidence >= 0.30:
+		return SeverityLow
+	default:
+		return SeveritySuppressed
+	}
+}
+
 // ComputeID returns the canonical stable dedup hash for a finding.
 // All producers (opengrep, ast-grep, Path B) must use this function so that
 // Gate 1 dedup and cross-path confidence boosting recognise the same finding

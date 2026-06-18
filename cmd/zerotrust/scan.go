@@ -291,7 +291,7 @@ func (p *pipeline) run(ctx context.Context, events chan<- output.Event) error {
 	_ = patches
 
 	// ── 6. REPORT ─────────────────────────────────────────────────────────────
-	if err := os.MkdirAll(filepath.Dir(p.cfg.ReportPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(p.cfg.ReportPath), 0o750); err != nil {
 		return fmt.Errorf("mkdir report dir: %w", err)
 	}
 	f, err := os.Create(p.cfg.ReportPath)
@@ -336,21 +336,38 @@ func (p *pipeline) run(ctx context.Context, events chan<- output.Event) error {
 	return nil
 }
 
-// runPathA executes all Path A detectors concurrently and writes findings to ch.
-// Three goroutines run in parallel:
+// runPathA executes all Path A detectors concurrently, then runs the LLM Verifier
+// on the collected findings before writing to ch.
+//
+// Three goroutines collect into a buffer in parallel:
 //  1. OpenGrep — structural pattern matching for Python/Java/JS/Go/Ruby/PHP.
 //  2. ast-grep — pattern matching for Rust/Dart/Swift/Kotlin/C#.
 //  3. instrscan — AI agent instruction file and MCP config injection scan
 //     (skipped when no instruction files appear in the changeset).
 //
-// All findings go directly to ch. The LLM Verifier (high-confidence bypass) is
-// wired in ML2.1 — it is not active in this layer.
+// High-confidence bypass: findings with Confidence >= verifier.HighConfidenceThreshold
+// (0.90) come from deterministic rules with near-zero FP rates and go straight to ch.
+// The remainder go through the LLM Verifier (CoD + SCoT + ASC) before emission.
+// Verifier failures degrade gracefully: unverified findings are emitted rather than
+// silently dropped.
 func (p *pipeline) runPathA(ctx context.Context, res *ingestion.Result, ch finding.Channel, events chan<- output.Event) error {
 	output.Emit(events, output.Event{Kind: output.EventStageStart, Stage: "path a"})
 
 	var changed []string
 	if res.ChangeSet != nil {
 		changed = res.ChangeSet.Changed
+	}
+
+	// rawBuf collects findings from all three detectors; protected by mu.
+	var (
+		mu     sync.Mutex
+		rawBuf []finding.Finding
+	)
+
+	collect := func(fs []finding.Finding) {
+		mu.Lock()
+		rawBuf = append(rawBuf, fs...)
+		mu.Unlock()
 	}
 
 	g, gctx := errgroup.WithContext(ctx)
@@ -366,11 +383,7 @@ func (p *pipeline) runPathA(ctx context.Context, res *ingestion.Result, ch findi
 			})
 			return nil
 		}
-		for _, f := range findings {
-			fc := f
-			output.Emit(events, output.Event{Kind: output.EventFinding, Finding: &fc})
-			ch <- fc
-		}
+		collect(findings)
 		return nil
 	})
 
@@ -385,11 +398,7 @@ func (p *pipeline) runPathA(ctx context.Context, res *ingestion.Result, ch findi
 			})
 			return nil
 		}
-		for _, f := range findings {
-			fc := f
-			output.Emit(events, output.Event{Kind: output.EventFinding, Finding: &fc})
-			ch <- fc
-		}
+		collect(findings)
 		return nil
 	})
 
@@ -409,40 +418,68 @@ func (p *pipeline) runPathA(ctx context.Context, res *ingestion.Result, ch findi
 			})
 			return nil
 		}
-		for _, instr := range instrFindings {
-			f := instrFindingToFinding(instr)
-			output.Emit(events, output.Event{Kind: output.EventFinding, Finding: &f})
-			ch <- f
+		fs := make([]finding.Finding, len(instrFindings))
+		for i, instr := range instrFindings {
+			fs[i] = instrFindingToFinding(instr)
 		}
+		collect(fs)
 		return nil
 	})
 
 	if err := g.Wait(); err != nil {
 		return fmt.Errorf("path a: %w", err)
 	}
+
+	// Partition into high-confidence bypass and LLM-verify candidates.
+	var bypass, needsVerify []finding.Finding
+	for _, f := range rawBuf {
+		if f.Confidence >= verifier.HighConfidenceThreshold {
+			bypass = append(bypass, f)
+		} else {
+			needsVerify = append(needsVerify, f)
+		}
+	}
+
+	// Emit bypass findings immediately — no LLM cost.
+	for _, f := range bypass {
+		fc := f
+		output.Emit(events, output.Event{Kind: output.EventFinding, Finding: &fc})
+		ch <- fc
+	}
+
+	// Verify the remainder; degrade gracefully on worker failure.
+	if len(needsVerify) > 0 {
+		results, err := p.verif.Verify(ctx, needsVerify)
+		if err != nil {
+			output.Emit(events, output.Event{
+				Kind: output.EventLog,
+				Log:  fmt.Sprintf("warn: llm verifier: %v — emitting unverified findings", err),
+			})
+			for _, f := range needsVerify {
+				fc := f
+				output.Emit(events, output.Event{Kind: output.EventFinding, Finding: &fc})
+				ch <- fc
+			}
+		} else {
+			verified := verifier.ApplyResults(needsVerify, results)
+			for _, f := range verified {
+				fc := f
+				output.Emit(events, output.Event{Kind: output.EventFinding, Finding: &fc})
+				ch <- fc
+			}
+		}
+	}
+
 	output.Emit(events, output.Event{
-		Kind:    output.EventStageEnd,
-		Stage:   "path a",
-		Summary: &output.StageSummary{Stage: "path a", Detail: fmt.Sprintf("%d files scanned", len(changed))},
+		Kind:  output.EventStageEnd,
+		Stage: "path a",
+		Summary: &output.StageSummary{
+			Stage: "path a",
+			Detail: fmt.Sprintf("%d findings (%d bypass, %d verified)",
+				len(rawBuf), len(bypass), len(needsVerify)),
+		},
 	})
 	return nil
-}
-
-// severityFromScore maps a confidence score to an SSVC-inspired SeverityLabel.
-// Must stay in sync with the thresholds in dedup/dedup.go.
-func severityFromScore(score float64) finding.SeverityLabel {
-	switch {
-	case score >= 0.92:
-		return finding.SeverityBlock
-	case score >= 0.75:
-		return finding.SeverityHigh
-	case score >= 0.60:
-		return finding.SeverityMedium
-	case score >= 0.30:
-		return finding.SeverityLow
-	default:
-		return finding.SeveritySuppressed
-	}
 }
 
 // instrFindingToFinding converts an instrscan.Finding to a canonical finding.Finding.
@@ -463,7 +500,7 @@ func instrFindingToFinding(f instrscan.Finding) finding.Finding {
 		LineRange:     finding.LineRange{Start: f.Line, End: f.Line},
 		CWE:           "CWE-1035",
 		Confidence:    confidence,
-		SeverityLabel: severityFromScore(confidence),
+		SeverityLabel: finding.SeverityFromConfidence(confidence),
 		SourcePath:    finding.SourcePattern,
 		Justification: string(f.Signal) + ": " + f.Detail,
 		RuleID:        "INSTR-" + string(f.Signal),
@@ -493,7 +530,7 @@ func (p *pipeline) close() error {
 	if p.cfg.JoernBin != "" && p.joern != nil {
 		stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		_ = p.joern.Stop(stopCtx) //nolint:errcheck — best-effort cleanup
+		_ = p.joern.Stop(stopCtx) //nolint:errcheck // best-effort cleanup
 	}
 
 	var workerErr error
@@ -501,7 +538,7 @@ func (p *pipeline) close() error {
 		workerErr = p.w.Stop()
 	}
 	if p.db != nil {
-		_ = p.db.Close() //nolint:errcheck — best-effort; SQLite WAL checkpoint on close
+		_ = p.db.Close() //nolint:errcheck // best-effort; SQLite WAL checkpoint on close
 	}
 	return workerErr
 }

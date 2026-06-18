@@ -1,6 +1,6 @@
 # ZeroTrust.sh — TODO
 
-> G1 100% complete. **Layer 0 100% complete (Jun 17–18, 5–14 days early).** **Layer 1 Go code complete (Jun 18, 2 weeks early)** — 30 unit tests pass, integration tests ready, pending Joern binary install.
+> G1 100% complete. **Layer 0 100% complete (Jun 17–18, 5–14 days early).** **Layer 1 Go code complete (Jun 18, 2 weeks early)** — 30 unit tests pass, integration tests ready, pending Joern binary install. **ML2.2 complete (Jun 18, 3+ weeks early)** — XGrammar-2 + LLM Verifier + Go verifier wired into Path A; 22 tests pass.
 > Full plan: `docs/planning/implementation-plan.md`
 
 ---
@@ -98,3 +98,16 @@
 - Integration run: **pending** Joern binary install (`make test-integration`)
 - Pass criteria (from `docs/joern-http-api.md`): Joern /ready returns 200 · BuildCPG completes · QueryNodes(METHOD) ≥ 1 · GetCallGraph non-empty · TaintPaths ≥ 1 for `getUser → executeQuery`
 - Fallback: Joern scoped to Java/Python only; Go covered by OpenGrep taint rules; incremental CPG deferred
+
+---
+
+## Layer 2 (partial) — ML2.2: XGrammar-2 + LLM Verifier
+
+### ML2.2 — Python Worker: XGrammar-2 + LLM Verifier ✅ Done Jun 18
+
+- [x] L2.2.T1: XGrammar-2 verdict schema — `LLMVerifierResult` Pydantic model `{verdict: confirmed|false_positive|uncertain, confidence: float, justification: ≤200 chars}`; `GrammarEnforcer[T]` generic class with optional xgrammar import (Python 3.13 fallback: json + Pydantic only); Ollama `format=schema_dict` provides primary generation-time enforcement
+- [x] L2.2.T2: LLM Verifier Python handler (`worker/handlers/llm_verify.py`) — CoD + SCoT prompt (SOURCE → FLOW → GUARD → VERDICT); lazy singleton Ollama client + GrammarEnforcer; `_call_ollama` with JSON-mode retry on parse failure; `handle()` public entry point; wired into `worker/main.py` `llm_verify` dispatcher
+- [x] L2.2.T3: Adaptive Self-Consistency — `_run_asc()` collects up to 2 extra samples at temperatures [0.35, 0.6]; majority vote excluding uncertain; all-uncertain → average confidence, original justification; `asc_rounds` field propagated to Go via `VerifyResult`
+- [x] L2.2.T4: High-confidence bypass — `verifier.HighConfidenceThreshold = 0.90` constant; `runPathA` partitions findings before LLM call; bypass findings sent directly to `ch`; `verifier.Verify()` + `verifier.ApplyResults()` wired for remainder; graceful fallback on `ErrWorkerDead`
+- [x] Go verifier package — `internal/pattern/verifier/verifier.go`: `Verify()` errgroup fan-out, `ApplyResults()` verdict→severity mapping, `fallbackResult()` 20% confidence penalty on transient failure; 12 unit tests
+- [ ] L2.2.T5: Latency benchmark — target < 2s per finding round-trip; log p50/p95 to `docs/benchmarks/latency_path_a.md` *(requires live Ollama + Joern; deferred to ML2.3 integration test)*
