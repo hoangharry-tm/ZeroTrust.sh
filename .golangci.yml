@@ -1,25 +1,29 @@
+version: "2"
 linters:
+  default: none
   enable:
     - errcheck
     - staticcheck
     - gosec
     - govet
-    - gofmt
     - revive
     - unused
     - bodyclose
     - noctx
+  settings:
+    gosec:
+      excludes:
+        - G304 # file path from variable — expected in scanner context
+    revive:
+      rules:
+        - name: exported
+          severity: warning
+        - name: unused-parameter
+          severity: warning
 
-linters-settings:
-  gosec:
-    excludes:
-      - G304 # file path from variable — expected in scanner context
-  revive:
-    rules:
-      - name: exported
-        severity: warning
-      - name: unused-parameter
-        severity: warning
+formatters:
+  enable:
+    - gofmt
 
 issues:
   exclude-rules:

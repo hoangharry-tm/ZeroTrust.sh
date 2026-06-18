@@ -79,8 +79,16 @@ func (db *DB) Close() error { return db.conn.Close() }
 //   - projectID: project identifier.
 //   - filePath: file path relative to project root.
 func (db *DB) GetScanState(ctx context.Context, projectID, filePath string) (*ScanStateRow, error) {
-	// implemented in G2.M2.2
-	return nil, nil
+	row := &ScanStateRow{}
+	err := db.conn.QueryRowContext(ctx,
+		`SELECT project_id, file_path, content_hash, last_scanned_at
+		 FROM scan_state WHERE project_id = ? AND file_path = ?`,
+		projectID, filePath,
+	).Scan(&row.ProjectID, &row.FilePath, &row.ContentHash, &row.LastScannedAt)
+	if err != nil {
+		return nil, err
+	}
+	return row, nil
 }
 
 // UpsertScanState inserts or replaces the scan state row for one file.
@@ -90,8 +98,12 @@ func (db *DB) GetScanState(ctx context.Context, projectID, filePath string) (*Sc
 //   - ctx: cancellation context.
 //   - row: the state row to persist.
 func (db *DB) UpsertScanState(ctx context.Context, row ScanStateRow) error {
-	// implemented in G2.M2.2
-	return nil
+	_, err := db.conn.ExecContext(ctx,
+		`INSERT OR REPLACE INTO scan_state (project_id, file_path, content_hash, last_scanned_at)
+		 VALUES (?, ?, ?, ?)`,
+		row.ProjectID, row.FilePath, row.ContentHash, row.LastScannedAt,
+	)
+	return err
 }
 
 // ListScanState returns all cached state rows for the given projectID.
@@ -101,8 +113,25 @@ func (db *DB) UpsertScanState(ctx context.Context, row ScanStateRow) error {
 //   - ctx: cancellation context.
 //   - projectID: project identifier.
 func (db *DB) ListScanState(ctx context.Context, projectID string) ([]ScanStateRow, error) {
-	// implemented in G2.M2.2
-	return nil, nil
+	rows, err := db.conn.QueryContext(ctx,
+		`SELECT project_id, file_path, content_hash, last_scanned_at
+		 FROM scan_state WHERE project_id = ?`,
+		projectID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close() //nolint:errcheck
+
+	var result []ScanStateRow
+	for rows.Next() {
+		var r ScanStateRow
+		if err := rows.Scan(&r.ProjectID, &r.FilePath, &r.ContentHash, &r.LastScannedAt); err != nil {
+			return nil, err
+		}
+		result = append(result, r)
+	}
+	return result, rows.Err()
 }
 
 // DeleteScanState removes the state row for (projectID, filePath).
@@ -113,8 +142,11 @@ func (db *DB) ListScanState(ctx context.Context, projectID string) ([]ScanStateR
 //   - projectID: project identifier.
 //   - filePath: file path to remove.
 func (db *DB) DeleteScanState(ctx context.Context, projectID, filePath string) error {
-	// implemented in G2.M2.2
-	return nil
+	_, err := db.conn.ExecContext(ctx,
+		`DELETE FROM scan_state WHERE project_id = ? AND file_path = ?`,
+		projectID, filePath,
+	)
+	return err
 }
 
 // ─── suppressions helpers ────────────────────────────────────────────────────
