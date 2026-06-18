@@ -62,6 +62,7 @@ type pipeline struct {
 	cfg ScanConfig
 
 	// ingestion
+	db       *sqlite.DB
 	ingester *ingestion.Ingester
 
 	// Ollama client — shared by backbone check and any direct Go-side LLM calls.
@@ -155,6 +156,7 @@ func newPipeline(ctx context.Context, cfg ScanConfig) (*pipeline, error) {
 
 	return &pipeline{
 		cfg:      cfg,
+		db:       db,
 		ingester: ingester,
 		llm:      llmClient,
 		opengrep: og,
@@ -318,10 +320,11 @@ func (p *pipeline) run(ctx context.Context, events chan<- output.Event) error {
 // Three goroutines run in parallel:
 //  1. OpenGrep — structural pattern matching for Python/Java/JS/Go/Ruby/PHP.
 //  2. ast-grep — pattern matching for Rust/Dart/Swift/Kotlin/C#.
-//  3. instrscan — AI agent instruction file and MCP config injection scan.
+//  3. instrscan — AI agent instruction file and MCP config injection scan
+//     (skipped when no instruction files appear in the changeset).
 //
-// High-confidence findings (≥0.85) are emitted directly to ch; all others
-// will be routed through the LLM Verifier (wired in ML2.1).
+// All findings go directly to ch. The LLM Verifier (high-confidence bypass) is
+// wired in ML2.1 — it is not active in this layer.
 func (p *pipeline) runPathA(ctx context.Context, res *ingestion.Result, ch finding.Channel, events chan<- output.Event) error {
 	output.Emit(events, output.Event{Kind: output.EventStageStart, Stage: "path a"})
 
@@ -370,8 +373,13 @@ func (p *pipeline) runPathA(ctx context.Context, res *ingestion.Result, ch findi
 		return nil
 	})
 
-	// instrscan — AI agent instruction file and MCP config injection
+	// instrscan — AI agent instruction file and MCP config injection.
+	// Guard: skip entirely when no instruction files appear in the changeset,
+	// avoiding a full-tree walk on repeat scans that touched only source files.
 	g.Go(func() error {
+		if !instrscan.ContainsInstructionFile(changed) {
+			return nil
+		}
 		fsys := os.DirFS(p.cfg.Target)
 		instrFindings, err := p.instr.Scan(fsys)
 		if err != nil {
@@ -430,6 +438,7 @@ func instrFindingToFinding(f instrscan.Finding) finding.Finding {
 		confidence = 0.75
 	}
 	return finding.Finding{
+		ID:            finding.ComputeID("CWE-1035", f.File, ""),
 		Path:          f.File,
 		LineRange:     finding.LineRange{Start: f.Line, End: f.Line},
 		CWE:           "CWE-1035",
@@ -458,10 +467,14 @@ func (p *pipeline) runPathB(ctx context.Context, _ *ingestion.Result, ch finding
 
 // close shuts down the Python worker and releases any other held resources.
 func (p *pipeline) close() error {
+	var workerErr error
 	if p.w != nil {
-		return p.w.Stop()
+		workerErr = p.w.Stop()
 	}
-	return nil
+	if p.db != nil {
+		_ = p.db.Close() //nolint:errcheck — best-effort; SQLite WAL checkpoint on close
+	}
+	return workerErr
 }
 
 // stateDBPath returns the path to the SQLite state file, creating the directory

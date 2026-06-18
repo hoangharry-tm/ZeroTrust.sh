@@ -116,6 +116,18 @@ func isMCPConfig(name string) bool {
 	return filepath.Base(name) == "mcp.json"
 }
 
+// ContainsInstructionFile reports whether any path in files is an instruction
+// file or MCP config that instrscan can analyse. The orchestrator uses this to
+// skip the scanner entirely on changesets that contain no relevant files.
+func ContainsInstructionFile(files []string) bool {
+	for _, f := range files {
+		if isInstructionFile(f) || isMCPConfig(f) {
+			return true
+		}
+	}
+	return false
+}
+
 // Scan walks fsys and returns all prompt injection findings across instruction files and MCP configs.
 func (s *Scanner) Scan(fsys fs.FS) ([]Finding, error) {
 	var findings []Finding

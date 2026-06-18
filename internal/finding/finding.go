@@ -3,6 +3,11 @@
 // both detection paths and the dedup layer depend on it.
 package finding
 
+import (
+	"crypto/sha256"
+	"encoding/hex"
+)
+
 // SeverityLabel is the SSVC-inspired five-tier output label.
 //
 // Threshold mapping (confidence scores):
@@ -158,3 +163,14 @@ type Finding struct {
 // Channel is the typed channel through which pipeline stages emit findings.
 // Producers close the channel when they have no more findings to emit.
 type Channel chan Finding
+
+// ComputeID returns the canonical stable dedup hash for a finding.
+// All producers (opengrep, ast-grep, Path B) must use this function so that
+// Gate 1 dedup and cross-path confidence boosting recognise the same finding
+// regardless of which path produced it.
+//
+// Formula: hex(SHA-256(CWE + ":" + path + ":" + matchedCode))
+func ComputeID(cwe, path, matchedCode string) string {
+	sum := sha256.Sum256([]byte(cwe + ":" + path + ":" + matchedCode))
+	return hex.EncodeToString(sum[:])
+}

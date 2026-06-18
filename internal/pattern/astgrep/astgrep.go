@@ -16,7 +16,6 @@ package astgrep
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os/exec"
@@ -138,7 +137,7 @@ func (r *Runner) Scan(ctx context.Context, files []string) ([]finding.Finding, e
 // Returns:
 //   - []string: files whose language falls in ast-grep's ownership set.
 func FilterFiles(files []string) []string {
-	out := files[:0:0]
+	out := make([]string, 0, len(files))
 	for _, f := range files {
 		if astgrepOwns(filepath.Ext(f)) {
 			out = append(out, f)
@@ -186,9 +185,7 @@ func normalise(raw RawMatch) finding.Finding {
 	cwe := cweFromRuleID(raw.RuleID)
 
 	matched := raw.Labels["__match__"] // ast-grep capture group for the matched text
-
-	fp := sha256.Sum256([]byte(cwe + ":" + raw.File + ":" + raw.Message))
-	id := fmt.Sprintf("%x", fp[:8])
+	id := finding.ComputeID(cwe, raw.File, matched)
 
 	// ast-grep uses 0-based lines; finding.LineRange is 1-based.
 	return finding.Finding{

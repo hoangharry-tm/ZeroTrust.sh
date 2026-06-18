@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -32,7 +33,7 @@ type Client struct {
 	baseURL    string
 	model      string
 	httpClient *http.Client
-	mivBlock   bool // set by SetMIVBlocked; gates Generate and Chat
+	mivBlock   atomic.Bool // set by SetMIVBlocked; gates Generate and Chat
 }
 
 // Options controls inference parameters for a single request.
@@ -103,7 +104,7 @@ type generateResponse struct {
 // SetMIVBlocked marks this client as blocked by the Model Integrity Verifier.
 // After this call, all Generate and Chat invocations return ErrModelBlocked.
 // The flag is permanent for the lifetime of the client instance.
-func (c *Client) SetMIVBlocked() { c.mivBlock = true }
+func (c *Client) SetMIVBlocked() { c.mivBlock.Store(true) }
 
 // Generate sends prompt to the configured model and returns the full response text.
 // opts may be nil to use the server's model defaults.
@@ -115,7 +116,7 @@ func (c *Client) SetMIVBlocked() { c.mivBlock = true }
 //
 // Returns the model's response string, or an error if the HTTP request fails.
 func (c *Client) Generate(ctx context.Context, prompt string, opts *Options) (string, error) {
-	if c.mivBlock {
+	if c.mivBlock.Load() {
 		return "", ErrModelBlocked
 	}
 	body, err := json.Marshal(generateRequest{
@@ -176,7 +177,7 @@ type chatResponse struct {
 //
 // Returns the assistant's reply Message, or an error if the request fails.
 func (c *Client) Chat(ctx context.Context, messages []Message, opts *Options) (Message, error) {
-	if c.mivBlock {
+	if c.mivBlock.Load() {
 		return Message{}, ErrModelBlocked
 	}
 	body, err := json.Marshal(chatRequest{

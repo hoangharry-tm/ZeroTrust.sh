@@ -263,37 +263,38 @@ func (m *Manager) handleDeath() {
 	m.stdin = nil
 	m.writeMu.Unlock()
 
-	if m.stopping.Load() {
-		// Deliberate shutdown — drain any stragglers, don't restart.
-		m.drainPending("worker stopped")
-		return
-	}
-
 	m.mu.Lock()
 	alreadyRestarted := m.restarted
 	m.mu.Unlock()
 
 	if !alreadyRestarted {
-		// One automatic restart attempt.
-		if err := m.spawn(); err == nil {
-			pingCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			defer cancel()
-			if err := m.Ping(pingCtx); err == nil {
-				m.mu.Lock()
-				m.restarted = true
-				m.mu.Unlock()
-				// Drain the crash-window requests — callers must retry.
-				m.drainPending("worker restarted after crash; retry the request")
-				return
+		// Check stopping inside the restart decision block to minimize the window
+		// where a concurrent Stop() could result in an orphaned process being spawned.
+		if !m.stopping.Load() {
+			if err := m.spawn(); err == nil {
+				pingCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+				defer cancel()
+				if err := m.Ping(pingCtx); err == nil {
+					m.mu.Lock()
+					m.restarted = true
+					m.mu.Unlock()
+					// Drain the crash-window requests — callers must retry.
+					m.drainPending("worker restarted after crash; retry the request")
+					return
+				}
 			}
 		}
 	}
 
-	// Restart failed (or second crash): mark dead, drain everything.
+	// Restart failed, already restarted once, or deliberate Stop: mark dead.
 	m.mu.Lock()
 	m.dead = true
 	m.mu.Unlock()
-	m.drainPending(ErrWorkerDead.Error())
+	if m.stopping.Load() {
+		m.drainPending("worker stopped")
+	} else {
+		m.drainPending(ErrWorkerDead.Error())
+	}
 }
 
 // drainPending closes all outstanding pending channels with an error response

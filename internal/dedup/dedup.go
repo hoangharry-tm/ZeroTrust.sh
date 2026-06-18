@@ -153,7 +153,10 @@ func (l *Layer) process(input []finding.Finding) ([]finding.Finding, []MergeReco
 }
 
 // gate1Key returns the Gate 1 dedup key for f.
-// Key = SHA-256(CWE + "|" + Path + "|" + StartLine).
+// Key = first 8 bytes (64-bit) of SHA-256(CWE + "|" + Path + "|" + StartLine).
+// 8 bytes gives a 2^64 birthday bound — negligible collision probability for
+// the thousands of findings expected per scan. Gate 3 (embedding) catches the
+// rare case where two distinct findings hash to the same key.
 func gate1Key(f finding.Finding) string {
 	raw := fmt.Sprintf("%s|%s|%d", f.CWE, f.Path, f.LineRange.Start)
 	sum := sha256.Sum256([]byte(raw))
@@ -161,7 +164,8 @@ func gate1Key(f finding.Finding) string {
 }
 
 // gate2Key returns the Gate 2 dedup key for f.
-// Key = SHA-256(MatchedCode) — caller must check MatchedCode != "".
+// Key = first 8 bytes of SHA-256(MatchedCode) — caller must check MatchedCode != "".
+// Truncation rationale: same as gate1Key above.
 func gate2Key(f finding.Finding) string {
 	sum := sha256.Sum256([]byte(f.MatchedCode))
 	return hex.EncodeToString(sum[:8])

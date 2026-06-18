@@ -21,7 +21,6 @@ package opengrep
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os/exec"
@@ -193,8 +192,7 @@ func normalise(raw RawFinding) finding.Finding {
 	confidence := confidenceFromMetadata(raw.Extra.Metadata, raw.Extra.Severity)
 	cwe := cweFromMetadata(raw.Extra.Metadata)
 
-	fp := sha256.Sum256([]byte(cwe + ":" + raw.Path + ":" + raw.Extra.Lines))
-	id := fmt.Sprintf("%x", fp[:8])
+	id := finding.ComputeID(cwe, raw.Path, raw.Extra.Lines)
 
 	return finding.Finding{
 		ID:            id,
