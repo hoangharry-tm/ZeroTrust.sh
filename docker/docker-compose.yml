@@ -1,0 +1,47 @@
+# ZeroTrust.sh development compose file.
+# Starts the engine with Ollama for GPU-accelerated LLM inference.
+#
+# Usage:
+#   docker compose run --rm -v $(pwd):/workspace:ro zerotrust scan /workspace
+#
+# For production use, install the thin CLI binary instead — it manages
+# Docker orchestration automatically.
+
+services:
+  # Local LLM inference — runs on the host's GPU if available.
+  # Maps port 11434 so the engine can reach it via host.docker.internal.
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "127.0.0.1:11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      - OLLAMA_KEEP_ALIVE=24h
+    restart: unless-stopped
+
+  zerotrust:
+    build:
+      context: ..
+      dockerfile: docker/engine/Dockerfile
+    image: zerotrust-engine:dev
+    depends_on:
+      - ollama
+    environment:
+      - OLLAMA_URL=http://host.docker.internal:11434
+      - JOERN_URL=http://127.0.0.1:8080
+      - HOME=/home/zt
+    volumes:
+      # User's codebase (read-only)
+      - "${PWD}:/workspace:ro"
+      # Persistent state cache
+      - zerotrust_state:/home/zt/.zerotrust
+    # No ports exposed — all IPC happens inside the compose network
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  ollama_data:
+  zerotrust_state:
