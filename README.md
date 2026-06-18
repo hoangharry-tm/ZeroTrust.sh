@@ -16,14 +16,14 @@ ZeroTrust.sh treats all AI-generated and AI-modified code as untrusted by defaul
 
 **AI-specific threats** (no competing tool covers these):
 
-| Threat | Examples |
-| --- | --- |
-| Package hallucinations (slopsquatting) | AI agent imports `requests-auth-aws` (non-existent); attacker registers it with a payload |
-| Prompt injection in source code | Adversarial instructions in comments, docstrings, or string literals that hijack agent behaviour |
-| AI coding agent cheat patterns | `return True` in `*auth*` functions, `TODO: add auth` with no auth call, disabled test assertions |
-| MCP server config injection | External URLs, shell/execute capabilities, over-broad filesystem scopes in `.mcp.json` |
-| Instruction file backdoors | Unicode obfuscation (U+202E, U+200B) in `CLAUDE.md`, `AGENTS.md`, `.cursor/rules`, `GEMINI.md` |
-| Security-node disappearance | Auth/validate/check AST nodes present in prior scan, silently removed in current scan |
+| Threat                                 | Examples                                                                                          |
+| ---                                    | ---                                                                                               |
+| Package hallucinations (slopsquatting) | AI agent imports `requests-auth-aws` (non-existent); attacker registers it with a payload         |
+| Prompt injection in source code        | Adversarial instructions in comments, docstrings, or string literals that hijack agent behaviour  |
+| AI coding agent cheat patterns         | `return True` in `*auth*` functions, `TODO: add auth` with no auth call, disabled test assertions |
+| MCP server config injection            | External URLs, shell/execute capabilities, over-broad filesystem scopes in `.mcp.json`            |
+| Instruction file backdoors             | Unicode obfuscation (U+202E, U+200B) in `CLAUDE.md`, `AGENTS.md`, `.cursor/rules`, `GEMINI.md`    |
+| Security-node disappearance            | Auth/validate/check AST nodes present in prior scan, silently removed in current scan             |
 
 **Classic vulnerabilities** across 12 languages:
 
@@ -71,20 +71,20 @@ A finding confirmed by both paths receives a cross-path confidence boost. A vuln
 
 ## Language Coverage
 
-| Language | Path A (Pattern) | Path A (Taint) | Path B (Semantic) |
-| --- | :---: | :---: | :---: |
-| Python | OpenGrep | Joern | UniXcoder |
-| Java | OpenGrep | Joern | UniXcoder |
-| JavaScript / TypeScript | OpenGrep + ast-grep | Joern | UniXcoder |
-| Go | OpenGrep | Joern† | UniXcoder |
-| Ruby | OpenGrep + ast-grep | Joern | UniXcoder |
-| PHP | OpenGrep + ast-grep | Joern | UniXcoder |
-| Kotlin | ast-grep | — | LLM direct |
-| C# | ast-grep | — | LLM direct |
-| Rust | ast-grep | — | LLM direct |
-| Swift | ast-grep | — | LLM direct |
-| Dart | ast-grep | — | LLM direct |
-| Generic (`.md`, `.mcp.json`) | OpenGrep + instrscan | — | — |
+| Language                     | Path A (Pattern)     | Path A (Taint) | Path B (Semantic) |
+| ---                          | :---:                | :---:          | :---:             |
+| Python                       | OpenGrep             | Joern          | UniXcoder         |
+| Java                         | OpenGrep             | Joern          | UniXcoder         |
+| JavaScript / TypeScript      | OpenGrep + ast-grep  | Joern          | UniXcoder         |
+| Go                           | OpenGrep             | Joern†         | UniXcoder         |
+| Ruby                         | OpenGrep + ast-grep  | Joern          | UniXcoder         |
+| PHP                          | OpenGrep + ast-grep  | Joern          | UniXcoder         |
+| Kotlin                       | ast-grep             | —              | LLM direct        |
+| C#                           | ast-grep             | —              | LLM direct        |
+| Rust                         | ast-grep             | —              | LLM direct        |
+| Swift                        | ast-grep             | —              | LLM direct        |
+| Dart                         | ast-grep             | —              | LLM direct        |
+| Generic (`.md`, `.mcp.json`) | OpenGrep + instrscan | —              | —                 |
 
 † Joern Go frontend is community-contributed; CPG quality empirically validated during development.
 
@@ -92,14 +92,14 @@ A finding confirmed by both paths receives a cross-path confidence boost. A vuln
 
 ## Current Status
 
-| Milestone | Status |
-| --- | --- |
-| G1 — OpenGrep PoC | **Complete** — 42 rules (PY-001→010 · JV-001→009 · GN-001→007 · AG-005→016), Go instrscan, Spring Boot test codebase, dual-engine demo |
-| L0 — Foundation + Fast Path | Starts Jun 23 |
-| L1 — Joern Spike | Jul 3–7 |
-| L2 — Path A Complete | Jul 7–17 |
-| L3 — Path B | Jul 17–28 |
-| L4 — Dedup + Report + Integration | Jul 28 – Aug 6 |
+| Milestone                         | Status                                                                                                                                 |
+| ---                               | ---                                                                                                                                    |
+| G1 — OpenGrep PoC                 | **Complete** — 42 rules (PY-001→010 · JV-001→009 · GN-001→007 · AG-005→016), Go instrscan, Spring Boot test codebase, dual-engine demo |
+| L0 — Foundation + Fast Path       | Starts Jun 23                                                                                                                          |
+| L1 — Joern Spike                  | Jul 3–7                                                                                                                                |
+| L2 — Path A Complete              | Jul 7–17                                                                                                                               |
+| L3 — Path B                       | Jul 17–28                                                                                                                              |
+| L4 — Dedup + Report + Integration | Jul 28 – Aug 6                                                                                                                         |
 
 Hard deadline: **August 6, 2026** (management demo + public testing release).
 
@@ -163,17 +163,17 @@ docs/
 
 ## Tech Stack
 
-| Layer | Technology |
-| --- | --- |
-| CLI + orchestration | Go (cobra, goroutines) |
-| Pattern matching | OpenGrep (LGPL-2.1) + ast-grep (MIT) |
-| Taint analysis | Joern CPG Engine (Apache 2.0) |
-| ML classifier | UniXcoder-Base-Nine (Python worker) |
-| Structured output | XGrammar-2 constrained decoding |
-| LLM runtime | Ollama HTTP API (`localhost:11434`) — model-agnostic |
-| CVE enrichment | Trivy `fs` subprocess (Apache 2.0) |
-| State cache | SQLite via `modernc.org/sqlite` (pure-Go) |
-| HTML report | Go `html/template` + `embed` |
+| Layer               | Technology                                           |
+| ---                 | ---                                                  |
+| CLI + orchestration | Go (cobra, goroutines)                               |
+| Pattern matching    | OpenGrep (LGPL-2.1) + ast-grep (MIT)                 |
+| Taint analysis      | Joern CPG Engine (Apache 2.0)                        |
+| ML classifier       | UniXcoder-Base-Nine (Python worker)                  |
+| Structured output   | XGrammar-2 constrained decoding                      |
+| LLM runtime         | Ollama HTTP API (`localhost:11434`) — model-agnostic |
+| CVE enrichment      | Trivy `fs` subprocess (Apache 2.0)                   |
+| State cache         | SQLite via `modernc.org/sqlite` (pure-Go)            |
+| HTML report         | Go `html/template` + `embed`                         |
 
 ---
 
