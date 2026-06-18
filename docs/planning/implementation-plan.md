@@ -4,7 +4,7 @@
 
 > **Replanned Jun 16 (layer-by-layer execution).** Original Approach 1→2→3 phasing dropped in favour of layer-by-layer delivery ordered by architectural dependency. No tasks cut; scope preserved. Three structural changes from original plan: (1) Joern promoted to a time-boxed spike before any dependent work starts; (2) DI CPG expansion moved to after Joern spike; (3) named buffer rows added to every layer. TPM-flagged estimates revised upward where research evidence supported it.
 >
-> **Model selection:** application is model-agnostic by design. Ollama HTTP wrapper and XGrammar-2 output schema are the only integration points — swapping models is a config change. Development default: Qwen2.5-3B-Instruct-Q4\_K\_M (Summarizer) · Qwen2.5-7B-Instruct (Verifier + LLM Scan). Documented as development defaults, not production recommendations.
+> **Model selection:** application is model-agnostic by design. Ollama HTTP wrapper and XGrammar-2 output schema are the only integration points — swapping models is a config change. Development default: Qwen2.5-3B-Instruct-Q4\_K\_M (Threat Feature Extractor) · Qwen2.5-7B-Instruct (Verifier + LLM Scan). Documented as development defaults, not production recommendations.
 
 ---
 
@@ -34,6 +34,8 @@ All 42 rules deployed (PY-001→010, JV-001→009, GN-001→007, AG-001→016), 
 Build the Go binary skeleton, ingestion layer (MIV + DI content-hash), pattern detection wrappers, Python worker IPC, and a minimal Dedup + HTML report skeleton. Joern-free. Delivers a working end-to-end pipeline with Path A pattern findings in an HTML report before any Joern risk is taken.
 
 **Checkpoint**: `zerotrust scan ./spring-boot-app` produces a real HTML report with Path A pattern findings.
+
+*Note: ML0.8 (single binary + Docker packaging) added Jun 18 after architecture decision to adopt CLI-as-orchestrator deployment model. Originally designed as two binaries (thin CLI + engine); merged into single `cmd/zerotrust` binary after review.*
 
 | ID | Name | Dates | E (h) | Status | Notes |
 | :---: | --- | :---: | :---: | :---: | --- |
@@ -66,6 +68,11 @@ Build the Go binary skeleton, ingestion layer (MIV + DI content-hash), pattern d
 | **ML0.7** | **Dedup Skeleton + HTML Report Skeleton** | Jun 18 | 4.0 | **Done** | Delivered Jun 18 — 14 days early |
 | L0.7.T1 | Dedup skeleton: Gate 1 (SHA-256 of CWE+path+startLine) + Gate 2 (SHA-256 of MatchedCode); cross-path +15pp boost (capped at 1.0); `AutoSuppress` (test file patterns + testDirs); `DeriveSeverityLabel` (5-tier); `ProcessWithStats` returns MergeRecords + Stats | Jun 18 | 2.0 | Done | 20 tests in `dedup_test.go`; Gates 3–4 (embedding + AST edit distance) deferred to G4 |
 | L0.7.T2 | HTML report skeleton: already fully implemented with `html/template` + `embed`; XSS-safe contextual escaping; severity columns; scope notice; file sidebar; 8 tests | Jun 18 | 2.0 | Done | Report package was pre-built; no additional work needed |
+| **ML0.8** | **Single Binary + Docker Packaging** | Jun 18 | 13.0 | **Done** | Architecture decision: CLI-as-orchestrator (Jun 18). Single `cmd/zerotrust` binary with `--native` flag wraps `docker run` by default. |
+| L0.8.T1 | Merged Docker orchestration into `cmd/zerotrust/main.go` — removed separate `cmd/zt/` binary; single binary with `--native` flag (replaces `--no-docker`); Docker orchestrator: availability check, image pull, host Ollama detection, volume mounts, signal forwarding, flag passthrough, exit code relay | Jun 18 | 6.0 | Done | No host port exposure; GPU passthrough via `host.docker.internal:11434`; single binary replaces two CLI approach |
+| L0.8.T2 | `docker/engine/Dockerfile` — multi-stage build: JRE → Joern binary → Python worker → Go engine binary → OpenGrep + ast-grep → rule files; entrypoint script | Jun 18 | 4.0 | Done | ~500 MB image; non-root zt user; GitHub Container Registry push target |
+| L0.8.T3 | `docker/docker-compose.yml` — dev compose: Ollama service + zerotrust service; volume mounts for codebase + state; no host port exposure | Jun 18 | 2.0 | Done | `docker compose run --rm zerotrust scan /workspace` |
+| L0.8.T4 | `docs/deployment/architecture.md` — deployment docs; update CLAUDE.md, README.md, Makefile, assumptions.md A-11, risk registry R-09 | Jun 18 | 1.0 | Done | A-11 and docs updated for single binary model; R-09 promoted to Accepted |
 | **ML0.BUFFER** | **Buffer — MIV/IPC/infra overrun** | — | 13.0 | — | Named buffer. All ML0.1–ML0.7 delivered Jun 17–18; buffer fully absorbed; Layer 0 complete. |
 
 ---
@@ -73,7 +80,7 @@ Build the Go binary skeleton, ingestion layer (MIV + DI content-hash), pattern d
 ## Layer 1 — Joern Spike (Time-Boxed)
 
 **Window**: Jul 3 – Jul 7 · **strictly time-boxed 4 days / 20h**
-**Go code delivered Jun 18 — ~2 weeks early. Binary install in progress.**
+**All code delivered Jun 18 — ~2 weeks early. Integration tests in final fix.**
 
 Prove Joern works in this environment before committing any production Joern work. The spike either closes with a working CPG query interface and golden-file tests, or it doesn't — there is no partial credit. Decision is binary on Jul 7.
 
@@ -81,14 +88,20 @@ Prove Joern works in this environment before committing any production Joern wor
 
 **Go/No-Go Jul 7**: If spike overruns 20h by more than 50% (>30h spent with no working CPG), trigger the fallback: Joern scope reduced to Java/Python only; Go covered by OpenGrep taint rules; incremental CPG deferred to post-demo. Do not spend more time diagnosing — take the fallback and move.
 
+**Empirical findings from live Joern (Jun 18)**:
+- Binary: `joern` (Homebrew, v4.0.550) — a bash wrapper; flags are `--server --server-host H --server-port P`
+- HTTP protocol: async 2-step — `POST /query` returns `{success,uuid}` immediately; `GET /result/{uuid}` returns `{success,stdout,stderr}` when done. No `/ready` endpoint.
+- Cold-start REPL init: Joern binds HTTP port in ~4s but returns `success=false,stdout=""` for ~35s while the REPL initializes. `fetchResult` now polls through this correctly.
+- ANSI escape codes in stdout: stripped by `stripANSI()` before JSON extraction.
+
 | ID | Name | Dates | E (h) | Status | Notes |
 | :---: | --- | :---: | :---: | :---: | --- |
-| **ML1** | **Joern Spike** | Jun 18 / Jul 3–7 | 20.0 | **Go code Done Jun 18** | Go client complete 2 weeks early; binary install + integration tests pending |
-| L1.T1 | Joern install + JVM (Java 17) + version-pin; confirm `joern-server --host 127.0.0.1 --port 8080` starts and responds | Jun 18 | 3.0 | **In Progress** | `JOERN_VERSION=v4.0.559` pinned in Makefile; `docs/joern-http-api.md` written; binary install running |
-| L1.T2 | Go subprocess: spawn Joern HTTP server; health-check + retry loop; pre-start at CLI launch alongside MIV+DI | Jun 18 | 4.0 | **Done** | Functional options + Start/Stop/Ping + crash watcher (atomic.Bool) + SIGTERM→SIGKILL; `checkPortAvailable` (ErrPortInUse); `validateServerURL` (loopback-only); wired into scan.go; 10 unit tests |
-| L1.T3 | CPG build on Spring Boot test codebase; validate Go frontend quality on known-vulnerable snippet | Jun 18 | 4.0 | **Done (unit)** | `BuildCPG` + `IncrementalPatch` (depth-5 BFS) + `SaveCPG`/`LoadCPG`; path traversal guard on raw components; `ErrHubModuleDetected`; integration run pending binary install |
-| L1.T4 | Shared CPG query interface: all 9 `cpg.Graph` methods + fixture CPG + golden-file integration tests | Jun 18 | 9.0 | **Done (unit)** | `graph.go`: QueryNodes/QueryNodesByFile/QueryEdges/GetCallGraph/GetCallers/GetCallees/GetNeighboursAtDepth (BFS ≤6)/TaintPaths (capped 1000)/PreFlaggedSinks; 30 unit tests; `joern_integration_test.go` ready (5 tests, `//go:build integration`); pending `make test-integration` |
-| **ML1.BUFFER** | **Spike overrun contingency** | — | 8.0 | — | Partially absorbed by early delivery. If integration tests surface API gaps, use buffer to fix queries and re-run. |
+| **ML1** | **Joern Spike** | Jun 18 | 20.0 | **Code Done Jun 18** | Binary installed + async HTTP protocol fixed; integration tests in final fix |
+| L1.T1 | Joern install + version-pin; confirm async HTTP API + loopback binding | Jun 18 | 3.0 | **Done** | v4.0.550 Homebrew; `--server` flag mode; async 2-step API confirmed empirically; `docs/joern-http-api.md` updated |
+| L1.T2 | Go subprocess: spawn Joern; health-check + retry loop; crash watcher | Jun 18 | 4.0 | **Done** | Full async HTTP client (`postQuery`+`fetchResult`); `fetchResult` handles init-time `success=false`; ANSI strip; `parseStdout` LastIndex; 37 unit tests |
+| L1.T3 | CPG build on Spring Boot test codebase | Jun 18 | 4.0 | **Done (unit)** | `BuildCPG` + `IncrementalPatch` + `SaveCPG`/`LoadCPG`; path traversal guard; `ErrHubModuleDetected` |
+| L1.T4 | CPG query interface: all 9 methods + integration tests | Jun 18 | 9.0 | **Done (unit)** | 37 unit tests pass; 5 integration tests written; `Start()` confirmed working; final fix: increase `Ping()` test context from 10s → 2min |
+| **ML1.BUFFER** | **Spike overrun contingency** | — | 8.0 | — | Used: async HTTP protocol discovery + ANSI fix + init-poll fix. Remaining buffer: ~3h |
 
 ---
 
@@ -126,7 +139,7 @@ Complete Path A: Joern production integration (taint taxonomy, module segmentati
 
 **Window**: Jul 17 – Jul 28 · ~77h available · **~69h work + 8h buffer**
 
-Build the full Path B pipeline: Heuristic Targeting → Classifier → Assembler → Summarizer → Budget Controller → LLM Scan. Joern CPG query interface must be stable before this layer starts.
+Build the full Path B pipeline: Heuristic Targeting → Classifier → Assembler → Threat Feature Extractor → Budget Controller → LLM Scan. Joern CPG query interface must be stable before this layer starts.
 
 **Checkpoint**: Path B detects an IDOR vulnerability spanning caller + surface + callee in the synthetic multi-function test case. ≤25% of surfaces reach the LLM tier on the Spring Boot test codebase.
 
@@ -149,7 +162,7 @@ Build the full Path B pipeline: Heuristic Targeting → Classifier → Assembler
 | L3.2.T5 | Unsupported-language bypass: Rust / Kotlin / Swift / C# → route directly to LLM Semantic Scan tier | Jul 23 | 1.5 | | |
 | L3.2.T6 | A-18 gap measurement: run UniXcoder on 50 labeled AI-generated code snippets; record F1 / precision / recall; document gap vs BigVul C/C++ claim in `docs/benchmarks/a18_gap.md` | Jul 24 | 4.0 | | Scoped: 50-sample labeled evaluation on available AI-generated code. No fine-tuning. No CVEFixes benchmark. Do not claim 94.73% F1 without caveat. |
 | L3.2.T7 | Funnel stats: assert ≤25% of surfaces reach LLM tier; log to benchmark doc | Jul 24 | 3.5 | | |
-| **ML3.3** | **Call Chain Context Assembler + Semantic Function Summarizer** | Jul 24–26 | 18.0 | — | Single-pass union schema replaces prior 3-pass design (~3× cheaper) |
+| **ML3.3** | **Call Chain Context Assembler + Threat Feature Extractor** | Jul 24–26 | 18.0 | — | Single-pass union schema replaces prior 3-pass design (~3× cheaper) |
 | L3.3.T1 | Call chain traversal depth 3 from Joern CPG; callee-first (bottom-up) order | Jul 24–25 | 4.0 | | Callee-first required for SCSS correctness and token-budget integrity |
 | L3.3.T2 | Multi-function context assembly: `CallChainContext` struct | Jul 25 | 3.0 | | |
 | L3.3.T3 | Single-pass union schema per function: `{taint_flow: {...}, auth_guard: {...}, logic_flaw: {...}}` — one XGrammar-2 JSON object covers all 3 vulnerability classes via TagDispatch without recompilation; all `check_location` fields: `framework_annotation\|explicit_code\|middleware\|unknown` | Jul 25 | 4.0 | | |

@@ -12,7 +12,7 @@ All Python\-side operations communicate through this single process boundary:
 
 - LLM Verifier \(Path A\): verifies pattern findings with CoD \+ SCoT reasoning.
 - UniXcoder classifier \(Path B Tier 2\): classifies uncertain surfaces.
-- Semantic Function Summarizer \(Path B Tier 2\): converts call chains to JSON summaries.
+- Threat Feature Extractor \(Path B Tier 2\): converts call chains to JSON summaries.
 - LLM Semantic Scan \(Path B Tier 3\): runs the bounded ReAct loop.
 
 Transport: newline\-delimited JSON \(NDJSON\) over stdin/stdout. Each request has a unique ID; the worker echoes the ID in its response, allowing concurrent callers to match responses to outstanding requests.
@@ -26,7 +26,7 @@ Message type routing \(worker/main.py dispatcher\):
 ```
 "llm_verify"  → handlers/llm_verify.py   (Path A LLM Verifier)
 "classify"    → handlers/classify.py      (UniXcoder classifier)
-"summarize"   → handlers/summarize.py     (Semantic Summarizer)
+"summarize"   → handlers/summarize.py     (Threat Feature Extractor)
 "llm_scan"    → handlers/llm_scan.py      (LLM Semantic Scan)
 "ping"        → built-in health check
 "shutdown"    → graceful process exit
@@ -205,7 +205,7 @@ const (
     MsgLLMVerify MessageType = "llm_verify"
     // MsgClassify routes to the UniXcoder classifier handler.
     MsgClassify MessageType = "classify"
-    // MsgSummarize routes to the Semantic Function Summarizer handler.
+    // MsgSummarize routes to the Threat Feature Extractor handler.
     MsgSummarize MessageType = "summarize"
     // MsgLLMScan routes to the LLM Semantic Scan handler.
     MsgLLMScan MessageType = "llm_scan"

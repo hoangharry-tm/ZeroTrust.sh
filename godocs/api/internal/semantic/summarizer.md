@@ -6,9 +6,9 @@
 import "github.com/hoangharry-tm/zerotrust/internal/semantic/summarizer"
 ```
 
-Package summarizer implements the Semantic Function Summarizer \(Path B Tier 2\).
+Package summarizer implements the Threat Feature Extractor \(Path B Tier 2\). The Go package name remains summarizer for brevity; the architectural component name is Threat Feature Extractor.
 
-The Summarizer converts call chain context into XGrammar\-2\-constrained JSON summaries via a small local LLM \(Phi\-3\-mini or Qwen2.5\-3B running in the Python worker\). The main reasoning LLM \(LLM Semantic Scan\) never sees raw source code — only these structured summaries.
+The Threat Feature Extractor converts call chain context into XGrammar\-2\-constrained JSON summaries via a small local LLM \(Phi\-3\-mini or Qwen2.5\-3B running in the Python worker\). The main reasoning LLM \(LLM Semantic Scan\) never sees raw source code — only these structured summaries.
 
 Single\-pass union schema \(TagDispatch\): One JSON object per function covers all three vulnerability classes simultaneously:
 

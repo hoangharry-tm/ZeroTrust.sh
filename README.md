@@ -1,6 +1,6 @@
 # ZeroTrust.sh
 
-A local, privacy-first CLI security scanner designed to audit codebases modified by AI coding agents. Runs entirely on-device — source code never leaves your machine.
+A local, privacy-first CLI security scanner designed to audit codebases modified by AI coding agents. Runs entirely on-device via Docker — source code never leaves your machine.
 
 ---
 
@@ -50,7 +50,7 @@ OpenGrep + ast-grep    Heuristic Targeting (CPG)
 Joern CPG taint        CVE enrichment (Trivy)
 LLM Verifier           UniXcoder classifier
                        Call Chain Assembler (depth 3)
-                       Semantic Summarizer
+                       Threat Feature Extractor
                        LLM Semantic Scan (ReAct)
     │                    │
     └─────────┬──────────┘
@@ -105,14 +105,39 @@ Hard deadline: **August 6, 2026** (management demo + public testing release).
 
 ---
 
-## Run the Demo (G1)
+## Requirements
 
-Requirements: [OpenGrep](https://github.com/opengrep/opengrep) and [ast-grep](https://ast-grep.github.io) installed and on `PATH`.
+- **Docker Desktop** (macOS) or **docker.io** (Linux) — required by default for the engine image. The CLI handles `docker pull` and `docker run` transparently.
+- **Ollama** (optional, recommended) — GPU-accelerated LLM inference. When running on the host, detected automatically and passed through to the container. Without Ollama, LLM inference falls back to CPU (slower but functional).
+- **Native mode deps** (only needed for `--native`): JDK 19+, Joern, OpenGrep, ast-grep, and the Python worker deps. See [`docs/deployment/architecture.md`](docs/deployment/architecture.md).
+
+## Quick Start
+
+```bash
+# Install
+go install github.com/hoangharry-tm/zerotrust/cmd/zerotrust@latest
+
+# Scan a project (Docker mode — default)
+zerotrust ~/my-project
+
+# Or scan with local dependencies (native mode)
+zerotrust --native ~/my-project
+```
+
+First run in Docker mode pulls the engine image (~500 MB). Subsequent runs use the cached image.
+
+## Run the Demo (G1)
 
 ```bash
 git clone https://github.com/hoangharry-tm/ZeroTrust.sh
 cd ZeroTrust.sh
-bash scripts/run_demo.sh
+
+# Demo with Docker (default)
+go build -o build/zerotrust ./cmd/zerotrust
+./build/zerotrust testdata/demo-app/
+
+# Demo without Docker (requires all deps on PATH)
+./build/zerotrust --native testdata/demo-app/
 ```
 
 The demo scans `testdata/demo-app/` (21-file multi-language codebase) and `testdata/spring-boot-app/` with all 42 rules and prints a findings summary.
@@ -122,7 +147,7 @@ The demo scans `testdata/demo-app/` (21-file multi-language codebase) and `testd
 ## Repository Structure
 
 ```
-cmd/zerotrust/          CLI entry point (cobra)
+cmd/zerotrust/          CLI entry point (cobra; Docker orchestration + direct execution)
 pkg/
   cpg/                  Shared CPG Graph interface
   ollama/               Ollama HTTP client wrapper
@@ -142,7 +167,7 @@ internal/
   dedup/                Dedup + SSVC confidence scoring
   report/               HTML report + patch suggestions
   worker/               Python worker manager
-worker/                 Python ML worker (UniXcoder, XGrammar-2, Summarizer)
+worker/                 Python ML worker (UniXcoder, XGrammar-2, Threat Feature Extractor)
 rules/
   python/               PY-001→010 OpenGrep rules
   java/                 JV-001→009 OpenGrep rules
@@ -165,15 +190,16 @@ docs/
 
 | Layer               | Technology                                           |
 | ---                 | ---                                                  |
-| CLI + orchestration | Go (cobra, goroutines)                               |
+| CLI + orchestration | Go (cobra, goroutines, all pipeline + Docker dispatch)|
 | Pattern matching    | OpenGrep (LGPL-2.1) + ast-grep (MIT)                 |
 | Taint analysis      | Joern CPG Engine (Apache 2.0)                        |
 | ML classifier       | UniXcoder-Base-Nine (Python worker)                  |
 | Structured output   | XGrammar-2 constrained decoding                      |
-| LLM runtime         | Ollama HTTP API (`localhost:11434`) — model-agnostic |
+| LLM runtime         | Ollama HTTP API — model-agnostic; on host for GPU    |
 | CVE enrichment      | Trivy `fs` subprocess (Apache 2.0)                   |
 | State cache         | SQLite via `modernc.org/sqlite` (pure-Go)            |
 | HTML report         | Go `html/template` + `embed`                         |
+| Distribution        | Single binary (Docker default, `--native` opt-in)    |
 
 ---
 

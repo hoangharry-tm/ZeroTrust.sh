@@ -247,9 +247,9 @@ Path B is structured as a three-tier funnel. Each tier eliminates surfaces that 
 
 ---
 
-#### Semantic Function Summarizer
+#### Threat Feature Extractor
 
-**What it does.** The Semantic Function Summarizer transforms the assembled call chain context into structured semantic abstractions using a small, fast local LLM (Phi-3-mini 3.8B or Qwen2.5-3B on CPU; separate from the main reasoning LLM). Each function in the chain is described as: what it does with untrusted data, which sanitizers it applies, which sinks it reaches, and where authorization checks are located.
+**What it does.** The Threat Feature Extractor transforms the assembled call chain context into structured semantic abstractions using a small, fast local LLM (Phi-3-mini 3.8B or Qwen2.5-3B on CPU; separate from the main reasoning LLM). Each function in the chain is described as: what it does with untrusted data, which sanitizers it applies, which sinks it reaches, and where authorization checks are located.
 
 **Single-pass union schema.** The output is one XGrammar-2-constrained JSON object per function, covering all three vulnerability classes simultaneously in a single inference call:
 
@@ -273,19 +273,19 @@ Path B is structured as a three-tier funnel. Each tier eliminates surfaces that 
 }
 ```
 
-XGrammar-2's `TagDispatch` handles the union schema without recompilation per call, and its cross-grammar cache reuses substructures across the three nested schemas. This replaces the prior design of three separate inference passes per function — reducing Summarizer inference cost per surface to approximately one-third and eliminating the latency compounding effect on call chains.
+XGrammar-2's `TagDispatch` handles the union schema without recompilation per call, and its cross-grammar cache reuses substructures across the three nested schemas. This replaces the prior design of three separate inference passes per function — reducing Threat Feature Extractor inference cost per surface to approximately one-third and eliminating the latency compounding effect on call chains.
 
 CPG-derived fields — taint source node identifiers, sanitizer node identifiers, sink node types, call graph position — are injected directly as ground-truth data. The LLM fills only the semantic interpretation fields. The main reasoning LLM in Tier 3 never sees raw source code — only these structured union summaries.
 
 The `authorization_check_location` field in both `auth_guard` and `logic_flaw` allows the LLM Semantic Scan to distinguish a real authorization gap from a framework-level or middleware-enforced control that is invisible to pure taint analysis.
 
-**Batch inference.** Multiple uncertain surfaces are grouped into a single batched prompt (up to 5 surfaces per call, delimited by surface ID tokens) before being sent to the Summarizer model. XGrammar-2 enforces the union schema independently per surface within the batch. Batching amortizes model-load and context-window setup overhead across surfaces, reducing effective per-surface inference time at the cost of slightly larger peak memory footprint per call.
+**Batch inference.** Multiple uncertain surfaces are grouped into a single batched prompt (up to 5 surfaces per call, delimited by surface ID tokens) before being sent to the Threat Feature Extractor model. XGrammar-2 enforces the union schema independently per surface within the batch. Batching amortizes model-load and context-window setup overhead across surfaces, reducing effective per-surface inference time at the cost of slightly larger peak memory footprint per call.
 
-**Approach 3 — specialized small model.** The 3B general-purpose model is a calibration placeholder. The Summarizer's task is narrow: fill constrained JSON fields given CPG-derived structured inputs. In Approach 3, a dedicated 0.5B–1B model fine-tuned on CPG→security-JSON pairs (using the CVEFixes corpus from A-18 benchmarking) replaces the general model. A task-specialized model at this scale runs approximately 3–5× faster on CPU, consumes less RAM, and is expected to be more accurate on the specific schema-fill task than a larger general model following a prompt. This fine-tuning work is scheduled alongside A-18 and shares the same dataset pipeline.
+**Approach 3 — specialized small model.** The 3B general-purpose model is a calibration placeholder. The Threat Feature Extractor's task is narrow: fill constrained JSON fields given CPG-derived structured inputs. In Approach 3, a dedicated 0.5B–1B model fine-tuned on CPG→security-JSON pairs (using the CVEFixes corpus from A-18 benchmarking) replaces the general model. A task-specialized model at this scale runs approximately 3–5× faster on CPU, consumes less RAM, and is expected to be more accurate on the specific schema-fill task than a larger general model following a prompt. This fine-tuning work is scheduled alongside A-18 and shares the same dataset pipeline.
 
 **Why it exists.** Raw code maximises token cost, introduces irrelevant syntactic noise, and risks the model focusing on implementation details rather than security-relevant semantics. Summaries preserve security-relevant information while reducing token footprint per surface by an order of magnitude. The single-pass union schema and batch inference further reduce the per-surface cost by approximately 3× compared to sequential per-class generation.
 
-**Citations.** This design aligns with LLMxCPG (USENIX Security 2025, peer-reviewed — CPG-derived backward slices as LLM input, 15–40% F1 improvement, 67–91% code size reduction) and VULSOLVER (arXiv:2509.00882, Sep 2025‡ — progressive constraint reasoning over SAST-generated summaries, 96.29% accuracy on OWASP Benchmark). The Semantic Function Summarizer general model size (Phi-3-mini/Qwen2.5-3B) is not validated by a published security-specific benchmark and is flagged as an open calibration task pending Approach 3 fine-tuning.
+**Citations.** This design aligns with LLMxCPG (USENIX Security 2025, peer-reviewed — CPG-derived backward slices as LLM input, 15–40% F1 improvement, 67–91% code size reduction) and VULSOLVER (arXiv:2509.00882, Sep 2025‡ — progressive constraint reasoning over SAST-generated summaries, 96.29% accuracy on OWASP Benchmark). The Threat Feature Extractor general model size (Phi-3-mini/Qwen2.5-3B) is not validated by a published security-specific benchmark and is flagged as an open calibration task pending Approach 3 fine-tuning.
 
 ---
 
@@ -584,9 +584,9 @@ ZeroTrust.sh's effective capability is bounded by available RAM and the local mo
 | **2 — M3 Pro / 36 GB unified memory** | MacBook Pro M3 Pro/Max with 36 GB | Qwen2.5-7B-Q8 or Llama-3.1-8B-Q8 | Single-pass CoD + SCoT with higher instruction-following quality; marginal ReAct improvement | Slow (~60–90 s/surface); generally not worth enabling |
 | **3 — Workstation / 64 GB+ RAM or GPU** | Mac Studio M2 Ultra, Linux server with 80 GB VRAM | Qwen2.5-72B-Q4 or Llama-3.3-70B-Q4 | Full bounded ReAct loop (max 3 steps); reliable structured JSON output | Enabled; recommended minimum for Approach 3 agentic ensemble |
 
-**Tier 1 is the common case and is a well-defined operating mode, not a degraded one.** The single-pass CoD + SCoT call that activates at Tier 1 is the same technique used in Path A's LLM Verifier. It produces structured verdicts and is calibrated against the same XGrammar-2 output schema. Tier 1 users receive Path B semantic detection at reduced depth — cross-surface ReAct reasoning is unavailable, but the three-tier cost funnel, CPG-backed heuristic targeting, UniXcoder classification, and Semantic Function Summarizer all operate normally.
+**Tier 1 is the common case and is a well-defined operating mode, not a degraded one.** The single-pass CoD + SCoT call that activates at Tier 1 is the same technique used in Path A's LLM Verifier. It produces structured verdicts and is calibrated against the same XGrammar-2 output schema. Tier 1 users receive Path B semantic detection at reduced depth — cross-surface ReAct reasoning is unavailable, but the three-tier cost funnel, CPG-backed heuristic targeting, UniXcoder classification, and Threat Feature Extractor all operate normally.
 
-**Semantic Function Summarizer latency (Tier 1).** Phi-3-mini or Qwen2.5-3B on CPU produces approximately 5–15 tokens/second. Generating three XGrammar-2-constrained JSON summaries per uncertain surface takes approximately 30–90 seconds per surface. For a codebase generating 10–20 uncertain surfaces, Path B end-to-end runtime at Tier 1 ranges from 5–30 minutes. Tier 3 hardware reduces this by approximately 10× via faster inference. For codebases under 20k LOC, CPG construction (Joern) typically dominates scan time, not LLM inference.
+**Threat Feature Extractor latency (Tier 1).** Phi-3-mini or Qwen2.5-3B on CPU produces approximately 5–15 tokens/second. Generating three XGrammar-2-constrained JSON summaries per uncertain surface takes approximately 30–90 seconds per surface. For a codebase generating 10–20 uncertain surfaces, Path B end-to-end runtime at Tier 1 ranges from 5–30 minutes. Tier 3 hardware reduces this by approximately 10× via faster inference. For codebases under 20k LOC, CPG construction (Joern) typically dominates scan time, not LLM inference.
 
 **All tiers share the same detection logic.** Hardware tier affects latency and ReAct depth, not which vulnerability classes can be detected. All three tiers run the full pipeline graph; only the per-surface reasoning depth changes.
 
@@ -602,14 +602,50 @@ The following architectural decisions are reflected throughout the system. Each 
 
 **Three-tier cost funnel — spend budget only where uncertainty exists.** The three tiers of Path B are ordered by cost: deterministic CPG queries first, local CPU classifier second, LLM reasoning last. Each tier resolves the cases it can handle cheaply and passes only the residual uncertain cases to the next tier. The result is that approximately 95% of files and 75–85% of code surfaces never reach the LLM.
 
-**Grammar-constrained output everywhere.** Both the LLM Verifier (Path A) and the LLM Semantic Scan (Path B) use XGrammar-2 (arXiv:2601.04426, May 2026) to enforce JSON output schemas at generation time. Malformed output is impossible by construction. XGrammar-2's `TagDispatch` handles the multiple distinct output schemas across components (LLM Verifier verdict schema, Semantic Function Summarizer union schema covering `taint_flow`/`auth_guard`/`logic_flaw` in a single inference call, ReAct verdict schema) without recompilation per call; its cross-grammar cache reuses substructures across schemas, delivering 6× faster grammar compilation and near-zero end-to-end overhead vs. XGrammar-1. The Semantic Function Summarizer's use of a union schema is specifically enabled by this multi-schema dispatch capability — it is the mechanism that makes single-pass multi-class summarization architecturally clean.
+**Grammar-constrained output everywhere.** Both the LLM Verifier (Path A) and the LLM Semantic Scan (Path B) use XGrammar-2 (arXiv:2601.04426, May 2026) to enforce JSON output schemas at generation time. Malformed output is impossible by construction. XGrammar-2's `TagDispatch` handles the multiple distinct output schemas across components (LLM Verifier verdict schema, Threat Feature Extractor union schema covering `taint_flow`/`auth_guard`/`logic_flaw` in a single inference call, ReAct verdict schema) without recompilation per call; its cross-grammar cache reuses substructures across schemas, delivering 6× faster grammar compilation and near-zero end-to-end overhead vs. XGrammar-1. The Threat Feature Extractor's use of a union schema is specifically enabled by this multi-schema dispatch capability — it is the mechanism that makes single-pass multi-class summarization architecturally clean.
 
 **CPG shared between paths — one parse, two uses.** The Joern CPG Engine is part of Path A, but the graph it produces is consumed by Path B's Heuristic Targeting and Call Graph nodes without a second parse. This avoids redundant computation and ensures both paths reason about the same graph representation of the code.
 
-**LLM sees summaries, never raw code.** At every point where an LLM is invoked — the LLM Verifier, the Semantic Function Summarizer, and the LLM Semantic Scan — the model receives structured representations of the code, not raw source. This reduces token cost, focuses reasoning on security-relevant semantics, and prevents the model from anchoring on irrelevant syntactic details.
+**LLM sees summaries, never raw code.** At every point where an LLM is invoked — the LLM Verifier, the Threat Feature Extractor, and the LLM Semantic Scan — the model receives structured representations of the code, not raw source. This reduces token cost, focuses reasoning on security-relevant semantics, and prevents the model from anchoring on irrelevant syntactic details.
 
 **SSVC-inspired confidence scoring for triage compatibility.** Confidence scores are derived from SSVC dimensions (Exploitation, Automatable, Technical Impact) and mapped to an internal five-tier label set (BLOCK/HIGH/MEDIUM/LOW/SUPPRESSED). The dimensions and their sourcing rules are drawn from SSVC, making the output compatible with security team triage workflows that use SSVC. The output label vocabulary is not the CISA SSVC Supplier decision tree vocabulary (Scheduled/Out-of-cycle/Immediate) — the system is SSVC-inspired, not SSVC-compliant.
 
 **Supply chain integrity at the model layer.** The Model Integrity Verifier treats the local GGUF model as an attack surface and verifies it at startup. This addresses the ICML 2025 threat class of backdoored quantized models, which is a realistic supply chain risk for any tool that distributes a local model binary.
 
 **AI agent config files as a first-class attack surface.** MCP server configs, `.cursor/rules`, `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `copilot-instructions.md`, and similar files are scanned by both Path A (pattern rules) and Path B (CPG node selection). No competing tool covers this surface. Prompt injection delivered through repository instruction files is a novel attack vector that becomes relevant specifically because AI coding agents read and act on these files autonomously.
+
+---
+
+## Deployment Architecture
+
+ZeroTrust.sh uses a single binary with two execution modes. By default it orchestrates a Docker image containing all heavy dependencies. Use `--native` to run with locally installed toolchains.
+
+### Component Layout
+
+| Component | Location | Purpose |
+|---|---|---|
+| **zerotrust binary** (`cmd/zerotrust`) | Host | Docker orchestration (default) or direct pipeline execution (`--native`) |
+| **Go engine** (`cmd/zerotrust`) | Container | Full pipeline — ingestion, Path A, Path B, dedup, report |
+| **Joern CPG** | Container | HTTP server on internal `127.0.0.1:8080` |
+| **Python worker** | Container | NDJSON IPC via stdin/stdout |
+| **OpenGrep / ast-grep** | Container | Subprocesses spawned by Go engine |
+| **Ollama** | Host | GPU-accelerated (Metal/CUDA); container connects via `host.docker.internal:11434` |
+
+### Network Model
+
+- **Zero host port exposure.** Container-internal services communicate over Docker's bridge network or stdin/stdout IPC.
+- **One-way host access.** Container connects to host Ollama; host never initiates connections into the container.
+- **Signal forwarding.** Thin CLI uses `docker run --init` for SIGINT/SIGTERM propagation.
+- **Air-gapped mode.** `--offline` runs container with internally limited network.
+
+### GPU Passthrough
+
+Thin CLI sends `GET http://localhost:11434` with a 2-second timeout at startup. If Ollama responds, it sets `OLLAMA_URL=http://host.docker.internal:11434` and adds `--add-host host.docker.internal:host-gateway`. Without Ollama, the container falls back to CPU-only llama-cpp-python.
+
+### Image
+
+- **Registry:** `ghcr.io/hoangharry-tm/zerotrust-engine:latest`
+- **Size:** ~500 MB (multi-stage: JRE → Joern → Python → Go binary → rules)
+- **Build:** `make docker-build`
+
+See `docs/deployment/architecture.md` for full details.

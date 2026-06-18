@@ -24,7 +24,7 @@ priority = w1×cvss + w2×(1 - classifier_confidence) + w3×reachability_from_en
 
 Default weights: w1=0.4, w2=0.4, w3=0.2. These can be tuned via budget.New; architectural defaults set in cmd/zerotrust/scan.go.
 
-Token estimation: each surface's token cost is estimated from the length of its Summary fields. The Token Budget Controller does not compress summaries — the Semantic Function Summarizer already enforces concise structured output. Security\-critical content is never truncated.
+Token estimation: each surface's token cost is estimated from the length of its Summary fields. The Token Budget Controller does not compress summaries — the Threat Feature Extractor already enforces concise structured output. Security\-critical content is never truncated.
 
 ## Index
 

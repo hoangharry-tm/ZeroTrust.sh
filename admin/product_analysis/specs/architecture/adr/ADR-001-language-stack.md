@@ -40,7 +40,7 @@ Three language candidates were evaluated: **Go**, **Python**, and **Rust**.
 | XGrammar constrained decoding | Python | Python/C++ binding — no Go equivalent |
 | LangGraph 3-agent ensemble (Approach 3) | Python | Python-only framework |
 | LLMLingua-2 / Token Budget compression | Python | HuggingFace — native Python |
-| Semantic Function Summarizer | Python | Runs alongside classifier in Python worker |
+| Threat Feature Extractor | Python | Runs alongside classifier in Python worker |
 
 **Integration boundary:** Go spawns a long-lived Python worker process at scan startup. Communication is via stdin/stdout newline-delimited JSON (or local gRPC for Approach 3). Go orchestrates everything; Python infers.
 
