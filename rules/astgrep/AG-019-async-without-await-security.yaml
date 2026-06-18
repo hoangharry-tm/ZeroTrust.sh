@@ -1,0 +1,38 @@
+# AI-specific Unique Rule
+# Why unique: No existing TypeScript linter (ESLint, ts-reset) flags async functions
+# that never await — inside JWT, auth, validation, or session functions — as an
+# AI generation artifact. The "async without await" pattern is a hallmark of AI
+# agents that generate the function signature correctly but skip the implementation.
+#
+# Attack scenario:
+#   An AI agent generates `async function validateToken(token: string): Promise<boolean>`
+#   with the `async` keyword but uses synchronous logic inside (or returns a bare
+#   `true`). The caller awaits the result expecting real validation. The function
+#   passes type-checking but provides no actual security.
+id: AG-019-async-without-await-security
+language: ts
+message: |
+  Async function in a security context that never uses `await`. The function is
+  marked async but contains no asynchronous operations, suggesting an incomplete
+  AI-generated implementation where the signature was scaffolded but the security
+  logic was never written.
+  Fix: either remove the async marker and implement synchronous validation, or
+  add the actual async security checks.
+severity: warning
+metadata:
+  cwe: "CWE-1061: Insufficient Encapsulation"
+  owasp: "A04:2021 - Insecure Design"
+  category: cheat-detection
+  ai_specific: true
+  confidence: MEDIUM
+  rule_version: "1.0"
+rule:
+  inside:
+    kind: function_declaration
+    stop_by: end
+    has:
+      field: async
+      field: true
+  not:
+    has:
+      pattern: await $EXPR

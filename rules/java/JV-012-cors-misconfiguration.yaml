@@ -1,0 +1,64 @@
+# Variants covered: V1 V2 V4
+# Variants NOT covered:
+#   V3 (CORS config loaded from external source — dynamic analysis needed)
+#
+# Detection strategy:
+#   Rule A (annotation): `@CrossOrigin(origins = "*")` on controller methods.
+#   Rule B (web-config): `.allowedOrigins("*")` or `.allowedOriginPatterns("*")`
+#     in `WebMvcConfigurer` or `SecurityFilterChain` configuration.
+#
+# Attack scenario:
+#   AI agents often set CORS to allow all origins as a "quick fix" for
+#   cross-origin errors during development. If deployed, any website can
+#   make authenticated requests to the API and read the response.
+rules:
+  # ── Rule A: @CrossOrigin with wildcard origin ─────────────────────────────────
+  - id: JV-012-cors-wildcard-annotation
+    message: |
+      `@CrossOrigin(origins = "*")` allows any website to make cross-origin
+      requests to this endpoint. If the API relies on cookies or Authorization
+      headers for authentication, any website can exfiltrate user data.
+      AI coding agents frequently add wildcard CORS as a "quick fix" for
+      development CORS errors.
+      Fix: specify explicit allowed origins matching your frontend domain.
+    severity: ERROR
+    languages: [java]
+    metadata:
+      cwe: "CWE-942: Permissive Cross-domain Policy with Untrusted Domains"
+      owasp: "A01:2021 - Broken Access Control"
+      category: cors-misconfiguration
+      ai_specific: true
+      confidence: HIGH
+      rule_version: "1.0"
+    patterns:
+      - pattern-either:
+          - pattern: |
+              @CrossOrigin(origins = "*", ...)
+          - pattern: |
+              @CrossOrigin(..., origins = "*", ...)
+          - pattern: |
+              @CrossOrigin(origins = "*")
+          - pattern: |
+              @CrossOrigin("*")
+
+  # ── Rule B: WebMvcConfigurer / SecurityConfig with allowedOrigins("*") ────────
+  - id: JV-012-cors-wildcard-config
+    message: |
+      CORS configuration allows all origins via `.allowedOrigins("*")` or
+      `.allowedOriginPatterns("*")`. This exposes the API to cross-origin
+      attacks from any website.
+      Fix: specify the exact frontend origin(s) that need access.
+    severity: ERROR
+    languages: [java]
+    metadata:
+      cwe: "CWE-942: Permissive Cross-domain Policy with Untrusted Domains"
+      owasp: "A01:2021 - Broken Access Control"
+      category: cors-misconfiguration
+      ai_specific: true
+      confidence: HIGH
+      rule_version: "1.0"
+    patterns:
+      - pattern-either:
+          - pattern: .allowedOrigins("*")
+          - pattern: .allowedOriginPatterns("*")
+          - pattern: .allowedOrigins("*", ...)

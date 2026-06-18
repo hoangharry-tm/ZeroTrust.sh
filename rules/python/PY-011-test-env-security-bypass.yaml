@@ -1,0 +1,101 @@
+# Variants covered: V1 V2 V4
+# Variants NOT covered:
+#   V3 (dynamic env var name via os.environ.get(var) — requires value tracing; Path B)
+#
+# Detection strategy:
+#   Rule A (auth-bypass): detects os.getenv("TEST"/"DEV"/"DEBUG"/"CI"/"STAGING")
+#     returning True/None in functions named *auth*, *validate*, *check*, *verify*, *admin*.
+#   Rule B (direct): detects a bare `if os.getenv("TEST") == "...": return True`
+#     preceding a security-sensitive operation in the same function.
+#
+# Attack scenario:
+#   An AI agent adds a test-environment bypass to a security function so that
+#   automated tests pass. If deployed, the bypass allows unauthenticated access
+#   when the TEST env var happens to be set (common in containerized environments).
+rules:
+  # ── Rule A: env var check returning True/None in auth-named functions ──────────
+  - id: PY-011-test-env-bypass-auth-function
+    message: |
+      Test environment variable check in an authentication/validation function.
+      `os.getenv("TEST"/"DEV"/"DEBUG")` returning a bypass value in a function named
+      `*auth*`, `*validate*`, `*check*`, `*verify*`, or `*admin*` suggests an AI
+      agent inserted a test bypass that can be exploited in production.
+      Fix: remove the bypass; use dependency injection or a feature flag with
+      explicit production safeguards.
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: "CWE-306: Missing Authentication for Critical Function"
+      owasp: "A01:2021 - Broken Access Control"
+      category: cheat-detection
+      ai_specific: true
+      confidence: HIGH
+      rule_version: "1.0"
+    patterns:
+      - pattern-inside: |
+          def $FUNC(...):
+            ...
+      - metavariable-pattern:
+          metavariable: $FUNC
+          patterns:
+            - pattern-regex: (?i).*(auth|validate|check|verify|admin|permission|login).*
+      - pattern-either:
+          - patterns:
+              - pattern: |
+                  if os.getenv($VAR) == "...":
+                      return True
+              - metavariable-pattern:
+                  metavariable: $VAR
+                  patterns:
+                    - pattern-regex: (?i)(TEST|DEV|DEBUG|CI|STAGING|LOCAL|BYPASS)
+          - patterns:
+              - pattern: |
+                  if os.environ.get($VAR) == "...":
+                      return True
+              - metavariable-pattern:
+                  metavariable: $VAR
+                  patterns:
+                    - pattern-regex: (?i)(TEST|DEV|DEBUG|CI|STAGING|LOCAL|BYPASS)
+          - patterns:
+              - pattern: |
+                  if os.getenv($VAR):
+                      return None
+              - metavariable-pattern:
+                  metavariable: $VAR
+                  patterns:
+                    - pattern-regex: (?i)(TEST|DEV|DEBUG|CI|STAGING|LOCAL|BYPASS)
+
+  # ── Rule B: env var check preceding security control in ANY function ──────────
+  - id: PY-011-test-env-bypass-direct
+    message: |
+      Test environment variable check immediately preceding a security-sensitive
+      operation. The `os.getenv("TEST")` / `os.getenv("DEV")` pattern is a common
+      AI agent bypass technique that can leave production services unprotected.
+      Fix: remove environment-dependent bypasses from security controls.
+    severity: WARNING
+    languages: [python]
+    metadata:
+      cwe: "CWE-306: Missing Authentication for Critical Function"
+      owasp: "A01:2021 - Broken Access Control"
+      category: cheat-detection
+      ai_specific: true
+      confidence: MEDIUM
+      rule_version: "1.0"
+    patterns:
+      - pattern-either:
+          - pattern: |
+              if os.getenv($VAR) == "...":
+                  ...
+              $AUTH_CALL(...)
+          - pattern: |
+              if os.environ.get($VAR) == "...":
+                  ...
+              $AUTH_CALL(...)
+      - metavariable-pattern:
+          metavariable: $VAR
+          patterns:
+            - pattern-regex: (?i)(TEST|DEV|DEBUG|CI|STAGING|LOCAL)
+      - metavariable-pattern:
+          metavariable: $AUTH_CALL
+          patterns:
+            - pattern-regex: (?i).*(authenticate|authorize|verify|validate|check_access|is_admin).*

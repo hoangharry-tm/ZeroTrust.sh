@@ -52,8 +52,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"os/exec"
+	"syscall"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -62,15 +62,16 @@ import (
 
 // defaults for all configurable timeouts and retry counts.
 const (
-	defaultServerURL    = "http://127.0.0.1:8080"
-	defaultBinaryPath   = "joern" // Homebrew installs as "joern", not "joern-server"
-	defaultHost         = "127.0.0.1"
-	defaultPort         = 8080
-	defaultPingRetries  = 12
-	defaultPingInterval = 500 * time.Millisecond
-	defaultStopTimeout  = 5 * time.Second
-	defaultQueryTimeout = 30 * time.Second
-	defaultBuildTimeout = 120 * time.Second
+	defaultServerURL      = "http://127.0.0.1:8080"
+	defaultBinaryPath     = "joern" // Homebrew installs as "joern", not "joern-server"
+	defaultHost           = "127.0.0.1"
+	defaultPort           = 8080
+	defaultPingRetries    = 12
+	defaultPingInterval   = 500 * time.Millisecond
+	defaultPingTimeout    = 30 * time.Second // per-ping-attempt timeout
+	defaultStopTimeout    = 5 * time.Second
+	defaultQueryTimeout   = 30 * time.Second
+	defaultBuildTimeout   = 120 * time.Second
 )
 
 // Option configures a Client.
@@ -192,7 +193,8 @@ func (c *Client) Start(ctx context.Context) error {
 		"--server-port", strconv.Itoa(c.port),
 	)
 	cmd.Stdout = io.Discard           // JVM stdout is startup noise; data arrives via HTTP API
-	cmd.Stderr = c.subprocessStderr  // caller-configurable; defaults to io.Discard
+	cmd.Stderr = c.subprocessStderr   // caller-configurable; defaults to io.Discard
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true} // own process group so Stop kills the entire tree
 
 	if err := cmd.Start(); err != nil {
 		c.mu.Unlock()
@@ -233,8 +235,11 @@ func (c *Client) Stop(ctx context.Context) error {
 		return ErrNotManaged
 	}
 
-	// Graceful shutdown.
-	_ = cmd.Process.Signal(os.Interrupt) //nolint:errcheck
+	pid := cmd.Process.Pid
+
+	// Graceful shutdown: signal the entire process group so SIGTERM reaches
+	// the JVM (the wrapper script is only the process-group leader).
+	_ = syscall.Kill(-pid, syscall.SIGTERM) //nolint:errcheck
 
 	timeout := time.NewTimer(defaultStopTimeout)
 	defer timeout.Stop()
@@ -246,8 +251,8 @@ func (c *Client) Stop(ctx context.Context) error {
 	case <-ctx.Done():
 	}
 
-	// Escalate to SIGKILL.
-	_ = cmd.Process.Kill() //nolint:errcheck
+	// Escalate to SIGKILL on the process group.
+	_ = syscall.Kill(-pid, syscall.SIGKILL) //nolint:errcheck
 	<-done
 	return nil
 }
@@ -269,7 +274,10 @@ func (c *Client) Ping(ctx context.Context) error {
 			return fmt.Errorf("joern: ping cancelled: %w", err)
 		}
 
-		if err := c.doQueryPing(ctx); err == nil {
+		pingCtx, cancel := context.WithTimeout(ctx, defaultPingTimeout)
+		err := c.doQueryPing(pingCtx)
+		cancel()
+		if err == nil {
 			return nil
 		} else { //nolint:revive // keep lastErr in scope
 			lastErr = err
@@ -299,7 +307,11 @@ func (c *Client) GraphWithContext(ctx context.Context) *joernGraph {
 }
 
 // waitReady polls POST /query with a trivial expression until the server
-// accepts it or the context is cancelled. Joern does not expose /ready or /health.
+// accepts it or the context is cancelled. Each ping attempt is bounded by
+// pingAttemptTimeout so a query submitted during REPL initialization (which
+// never completes) does not block the retry loop.
+//
+// Joern does not expose /ready or /health.
 func (c *Client) waitReady(ctx context.Context) error {
 	for i := 0; i < c.pingRetries; i++ {
 		if ctx.Err() != nil {
@@ -309,7 +321,10 @@ func (c *Client) waitReady(ctx context.Context) error {
 			return ErrJoernCrashed
 		}
 
-		if err := c.doQueryPing(ctx); err == nil {
+		pingCtx, cancel := context.WithTimeout(ctx, defaultPingTimeout)
+		err := c.doQueryPing(pingCtx)
+		cancel()
+		if err == nil {
 			return nil
 		}
 

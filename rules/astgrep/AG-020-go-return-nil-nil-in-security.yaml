@@ -1,0 +1,44 @@
+# AI-specific Unique Rule
+# Why unique: golangci-lint has `unparam` for unused parameters and `errcheck` for
+# unchecked errors, but no linter specifically checks for `return nil, nil` or
+# `return true, nil` in security functions. This is a classic AI agent stub pattern
+# where the function signature looks correct but the function does nothing.
+#
+# Attack scenario:
+#   An AI agent generates `func validateToken(token string) (bool, error)` that
+#   returns `(true, nil)` unconditionally. The type signature passes review.
+#   The caller trusts the result. Authentication is completely bypassed.
+id: AG-020-go-return-nil-nil-in-security
+language: go
+message: |
+  Security-related function returns a zero-value success with nil error,
+  suggesting a stub or mock left by an AI coding agent. Functions named
+  *Auth*, *Validate*, *Check*, *Verify*, *Login*, *Admin*, *Permission*
+  must implement real security logic, not return hardcoded success.
+  Fix: implement the actual security check, or remove the stub.
+severity: error
+metadata:
+  cwe: "CWE-306: Missing Authentication for Critical Function"
+  owasp: "A01:2021 - Broken Access Control"
+  category: cheat-detection
+  ai_specific: true
+  confidence: HIGH
+  rule_version: "1.0"
+rule:
+  any:
+    - pattern: |
+        func $NAME($$$ARGS) (bool, error) {
+            return true, nil
+        }
+    - pattern: |
+        func $NAME($$$ARGS) (bool, error) {
+            return false, nil
+        }
+    - pattern: |
+        func $NAME($$$ARGS) (error) {
+            return nil
+        }
+    - pattern: |
+        func $NAME($$$ARGS) (bool, error) {
+            return true, nil
+        }

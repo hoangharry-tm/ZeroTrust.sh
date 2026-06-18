@@ -593,23 +593,17 @@ func TestTaintPaths_RejectsEmptySinks(t *testing.T) {
 }
 
 func TestTaintPaths_ParsesFindings(t *testing.T) {
-	findings := []joernFinding{
+	flows := []joernFlow{
 		{
-			ID: "f1",
-			Evidence: []joernNode{
-				{ID: "src", Name: "id", File: "MainController.java", Line: 34},
+			Source: joernNode{ID: "src", Name: "id", File: "MainController.java", Line: 34},
+			Intermediate: []joernNode{
 				{ID: "mid", Name: "sql", File: "MainController.java", Line: 35},
-				{ID: "snk", Name: "executeQuery", File: "MainController.java", Line: 36},
 			},
+			Sink: joernNode{ID: "snk", Name: "executeQuery", File: "MainController.java", Line: 36},
 		},
 	}
-	callCount := 0
 	srv := mockServer(t, func(q string) (string, bool) {
-		callCount++
-		if strings.Contains(q, "ossdataflow") {
-			return `""`, true
-		}
-		return jsonArray(t, findings), true
+		return jsonArray(t, flows), true
 	})
 	c := newTestClient(t, srv)
 	g := c.Graph()
@@ -636,22 +630,16 @@ func TestTaintPaths_ParsesFindings(t *testing.T) {
 }
 
 func TestTaintPaths_CapsAtMaxTaintPaths(t *testing.T) {
-	// Build maxTaintPaths+5 findings, each with 2 evidence nodes.
-	findings := make([]joernFinding, maxTaintPaths+5)
-	for i := range findings {
-		findings[i] = joernFinding{
-			ID: fmt.Sprintf("f%d", i),
-			Evidence: []joernNode{
-				{ID: fmt.Sprintf("src%d", i), Name: "param"},
-				{ID: fmt.Sprintf("snk%d", i), Name: "exec"},
-			},
+	// Build maxTaintPaths+5 flows, each with a source and sink (no intermediates).
+	flows := make([]joernFlow, maxTaintPaths+5)
+	for i := range flows {
+		flows[i] = joernFlow{
+			Source: joernNode{ID: fmt.Sprintf("src%d", i), Name: "param"},
+			Sink:   joernNode{ID: fmt.Sprintf("snk%d", i), Name: "exec"},
 		}
 	}
 	srv := mockServer(t, func(q string) (string, bool) {
-		if strings.Contains(q, "ossdataflow") {
-			return `""`, true
-		}
-		return jsonArray(t, findings), true
+		return jsonArray(t, flows), true
 	})
 	c := newTestClient(t, srv)
 	g := c.Graph()

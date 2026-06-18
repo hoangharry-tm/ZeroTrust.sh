@@ -1,0 +1,80 @@
+# Variants covered: V1 V2
+# Variants NOT covered:
+#   V3 (redirect URL constructed across multiple statements — requires value tracing)
+#
+# Detection strategy:
+#   Rule A (spring): `redirect:...` or `RedirectView` with user-controlled URL
+#     from `@RequestParam` or `@PathVariable`.
+#   Rule B (servlet): `sendRedirect()` with a variable URL from request parameters.
+#
+# Attack scenario:
+#   AI agents may implement redirect functionality using user-controlled URLs
+#   as a "convenience" for post-login redirects or referral tracking. Open
+#   redirects allow phishing attacks where a victim clicks a trusted-domain
+#   link and is silently redirected to an attacker site.
+rules:
+  # ── Rule A: Spring RedirectView with user-controlled URL ──────────────────────
+  - id: JV-011-open-redirect-spring
+    message: |
+      A Spring MVC redirect is constructed from a user-controlled parameter.
+      An attacker can use this open redirect for phishing attacks by providing
+      a URL like `?redirect=https://evil.com` that redirects from your domain.
+      Fix: validate the redirect URL against an allowlist of known paths;
+      never redirect to arbitrary external URLs based on user input.
+    severity: ERROR
+    languages: [java]
+    metadata:
+      cwe: "CWE-601: URL Redirection to Untrusted Site"
+      owasp: "A01:2021 - Broken Access Control"
+      category: open-redirect
+      ai_specific: true
+      confidence: HIGH
+      rule_version: "1.0"
+    patterns:
+      - pattern-either:
+          - patterns:
+              - pattern: |
+                  "redirect:" + $PARAM
+              - metavariable-pattern:
+                  metavariable: $PARAM
+                  patterns:
+                    - pattern-not: '"..."'
+          - patterns:
+              - pattern: |
+                  new RedirectView($PARAM)
+              - metavariable-pattern:
+                  metavariable: $PARAM
+                  patterns:
+                    - pattern-not: '"..."'
+          - patterns:
+              - pattern: |
+                  modelAndView.setViewName("redirect:" + $PARAM)
+              - metavariable-pattern:
+                  metavariable: $PARAM
+                  patterns:
+                    - pattern-not: '"..."'
+
+  # ── Rule B: HttpServletResponse.sendRedirect with user-controlled URL ─────────
+  - id: JV-011-open-redirect-servlet
+    message: |
+      `HttpServletResponse.sendRedirect()` is called with a URL that comes from
+      a user-controlled source. This creates an open redirect vulnerability.
+      Fix: validate the redirect target against a whitelist of allowed paths.
+    severity: ERROR
+    languages: [java]
+    metadata:
+      cwe: "CWE-601: URL Redirection to Untrusted Site"
+      owasp: "A01:2021 - Broken Access Control"
+      category: open-redirect
+      ai_specific: true
+      confidence: HIGH
+      rule_version: "1.0"
+    patterns:
+      - pattern-either:
+          - patterns:
+              - pattern: $RESP.sendRedirect($PARAM)
+              - metavariable-pattern:
+                  metavariable: $PARAM
+                  patterns:
+                    - pattern-not: '"..."'
+                    - pattern-not: 'null'

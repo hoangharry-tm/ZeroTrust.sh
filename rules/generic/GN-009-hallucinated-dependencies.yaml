@@ -1,0 +1,44 @@
+# Detection strategy:
+#   Scans build files (requirements.txt, package.json, go.mod, Pipfile, Cargo.toml)
+#   for suspicious version patterns that indicate AI-hallucinated packages:
+#   - Version pinned to 0.0.0, 0.0.1 (unreleased/non-existent)
+#   - Version pinned to 9.9.9, 99.9.9 (fake high version)
+#   - Package names combining known packages with suspicious suffixes
+#
+# This rule uses OpenGrep in generic (text) mode on build files.
+#
+# Attack scenario:
+#   AI coding agents sometimes invent package names and versions that don't
+#   exist on any package registry. A developer reviewing the generated code
+#   may not notice a hallucinated dependency. If deployed, the build fails;
+#   but worse, an attacker could register the hallucinated package name on
+#   the real registry (dependency confusion / typo-squatting) and the build
+#   would succeed — pulling in malicious code.
+rules:
+  - id: GN-009-hallucinated-dependencies
+    message: |
+      Suspicious dependency version in build file. Version patterns like
+      `0.0.0`, `0.0.1`, or `9.9.9` strongly suggest an AI-hallucinated
+      package that does not exist on the real package registry.
+      This creates a supply chain risk: an attacker can register the
+      hallucinated package name and achieve code execution on your build.
+      Fix: verify every dependency exists on the official package registry;
+      pin to known-good versions; avoid packages with suspicious suffixes.
+    severity: WARNING
+    languages: [generic]
+    metadata:
+      cwe: "CWE-1104: Use of Unmaintained Third-Party Components"
+      owasp: "A06:2021 - Vulnerable and Outdated Components"
+      category: supply-chain
+      ai_specific: true
+      confidence: MEDIUM
+      rule_version: "1.0"
+    patterns:
+      - pattern-either:
+          - pattern-regex: (?im)^\s*[\w\-_.]+\s*[=~>]+\s*0\.0\.0\b
+          - pattern-regex: (?im)^\s*[\w\-_.]+\s*[=~>]+\s*0\.0\.1\b
+          - pattern-regex: (?im)^\s*[\w\-_.]+\s*[=~>]+\s*9\.9\.9\b
+          - pattern-regex: (?im)^\s*[\w\-_.]+\s*[=~>]+\s*99\.9\.9\b
+          - pattern-regex: (?im)"[\w\-_.\/]+":\s*"\^?0\.0\.0"
+          - pattern-regex: (?im)"[\w\-_.\/]+":\s*"\^?0\.0\.1"
+          - pattern-regex: (?im)"[\w\-_.\/]+":\s*"\^?9\.9\.9"

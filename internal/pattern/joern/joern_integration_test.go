@@ -18,7 +18,9 @@ package joern
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -42,7 +44,7 @@ func springBootDir(t *testing.T) string {
 		t.Fatal("runtime.Caller failed")
 	}
 	// Navigate from internal/pattern/joern/ up to the repo root, then into testdata.
-	root := filepath.Join(filepath.Dir(thisFile), "..", "..", "..", "..")
+	root := filepath.Join(filepath.Dir(thisFile), "..", "..", "..")
 	dir := filepath.Join(root, "testdata", "spring-boot-app")
 	if _, err := os.Stat(dir); err != nil {
 		t.Skipf("spring-boot-app testdata not found at %s: %v", dir, err)
@@ -280,4 +282,57 @@ func TestIntegration_GetCallers_CalleeRoundTrip(t *testing.T) {
 		return
 	}
 	t.Skip("no method with callees found in CPG")
+}
+
+// TestIntegration_TaintFlowsQuery verifies the queryTaintFlows template by running
+// it against the getUser method and checking for non-empty results including
+// SQL-related sink nodes.
+func TestIntegration_TaintFlowsQuery(t *testing.T) {
+	c := startIntegrationClient(t)
+	buildTestCPG(t, c)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	// Find the getUser method ID from the CPG.
+	methods, err := c.Graph().QueryNodes(cpg.NodeMethod)
+	if err != nil {
+		t.Fatalf("QueryNodes: %v", err)
+	}
+	var getUserID string
+	for _, m := range methods {
+		if m.Name == "getUser" {
+			getUserID = m.ID
+			break
+		}
+	}
+	if getUserID == "" {
+		t.Fatal("getUser method not found")
+	}
+
+	q := fmt.Sprintf(queryTaintFlows, getUserID)
+	raw, err := c.doQuery(ctx, q)
+	if err != nil {
+		t.Fatalf("queryTaintFlows: %v", err)
+	}
+
+	// Parse as joernFlow slice.
+	var flows []joernFlow
+	if err := json.Unmarshal(raw, &flows); err != nil {
+		t.Fatalf("json.Unmarshal: %v\nraw: %s", err, string(raw))
+	}
+	if len(flows) == 0 {
+		t.Fatal("no flows returned from getUser — expected SQL injection taint paths")
+	}
+	hasSQLSink := false
+	for _, f := range flows {
+		if f.Sink.Name == "executeQuery" || f.Sink.Name == "queryForList" {
+			hasSQLSink = true
+			break
+		}
+	}
+	if !hasSQLSink {
+		t.Error("no SQL-related sink (executeQuery/queryForList) found in flows")
+	}
+	t.Logf("queryTaintFlows: %d flows, SQL sink found", len(flows))
 }

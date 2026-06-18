@@ -1,0 +1,40 @@
+# AI-specific Unique Rule
+# Why unique: Bandit and pylint warn about bare `except:` but don't specifically
+# flag empty `except: pass` in security-relevant functions. AI agents frequently
+# wrap security operations in try/except blocks with empty pass handlers
+# ("it might throw, but we don't care") — silently swallowing AuthenticationError,
+# PermissionDenied, or ValidationError exceptions.
+#
+# Attack scenario:
+#   An AI agent wraps an auth check in try/except/pass to prevent crashes during
+#   testing. In production, the same handler silently ignores auth failures.
+id: AG-018-except-pass-in-auth
+language: python
+message: |
+  Empty `except: pass` block found in an authentication, validation, or
+  security-related function. Exceptions in security code should never be
+  silently ignored — auth failures, permission errors, and validation
+  rejections must propagate or be explicitly handled.
+  Fix: remove the try/except wrapper or log and re-raise the exception.
+severity: error
+metadata:
+  cwe: "CWE-391: Unchecked Error Condition"
+  owasp: "A04:2021 - Insecure Design"
+  category: cheat-detection
+  ai_specific: true
+  confidence: HIGH
+  rule_version: "1.0"
+rule:
+  inside:
+    kind: function_definition
+    stop_by: end
+    has:
+      any:
+        - pattern: except $E: pass
+        - pattern: except: pass
+        - pattern: |
+            except $E:
+                pass
+        - pattern: |
+            except:
+                pass

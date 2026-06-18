@@ -1,0 +1,38 @@
+# AI-specific Unique Rule
+# Why unique: No existing Python linter (pylint, flake8, ruff) specifically flags
+# import statements nested inside function bodies as a security indicator.
+# AI agents frequently embed imports inside functions as "quick patches" when they
+# hallucinate a missing dependency — the import works around the missing module error
+# but creates a confusing, non-standard code structure that bypasses module-level
+# import checking. This is a strong signal that the code is AI-generated without
+# proper review.
+#
+# Attack scenario:
+#   An AI agent hallucinates a package. To make the code run without a top-level
+#   ImportError, it moves the import inside the function body where it's only
+#   triggered on code path execution. The dependency is never declared in
+#   requirements.txt and never appears in vulnerability scans.
+id: AG-017-import-inside-function
+language: python
+message: |
+  Import statement found inside a function body rather than at module top level.
+  This pattern is commonly used by AI agents to hide missing dependencies —
+  the import only fails when the function is called, not at module load time.
+  Fix: move all imports to the top of the module; declare dependencies in
+  requirements.txt or pyproject.toml.
+severity: warning
+metadata:
+  cwe: "CWE-1104: Use of Unmaintained Third-Party Components"
+  owasp: "A06:2021 - Vulnerable and Outdated Components"
+  category: supply-chain
+  ai_specific: true
+  confidence: MEDIUM
+  rule_version: "1.0"
+rule:
+  any:
+    - inside:
+        kind: function_definition
+        stop_by: end
+      any:
+        - pattern: import $MODULE
+        - pattern: from $MODULE import $NAME

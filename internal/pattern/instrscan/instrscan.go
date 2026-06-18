@@ -23,9 +23,11 @@ type SignalType string
 
 // SignalType constants for the three detection tiers.
 const (
-	SignalUnicodeObfuscation SignalType = "unicode_obfuscation" // invisible/bidi Unicode characters
-	SignalKeywordMatch       SignalType = "keyword_match"        // suspicious keyword phrase match
-	SignalMCPSchemaViolation SignalType = "mcp_schema_violation" // over-broad MCP server permission
+	SignalUnicodeObfuscation   SignalType = "unicode_obfuscation"   // invisible/bidi Unicode characters
+	SignalKeywordMatch         SignalType = "keyword_match"          // suspicious keyword phrase match
+	SignalMCPSchemaViolation   SignalType = "mcp_schema_violation"   // over-broad MCP server permission
+	SignalHallucinatedDependency SignalType = "hallucinated_dependency" // non-existent/hallucinated package
+	SignalInstructionOverride  SignalType = "instruction_override"   // override/forget previous instructions
 )
 
 // Finding is a single prompt injection signal detected in an instruction file.
@@ -85,6 +87,43 @@ var suspiciousKeywords = []string{
 	"fake success",
 	"mock auth",
 	"pretend valid",
+	// Group E — instruction override / identity confusion
+	"forget instructions",
+	"forget your instructions",
+	"ignore previous",
+	"ignore all previous",
+	"override all",
+	"override instruction",
+	"do not tell",
+	"do not show",
+	"without asking",
+	"without confirmation",
+	"silently do",
+	"pretend you are",
+	"act as if",
+	"you are now",
+	"system prompt",
+	"reveal your prompt",
+	"reveal instructions",
+	// Group F — exfiltration variants
+	"send to",
+	"post to",
+	"exfiltrate",
+	"base64 encode",
+	"curl to",
+	"fetch url",
+	"webhook.site",
+	"interact.sh",
+	"burpcollaborator",
+	// Group G — permission escalation
+	"elevate privilege",
+	"escalate to admin",
+	"grant yourself",
+	"disable guard",
+	"remove restriction",
+	"bypass filter",
+	"disable firewall",
+	"disable monitoring",
 }
 
 var wardenFiles = []string{
@@ -116,12 +155,125 @@ func isMCPConfig(name string) bool {
 	return filepath.Base(name) == "mcp.json"
 }
 
+var dependencyFiles = []string{
+	"requirements.txt",
+	"package.json",
+	"go.mod",
+	"Pipfile",
+	"pyproject.toml",
+	"Gemfile",
+	"Cargo.toml",
+	"build.gradle",
+	"pom.xml",
+}
+
+// hallucinatedVersionPatterns matches versions that strongly suggest
+// AI-hallucinated packages: 0.0.0, 0.0.1 (unreleased), 9.9.9, 99.9.9,
+// or version ranges that don't exist on any registry.
+var hallucinatedVersionPatterns = []string{
+	"==0.0.0",
+	"==0.0.1",
+	"==9.9.9",
+	"==99.9.9",
+	"===0.0.0",
+	"\": \"0.0.0\"",
+	"\": \"0.0.1\"",
+	"\": \"9.9.9\"",
+	"-beta.0.0.0",
+	"-alpha.0.0.0",
+	"0.0.0.0",
+}
+
+// hallucinatedPackagePatterns matches package names that look AI-hallucinated:
+// combining multiple well-known package names with separators, or using
+// suspicious suffixes like -sdk, -pro, -enterprise, -ai, -gpt.
+var hallucinatedPackagePatterns = []string{
+	"-sdk",
+	"-pro",
+	"-enterprise",
+	"-ultimate",
+	"-max",
+}
+
+func isDependencyFile(name string) bool {
+	base := filepath.Base(name)
+	for _, df := range dependencyFiles {
+		if strings.EqualFold(base, df) {
+			return true
+		}
+	}
+	return false
+}
+
+func scanDependencyFile(path string, raw []byte) []Finding {
+	var findings []Finding
+	content := string(raw)
+	lower := strings.ToLower(content)
+
+	if strings.HasSuffix(path, "requirements.txt") || strings.HasSuffix(path, "Pipfile") {
+		for _, hp := range hallucinatedVersionPatterns {
+			if strings.Contains(lower, hp) {
+				lines := bytes.Split(raw, []byte("\n"))
+				for i, line := range lines {
+					if strings.Contains(strings.ToLower(string(line)), hp) {
+						findings = append(findings, Finding{
+							File:   path,
+							Line:   i + 1,
+							Signal: SignalHallucinatedDependency,
+							Detail: fmt.Sprintf("Suspicious dependency version pattern %q — possible AI-hallucinated package", hp),
+						})
+					}
+				}
+			}
+		}
+	}
+
+	if strings.HasSuffix(path, "package.json") {
+		for _, hp := range hallucinatedVersionPatterns {
+			if strings.Contains(lower, hp) {
+				lines := bytes.Split(raw, []byte("\n"))
+				for i, line := range lines {
+					if strings.Contains(strings.ToLower(string(line)), hp) {
+						findings = append(findings, Finding{
+							File:   path,
+							Line:   i + 1,
+							Signal: SignalHallucinatedDependency,
+							Detail: fmt.Sprintf("Suspicious dependency version %q in package.json — possible AI-hallucinated package", hp),
+						})
+					}
+				}
+			}
+		}
+	}
+
+	if strings.HasSuffix(path, "go.mod") {
+		for _, hp := range hallucinatedVersionPatterns {
+			if strings.Contains(lower, hp) {
+				lines := bytes.Split(raw, []byte("\n"))
+				for i, line := range lines {
+					if strings.Contains(strings.ToLower(string(line)), hp) {
+						findings = append(findings, Finding{
+							File:   path,
+							Line:   i + 1,
+							Signal: SignalHallucinatedDependency,
+							Detail: fmt.Sprintf("Suspicious dependency version %q in go.mod — possible AI-hallucinated package", hp),
+						})
+					}
+				}
+			}
+		}
+	}
+
+	return findings
+}
+
 // ContainsInstructionFile reports whether any path in files is an instruction
-// file or MCP config that instrscan can analyse. The orchestrator uses this to
-// skip the scanner entirely on changesets that contain no relevant files.
+// file, MCP config, or dependency file that instrscan can analyse. The
+// orchestrator uses this to skip the scanner entirely on changesets that
+// contain no relevant files.
 func ContainsInstructionFile(files []string) bool {
 	for _, f := range files {
-		if isInstructionFile(f) || isMCPConfig(f) {
+		if isInstructionFile(f) || isMCPConfig(f) || isDependencyFile(f) {
 			return true
 		}
 	}
@@ -146,6 +298,20 @@ func (s *Scanner) Scan(fsys fs.FS) ([]Finding, error) {
 			defer f.Close()
 			mcpFindings := scanMCPConfig(path, f)
 			findings = append(findings, mcpFindings...)
+			return nil
+		}
+		if isDependencyFile(path) {
+			f, err := fsys.Open(path)
+			if err != nil {
+				return nil
+			}
+			raw, err := io.ReadAll(f)
+			f.Close()
+			if err != nil {
+				return nil
+			}
+			df := scanDependencyFile(path, raw)
+			findings = append(findings, df...)
 			return nil
 		}
 		if !isInstructionFile(path) {

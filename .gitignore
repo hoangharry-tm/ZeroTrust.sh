@@ -36,3 +36,7 @@ docs/api/
 .tmp/**/*
 /zt
 build/
+/*.cpg
+workspace/
+internal/pattern/joern/workspace/
+*.log

@@ -1,0 +1,99 @@
+graph TD
+
+%% ── Input ───────────────────────────────────────────────────────────────────
+    Input[/"<b>Codebase Input</b>\nDirectory"/]:::done
+
+%% ── Ingestion ───────────────────────────────────────────────────────────────
+    subgraph INGEST["INGESTION · parallel startup"]
+        direction LR
+        MIV["<b>Model Integrity Verifier</b>\ncosign · SHA-256 · tiered WARN/BLOCK\ngates LLM calls only\n✅ ML0.3 — Done Jun 17"]:::done
+        DI["<b>Differential Indexer + Module Segmentation</b>\nSQLite content-hash diff · CRUD helpers · DeriveProjectID\nModule segmentation + sink pre-flagging via Tree-sitter\nFirst scan: CPG build · Repeat: depth-5 BFS patch\n✅ content-hash (ML0.4) · 🔧 one-hop CPG expansion (L2.1.T3)\n🔧 integration test blocked (Joern port collision)"]:::wip
+    end
+
+%% ── Path A ───────────────────────────────────────────────────────────────────
+    subgraph PA["PATH A — Pattern Detection"]
+        direction TB
+        PA_SG["<b>OpenGrep + ast-grep + instrscan</b>\nStructural patterns · AI agent instruction file scanner\nCheat-detection rules · 42 rules across 12 languages\n✅ ML0.5 — Done Jun 17"]:::done
+        PA_CQ["<b>Joern CPG Engine · Taint Analysis</b>\nAsync HTTP 2-step protocol · taint taxonomy (4 languages)\nModule segmentation · incremental CPG · normalise adapter\n🔧 Code done Jun 18 (ML1 + L2.1.T1–T5 + L2.3.T1)\n🔧 Integration tests blocked — port 18080 collision"]:::wip
+        PA_LV["<b>LLM Verifier</b>\nCoD + SCoT reasoning · XGrammar-2 output schema\nAdaptive SC on uncertain · high-confidence bypass (≥0.90)\n✅ ML2.2 — Done Jun 18"]:::done
+        PA_CQ --> PA_LV
+    end
+
+%% ── Path B ───────────────────────────────────────────────────────────────────
+    subgraph PB["PATH B — Semantic Detection · Three-Tier Cost Funnel"]
+        direction TB
+
+        subgraph T1["Tier 1 — Surface Selection · ML3.1 (Jul 17–21)"]
+            PB_HT["<b>Heuristic Targeting</b>\nCPG-based · language-agnostic · ~95% file elimination\n⬜ Forward stub — SelectSurfaces returns nil, nil\n⬜ ML3.1.T1–T2 · Not started"]:::todo
+            PB_CG["<b>Call Graph + CVE Enrichment + Resource ID Dataflow</b>\nTrivy fs scan (OSV + NVD + GitHub Advisory)\nBOLAZ zero-trust P-API / C-API taint model · IDOR flagging\n🔧 Trivy wrapper done · test failing (DB not initialized)\n⬜ BOLAZ not implemented · ML3.1.T3–T6 · Not started"]:::wip
+        end
+
+        subgraph T2["Tier 2 — Classifier Gate · ML3.2 (Jul 21–24)"]
+            PB_CC["<b>Code Vulnerability Classifier</b>\nUniXcoder-Base-Nine · local CPU · 3-band routing\nIDOR always escalates · unsupported lang bypass\n✅ Full IPC + tests — Ahead of schedule (ML3.2)"]:::done
+            PB_CCCA["<b>Call Chain Context Assembler</b>\nDepth-3 caller → surface → callee · callee-first order\n⬜ Forward stub — Assemble returns nil, nil\n⬜ ML3.3.T1–T2 · Not started"]:::todo
+            PB_SFS["<b>Semantic Function Summarizer</b>\nSingle-pass union schema (taint_flow / auth_guard / logic_flaw)\nXGrammar-2 TagDispatch · batch-5 · LLM sees summaries only\n⬜ Forward stub — Summarize returns nil, nil\n⬜ ML3.3.T3–T5 · Not started"]:::todo
+        end
+
+        subgraph T3["Tier 3 — LLM Reasoning · ML3.4 (Jul 26–28)"]
+            PB_TB["<b>Token Budget Controller</b>\nSurface priority ranking · hard 50K token cap\nExhausted → SUPPRESSED, never silent drop\n⬜ Forward stub — ML3.4.T1–T2 · Not started"]:::todo
+            PB_LS["<b>LLM Semantic Scan</b>\nBounded ReAct loop (max 3 steps) · backbone check\nSingle-pass CoD+SCoT fallback for sub-threshold models\n⬜ Forward stub — BackboneCheck returns ScanModeSinglePass\n⚠️ Default must flip to ScanModeReAct on L3.4 impl\n⬜ ML3.4.T3–T6 · Not started"]:::todo
+        end
+
+        PB_CC -->|"Uncertain · ~15–25%"| PB_CCCA
+        PB_CCCA --> PB_SFS
+        PB_SFS --> PB_TB
+        PB_TB --> PB_LS
+        PB_HT -.->|"No call graph available"| PB_CC
+        PB_HT --> PB_CG
+        PB_CG --> PB_CC
+    end
+
+%% ── SCS ─────────────────────────────────────────────────────────────────────
+    SCS["<b>Scan Security Context Store</b>\nCross-surface inference accumulation\n🔧 Put + RegisterNeighbours implemented\n⬜ Get is a stub · No tests\n🔧 ML3.4 DROP FIRST (T7–T9)"]:::wip
+
+%% ── Dedup ───────────────────────────────────────────────────────────────────
+    Dedup["<b>Dedup + Confidence Scoring · SSVC-Aligned</b>\n✅ Gate 1: SHA-256 CWE+path+startLine\n✅ Gate 2: SHA-256 MatchedCode\n✅ Cross-path +15pp boost · AutoSuppress · DeriveSeverityLabel\n⬜ Gate 3: MiniLM embedding similarity (ML4.1.T1)\n⬜ Gate 4: AST edit distance (ML4.1.T2)\n⬜ SSVC live API sourcing: CISA KEV / EPSS / NVD (ML4.1.T3)\n🔧 ML0.7 skeleton done · ML4.1 not started"]:::wip
+
+%% ── PoE (out of scope) ───────────────────────────────────────────────────────
+    subgraph PoE["Proof-of-Exploit Layer · Approach 3 only · Out of Scope"]
+        direction LR
+        PoE_EC["<b>PoE Eligibility Classifier</b>\nBLOCK+HIGH only · CWE class filter\n🚫 Not in current scope"]:::oos
+        RTA["<b>Red Team Agent</b>\nLangGraph 3-agent · class-specific exploit inputs\n🚫 Not in current scope"]:::oos
+        DS["<b>Docker Sandbox</b>\nseccomp · --network none · gVisor\n🚫 Not in current scope"]:::oos
+        PoEDoc["<b>Two-layer PoE Output</b>\npoe_confidence float · business_impact_tier enum\n🚫 Not in current scope"]:::oos
+        PoE_EC --> RTA --> DS --> PoEDoc
+    end
+
+%% ── Final Report ─────────────────────────────────────────────────────────────
+    FinalReport["<b>HTML Report + Patch Suggestions</b>\n✅ Skeleton: html/template + embed · severity columns · XSS-safe escaping\n⬜ Full SSVC scoring + finding data (ML4.2.T1–T2)\n⬜ Patch generation: zero-shot unified diff (ML4.2.T3–T4)\n⬜ Suppression sidecar .zerotrust-suppressions.yaml (ML4.2.T6)\n⚠️ internal/patch/ pkg exists but not in CLAUDE.md codebase map — resolve before L4\n🔧 ML0.7 skeleton done · ML4.2 not started"]:::wip
+
+%% ── Wiring ───────────────────────────────────────────────────────────────────
+    Input --> MIV
+    Input --> DI
+    MIV -.->|"gates LLM calls"| PA_LV
+    MIV -.->|"gates LLM calls"| PB_LS
+    DI --> PA_SG
+    DI --> PA_CQ
+    DI --> PB_HT
+
+    PA_CQ -.->|"CPG shared — call graph + reachability"| PB_CG
+    PA_CQ -.->|"CPG shared — language-agnostic node queries"| PB_HT
+
+    PA_SG --> PA_LV
+    PA_LV --> Dedup
+    PB_CC -->|"High-confidence findings"| Dedup
+    PB_LS --> Dedup
+
+    PB_LS -->|"writes inferences"| SCS
+    SCS -.->|"provides accumulated context"| PB_LS
+
+    Dedup -->|"Approach 3 only"| PoE_EC
+    Dedup --> FinalReport
+    PoEDoc --> FinalReport
+    DS -.->|"Sandbox failed · static evidence only"| FinalReport
+
+%% ── Styles ───────────────────────────────────────────────────────────────────
+    classDef done   fill:#1a7a3f,stroke:#0d5c2e,color:#ffffff,font-size:12px
+    classDef wip    fill:#a05c00,stroke:#7a4500,color:#ffffff,font-size:12px
+    classDef todo   fill:#3a3a4a,stroke:#28282f,color:#cccccc,font-size:12px
+    classDef oos    fill:#1a1a2a,stroke:#111118,color:#666688,font-size:12px
