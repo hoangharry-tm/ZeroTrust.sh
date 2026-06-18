@@ -55,10 +55,18 @@ type ResourceIDFlow struct {
 	HasOwnershipCheck bool
 }
 
-// EnrichedSurface adds CVE, call graph, and IDOR metadata to a targeting.Surface.
+// EnrichedSurface adds CVE, call graph, source code, and IDOR metadata to a
+// targeting.Surface.
 type EnrichedSurface struct {
 	// Surface is the base surface from Heuristic Targeting.
 	targeting.Surface
+	// Code is the full source text of the function at this surface, fetched from
+	// the Joern CPG. The UniXcoder classifier uses this as its primary input.
+	Code string
+	// Language is the programming language of the surface's source file, derived
+	// from the file extension (e.g. "go", "python", "java"). Used by the classifier
+	// to route unsupported languages directly to the LLM tier.
+	Language string
 	// CVEMatches holds all CVEs affecting dependencies used by this surface.
 	// Sorted by descending CVSS score.
 	CVEMatches []CVEMatch
@@ -113,22 +121,7 @@ func New(graph cpg.Graph, trivyPath string, offlineMode bool) *Enricher {
 // Returns:
 //   - []EnrichedSurface: one enriched surface per input surface.
 //   - error: non-nil if Trivy fails to start or CPG queries fail.
-func (e *Enricher) Enrich(ctx context.Context, surfaces []targeting.Surface, projectRoot string) ([]EnrichedSurface, error) {
-	// implemented in G3.M3.1
-	return nil, nil
-}
-
-// RunTrivy executes the Trivy binary against projectRoot and returns all CVE matches.
-// Results are keyed by package name for efficient surface-to-CVE mapping.
-//
-// Parameters:
-//   - ctx: cancellation context.
-//   - projectRoot: absolute path to the directory containing dependency manifests.
-//
-// Returns:
-//   - map[string][]CVEMatch: CVE matches keyed by package name.
-//   - error: non-nil if Trivy fails to start or its JSON output is malformed.
-func (e *Enricher) RunTrivy(ctx context.Context, projectRoot string) (map[string][]CVEMatch, error) {
+func (e *Enricher) Enrich(_ context.Context, _ []targeting.Surface, _ string) ([]EnrichedSurface, error) {
 	// implemented in G3.M3.1
 	return nil, nil
 }
@@ -139,7 +132,7 @@ func (e *Enricher) RunTrivy(ctx context.Context, projectRoot string) (map[string
 // Parameters:
 //   - ctx: cancellation context.
 //   - surface: the surface to analyse.
-func (e *Enricher) DetectIDORFlows(ctx context.Context, surface targeting.Surface) ([]ResourceIDFlow, error) {
+func (e *Enricher) DetectIDORFlows(_ context.Context, _ targeting.Surface) ([]ResourceIDFlow, error) {
 	// implemented in G3.M3.1
 	return nil, nil
 }
