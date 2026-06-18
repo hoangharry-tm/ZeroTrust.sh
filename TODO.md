@@ -48,11 +48,51 @@
 
 ---
 
-## Layer 1 — Joern Spike (Jul 3–7, time-boxed 20h)
+## Layer 1 — Joern Spike (time-boxed ~17h work + 8h contingency)
 
-- [ ] L1.T1: Joern install + JVM (Java 11+) + version-pin; confirm `joern --server` starts and responds
-- [ ] L1.T2: Go subprocess — spawn Joern HTTP server (`localhost:8080`); health-check + retry loop; pre-start at launch alongside MIV+DI
-- [ ] L1.T3: CPG build on Spring Boot test codebase; validate Go CPG frontend quality on known-vulnerable snippet
-- [ ] L1.T4: Shared CPG query interface — `QueryNodes(type)`, `QueryEdges(src, dst)`, `GetCallGraph()` + fixture CPG + golden-file integration tests
+> **Design contract for all L1 work**: Every subprocess, port, and IPC channel must be
+> intentionally designed for security and correctness — not bolted on after the fact.
+> Specifically: (1) all Joern HTTP communication is localhost-only and port-bound to a
+> single ephemeral or pinned port, never exposed on 0.0.0.0; (2) subprocess lifecycle
+> (start/stop/crash) is handled explicitly with no silent failures; (3) all edge cases
+> (port conflict, JVM not found, build timeout, malformed JSON, partial response, context
+> cancellation) produce a named, documented error — never a panic or silent drop; (4) the
+> API surface exposed to callers (Graph interface) hides all Joern HTTP details behind a
+> clean, minimal interface. Code is written for the next developer reading it, not just
+> to pass tests.
 
-**Go/No-Go Jul 7**: Working CPG query + golden-file test pass → proceed to L2. Otherwise trigger fallback (Joern Java/Python only; Go via OpenGrep taint rules).
+### L1.T1 — Joern Environment Setup (~2h)
+- [ ] Install Joern + Java 17 via Homebrew/direct download; pin version in `Makefile` (`JOERN_VERSION`)
+- [ ] Verify `joern --server --port 8080` starts, serves HTTP, and shuts down cleanly
+- [ ] Document confirmed Joern HTTP API request/response schema in `docs/joern-http-api.md` (method, payload, response, error codes) — this is the contract for L1.T2–T4
+- [ ] Confirm the HTTP server only binds to `127.0.0.1` (not `0.0.0.0`); document the flag if explicit binding is required
+
+### L1.T2 — Go Subprocess Launcher (~4h)
+- [ ] Add `Start(ctx context.Context, port int) error` to `joern.Client` — spawns `joern --server --port <port>` as a managed subprocess; binds **only** to `127.0.0.1`
+- [ ] Port conflict detection before spawning: if `127.0.0.1:<port>` is already in use, return `ErrPortInUse` (never silently re-use an unknown process)
+- [ ] Implement `Ping(ctx) error` with configurable retry (default: 10 attempts, 500ms backoff, total cap 5s); returns `ErrJoernUnreachable` on timeout — not a generic error
+- [ ] `Stop(ctx) error` — sends SIGTERM, waits up to 5s, escalates to SIGKILL, waits for exit; always cleans up temp files; never leaks the subprocess
+- [ ] Crash detection: background goroutine watches `cmd.Wait()`; on unexpected exit sets `ErrJoernCrashed` and closes the client; callers checking `Ping` after crash get a clear error, not a hang
+- [ ] Wire `Start` into `scan.go` pre-start goroutine (non-blocking, alongside MIV+DI); MIV-gate respected (Joern crash does not block Path A pattern matching)
+- [ ] Test: start → ping → stop roundtrip; port conflict; ping timeout; crash detection; context cancellation mid-start
+
+### L1.T3 — CPG Build on Spring Boot Codebase (~3h)
+- [ ] Implement `BuildCPG(ctx, BuildConfig) error` — POST to Joern HTTP API; poll or stream build status; return `ErrBuildTimeout` after configurable deadline (default 120s)
+- [ ] Input validation: reject empty `Paths`; reject paths that escape the project root (`../`); reject files >5K LOC per module segmentation rule
+- [ ] Run CPG build on `testdata/spring-boot-app/`; assert METHOD node count >0; assert known-vulnerable `UserController.java` is present in the CPG
+- [ ] Validate Go CPG frontend quality on the known-vulnerable snippet; document any gaps or degraded coverage in `docs/joern-http-api.md` spike note
+- [ ] All HTTP responses validated against expected schema before use; malformed JSON returns `ErrMalformedResponse` with the raw body in the error message for debuggability
+
+### L1.T4 — CPG Query Interface + Golden-file Tests (~8h)
+- [ ] Implement all 9 `joernGraph` methods: `QueryNodes`, `QueryNodesByFile`, `QueryEdges`, `GetCallGraph`, `GetCallers`, `GetCallees`, `GetNeighboursAtDepth`, `TaintPaths`, `PreFlaggedSinks`
+- [ ] Each method: validates inputs, maps Joern HTTP JSON → `cpg.*` structs, returns typed errors (never `fmt.Errorf("something went wrong")`)
+- [ ] `TaintPaths`: enforce source/sink non-empty precondition; cap result set at 1000 paths to prevent memory exhaustion on large CPGs; document the cap
+- [ ] `GetNeighboursAtDepth`: enforce `depth ≤ 6` (SOAP/PLDI 2025 bound); return `ErrDepthExceeded` if violated — callers must not silently get a truncated result
+- [ ] HTTP transport: shared `http.Client` with a read timeout (default 30s per query); no unbounded waits; connection reuse via keep-alive
+- [ ] Golden-file integration test (`joern_integration_test.go`, build tag `//go:build integration`): build CPG on Spring Boot codebase; assert taint path `HTTP param → SQL sink` detected in `UserController.java`; assert `GetCallGraph()` non-empty; assert `GetCallers`/`GetCallees` round-trip
+- [ ] Unit tests using a fixture CPG (recorded HTTP responses via `httptest.Server`): all 9 methods covered; malformed response handling; timeout handling; context cancellation
+- [ ] Godoc on every exported symbol; all error variables defined as package-level `var Err* = errors.New(...)` — never inline strings
+
+### Go/No-Go Checkpoint
+Golden-file integration tests pass + taint path detected → proceed to Layer 2.
+Otherwise: trigger fallback (Joern scoped to Java/Python only; Go covered by OpenGrep taint rules; incremental CPG deferred post-demo). Decision recorded in `docs/joern-http-api.md`.

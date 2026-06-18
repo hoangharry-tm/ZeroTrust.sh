@@ -134,7 +134,14 @@ func newPipeline(ctx context.Context, cfg ScanConfig) (*pipeline, error) {
 	// Path A
 	og := opengrep.New("opengrep", "rules/")
 	ag := astgrep.New("ast-grep", "rules/astgrep/")
-	jc := joern.New(cfg.JoernURL)
+	joernOpts := []joern.Option{joern.WithServerURL(cfg.JoernURL)}
+	if cfg.JoernBin != "" {
+		joernOpts = append(joernOpts, joern.WithBinaryPath(cfg.JoernBin))
+	}
+	jc, err := joern.New(joernOpts...)
+	if err != nil {
+		return nil, fmt.Errorf("configure joern: %w", err)
+	}
 	is := instrscan.New()
 	vf := verifier.New(wm)
 
@@ -184,6 +191,19 @@ func newPipeline(ctx context.Context, cfg ScanConfig) (*pipeline, error) {
 // The caller is responsible for closing events after run returns.
 func (p *pipeline) run(ctx context.Context, events chan<- output.Event) error {
 	start := time.Now()
+
+	// ── 0. JOERN PRE-START ────────────────────────────────────────────────────
+	// Spawn the Joern subprocess before ingestion so the JVM is warm by the
+	// time Path A/B need it. Non-fatal: if Joern fails to start, taint analysis
+	// is skipped; OpenGrep + ast-grep + instrscan continue regardless.
+	if p.cfg.JoernBin != "" {
+		if err := p.joern.Start(ctx); err != nil {
+			output.Emit(events, output.Event{
+				Kind: output.EventLog,
+				Log:  fmt.Sprintf("warn: joern start: %v — taint analysis disabled for this scan", err),
+			})
+		}
+	}
 
 	// ── 1. INGEST ────────────────────────────────────────────────────────────
 	output.Emit(events, output.Event{Kind: output.EventStageStart, Stage: "ingestion"})
@@ -465,8 +485,17 @@ func (p *pipeline) runPathB(ctx context.Context, _ *ingestion.Result, ch finding
 	return nil
 }
 
-// close shuts down the Python worker and releases any other held resources.
+// close shuts down all managed subprocesses and releases held resources.
+// Always called after run() returns, even on error.
 func (p *pipeline) close() error {
+	// Stop Joern subprocess if we spawned it. Use a fixed timeout — this runs
+	// after the scan; we don't want it to block indefinitely on cleanup.
+	if p.cfg.JoernBin != "" && p.joern != nil {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = p.joern.Stop(stopCtx) //nolint:errcheck — best-effort cleanup
+	}
+
 	var workerErr error
 	if p.w != nil {
 		workerErr = p.w.Stop()

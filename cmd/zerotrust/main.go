@@ -24,7 +24,8 @@ func main() {
 	root.Flags().String("report", "", "HTML report output path (default: build/report.html)")
 	root.Flags().String("project-id", "", "override project ID used for scan-state caching")
 	root.Flags().String("mode", "Default", "scan scope mode: Default | Thorough | Full")
-	root.Flags().String("joern-url", "http://localhost:8080", "Joern HTTP API base URL")
+	root.Flags().String("joern-url", "http://127.0.0.1:8080", "Joern HTTP API base URL (used when --joern-bin is not set)")
+	root.Flags().String("joern-bin", "", "path to joern-server binary; when set the pipeline spawns and manages Joern itself")
 	root.Flags().String("ollama-url", "http://localhost:11434", "Ollama HTTP API base URL")
 	root.Flags().Int("token-cap", 50_000, "token budget cap for Path B Tier 3")
 
@@ -66,6 +67,10 @@ func runScan(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	cfg.JoernURL, err = cmd.Flags().GetString("joern-url")
+	if err != nil {
+		return err
+	}
+	cfg.JoernBin, err = cmd.Flags().GetString("joern-bin")
 	if err != nil {
 		return err
 	}

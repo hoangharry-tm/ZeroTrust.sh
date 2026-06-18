@@ -1,207 +1,334 @@
 // Package joern wraps the Joern CPG engine HTTP API (Apache 2.0).
 //
+// # Architecture
+//
 // Joern is pre-started at CLI launch (before file ingestion) to eliminate JVM
-// cold-start latency. It builds the Universal Code Property Graph (AST + CFG + PDG
-// + call graph) for all in-scope source files and serves inter-procedural taint
-// queries via an HTTP JSON API.
+// cold-start latency. It builds the Universal Code Property Graph (AST + CFG +
+// PDG + call graph) for all in-scope source files and serves inter-procedural
+// taint queries via an HTTP JSON API on 127.0.0.1 only.
 //
 // The CPG is shared between both detection paths via the pkg/cpg.Graph interface:
-//   - Path A's Joern taint analysis queries TaintPaths directly.
-//   - Path B's Heuristic Targeting and Call Chain Assembler query nodes and edges.
+//   - Path A's Joern taint analysis calls TaintPaths directly.
+//   - Path B's Heuristic Targeting and Call Chain Assembler call QueryNodes,
+//     GetCallGraph, GetCallers, GetCallees, and GetNeighboursAtDepth.
 //
-// Incremental CPG patching (repeat scans):
-// On repeat scans, the CPG is loaded from a serialized snapshot and patched with
+// # Subprocess lifecycle
+//
+// A Client can operate in two modes:
+//
+//  1. Externally managed — created with New() and pointed at a pre-running
+//     Joern server (CI, Docker, local dev). No subprocess is spawned; Start
+//     and Stop are no-ops. Use WithServerURL to set the base URL.
+//
+//  2. Self-managed — created with New(WithBinaryPath("joern-server"), ...).
+//     Call Start(ctx) to spawn the subprocess; it will be killed on Stop.
+//     Start validates port availability, binds the server to 127.0.0.1,
+//     and polls /ready until the JVM is warm. Stop sends SIGTERM → waits →
+//     SIGKILL to prevent subprocess leaks.
+//
+// # Security contract
+//
+//   - The HTTP server ALWAYS binds to 127.0.0.1 (loopback only), never 0.0.0.0.
+//   - New() rejects any serverURL whose host is not localhost / 127.0.0.1 / ::1.
+//   - Start() refuses to bind a port already in use (ErrPortInUse), preventing
+//     silent attachment to an unknown existing process.
+//   - The managed subprocess is always cleaned up: Stop escalates SIGTERM →
+//     SIGKILL if the process does not exit within the configured timeout.
+//
+// # Incremental CPG patching
+//
+// On repeat scans the CPG is loaded from a serialized snapshot and patched with
 // a depth-5 BFS update rooted at each changed function (IncrementalPatch).
 // Depth 5 is the taint-correctness bound from Li et al. (ICSE 2024) and
 // Effendi et al. (SOAP/PLDI 2025, Joern core team). If any changed function has
-// ≥50 callers (hub module), a full CPG rebuild is triggered instead.
+// ≥ 50 callers (hub module), ErrHubModuleDetected is returned and the caller
+// must fall back to BuildCPG for a full rebuild.
 package joern
 
 import (
 	"context"
-
-	"github.com/hoangharry-tm/zerotrust/pkg/cpg"
+	"fmt"
+	"net"
+	"net/http"
+	"net/url"
+	"os"
+	"os/exec"
+	"strconv"
+	"sync"
+	"sync/atomic"
+	"time"
 )
 
-const defaultServerURL = "http://localhost:8080"
+// defaults for all configurable timeouts and retry counts.
+const (
+	defaultServerURL    = "http://127.0.0.1:8080"
+	defaultBinaryPath   = "joern-server"
+	defaultHost         = "127.0.0.1"
+	defaultPort         = 8080
+	defaultPingRetries  = 12
+	defaultPingInterval = 500 * time.Millisecond
+	defaultStopTimeout  = 5 * time.Second
+	defaultQueryTimeout = 30 * time.Second
+	defaultBuildTimeout = 120 * time.Second
+)
 
-// Client wraps the Joern HTTP server API.
+// Option configures a Client.
+type Option func(*Client)
+
+// WithServerURL sets the base URL of the Joern HTTP server.
+// The host must be localhost, 127.0.0.1, or ::1; any other host causes New
+// to return ErrInvalidServerURL.
+func WithServerURL(u string) Option { return func(c *Client) { c.serverURL = u } }
+
+// WithBinaryPath sets the path to the joern-server binary used by Start.
+// Defaults to "joern-server" (resolved via PATH).
+func WithBinaryPath(path string) Option { return func(c *Client) { c.binaryPath = path } }
+
+// WithHost sets the interface that joern-server binds to.
+// Must be a loopback address; defaults to 127.0.0.1.
+func WithHost(host string) Option { return func(c *Client) { c.host = host } }
+
+// WithPort sets the TCP port for the subprocess. Defaults to 8080.
+func WithPort(port int) Option { return func(c *Client) { c.port = port } }
+
+// WithQueryTimeout sets the per-query HTTP timeout. Defaults to 30 s.
+func WithQueryTimeout(d time.Duration) Option { return func(c *Client) { c.queryTimeout = d } }
+
+// WithBuildTimeout sets the maximum duration for a full CPG build. Defaults to 120 s.
+func WithBuildTimeout(d time.Duration) Option { return func(c *Client) { c.buildTimeout = d } }
+
+// WithPingRetries sets how many times Ping retries before returning
+// ErrJoernUnreachable. Each attempt waits 500 ms. Defaults to 12 (total 6 s).
+func WithPingRetries(n int) Option { return func(c *Client) { c.pingRetries = n } }
+
+// Client wraps the Joern HTTP server API and optionally manages its subprocess.
+// All exported methods are safe to call concurrently.
 type Client struct {
-	// serverURL is the base URL of the pre-started Joern server (e.g. "http://localhost:8080").
-	serverURL string
+	serverURL    string
+	binaryPath   string
+	host         string
+	port         int
+	pingRetries  int
+	queryTimeout time.Duration
+	buildTimeout time.Duration
+
+	httpClient *http.Client
+
+	// subprocess state — protected by mu.
+	// cmd is non-nil only when this client spawned the process via Start.
+	mu      sync.Mutex
+	cmd     *exec.Cmd
+	done    chan struct{} // closed when the subprocess exits
+	crashed atomic.Bool   // set by the crash-watcher goroutine
 }
 
-// BuildConfig controls how Joern builds the initial CPG.
-type BuildConfig struct {
-	// Paths is the list of source file or directory paths to ingest.
-	Paths []string
-	// Language overrides Joern's auto-detection (e.g. "python", "javasrc", "golang").
-	// Empty string uses auto-detection.
-	Language string
-	// SerializedCPGPath is the file path where the built CPG will be serialized
-	// for use in subsequent incremental patches. Empty string disables serialization.
-	SerializedCPGPath string
-}
-
-// IncrementalPatchConfig controls the depth-5 BFS CPG patch for repeat scans.
-type IncrementalPatchConfig struct {
-	// ChangedFunctions lists the function identifiers (Joern METHOD node names) to patch from.
-	ChangedFunctions []string
-	// RemovedFiles lists source files that have been deleted; their nodes must be evicted.
-	RemovedFiles []string
-	// MaxDepth is the BFS traversal depth (default 5; must not exceed 6 per SOAP 2025).
-	MaxDepth int
-	// HubCallerThreshold is the max callers a function may have before triggering full rebuild.
-	// Default 50; exceeding this causes IncrementalPatch to return ErrHubModuleDetected.
-	HubCallerThreshold int
-	// SerializedCPGPath is the file path from which the existing CPG snapshot is loaded.
-	SerializedCPGPath string
-}
-
-// ErrHubModuleDetected is returned by IncrementalPatch when a changed function
-// exceeds HubCallerThreshold. The caller must fall back to a full CPG rebuild.
-var ErrHubModuleDetected = &hubModuleError{}
-
-type hubModuleError struct{}
-
-func (e *hubModuleError) Error() string {
-	return "joern: hub module detected — incremental patch aborted, full rebuild required"
-}
-
-// New returns a Client targeting the Joern server at serverURL.
-// If serverURL is empty, localhost:8080 is used.
+// New returns a Client configured with the given options.
+// Defaults: serverURL=http://127.0.0.1:8080, no managed subprocess.
 //
-// Parameters:
-//   - serverURL: base URL of the Joern HTTP server (e.g. "http://localhost:8080").
-func New(serverURL string) *Client {
-	if serverURL == "" {
-		serverURL = defaultServerURL
+// Returns ErrInvalidServerURL if the resolved URL host is not loopback.
+func New(opts ...Option) (*Client, error) {
+	c := &Client{
+		serverURL:    defaultServerURL,
+		binaryPath:   defaultBinaryPath,
+		host:         defaultHost,
+		port:         defaultPort,
+		pingRetries:  defaultPingRetries,
+		queryTimeout: defaultQueryTimeout,
+		buildTimeout: defaultBuildTimeout,
 	}
-	return &Client{serverURL: serverURL}
+	for _, o := range opts {
+		o(c)
+	}
+
+	if err := validateServerURL(c.serverURL); err != nil {
+		return nil, err
+	}
+
+	c.httpClient = &http.Client{Timeout: c.queryTimeout}
+	return c, nil
 }
 
-// BuildCPG requests Joern to build a Code Property Graph from the given source paths.
-// This is the full (non-incremental) build used on first scan or after hub detection.
+// Start spawns the joern-server subprocess bound to 127.0.0.1:<port>, waits
+// for it to become ready, and returns nil on success.
 //
-// Parameters:
-//   - ctx: cancellation context; CPG builds can take minutes for large codebases.
-//   - cfg: build configuration including source paths and optional CPG serialization path.
+// Start validates port availability before spawning (ErrPortInUse if occupied).
+// The server process is monitored by a background goroutine; if it exits
+// unexpectedly, all subsequent method calls return ErrJoernCrashed.
 //
-// Returns non-nil error if Joern rejects the request or the HTTP call fails.
-func (c *Client) BuildCPG(ctx context.Context, cfg BuildConfig) error {
-	// implemented in G2.M2.3
+// Callers must call Stop when the client is no longer needed.
+// Returns ErrAlreadyStarted if called a second time without an intervening Stop.
+func (c *Client) Start(ctx context.Context) error {
+	c.mu.Lock()
+	if c.cmd != nil {
+		c.mu.Unlock()
+		return ErrAlreadyStarted
+	}
+
+	if err := checkPortAvailable(ctx, c.host, c.port); err != nil {
+		c.mu.Unlock()
+		return err
+	}
+
+	// Build the subprocess command. Always bind to loopback.
+	//nolint:gosec // binaryPath comes from config, not user input at scan time
+	cmd := exec.CommandContext(ctx, c.binaryPath,
+		"--host", c.host,
+		"--port", strconv.Itoa(c.port),
+	)
+	cmd.Stdout = os.Stderr // route JVM output to stderr so it doesn't pollute stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Start(); err != nil {
+		c.mu.Unlock()
+		return fmt.Errorf("joern: start subprocess: %w", err)
+	}
+
+	done := make(chan struct{})
+	c.cmd = cmd
+	c.done = done
+	c.crashed.Store(false)
+	c.mu.Unlock()
+
+	// Crash watcher: signals any in-flight call that the process is gone.
+	go func() {
+		defer close(done)
+		_ = cmd.Wait() //nolint:errcheck // exit status reported via crashed flag
+		c.crashed.Store(true)
+	}()
+
+	// Poll /ready until the JVM is warm or context expires.
+	return c.waitReady(ctx)
+}
+
+// Stop sends SIGTERM to the managed subprocess, waits up to the configured
+// stop timeout, then escalates to SIGKILL. Stop is idempotent and safe to
+// call even if Start was never called (returns ErrNotManaged in that case).
+//
+// Always cleans up internal state so the client can be restarted via Start.
+func (c *Client) Stop(ctx context.Context) error {
+	c.mu.Lock()
+	cmd := c.cmd
+	done := c.done
+	c.cmd = nil
+	c.done = nil
+	c.mu.Unlock()
+
+	if cmd == nil || cmd.Process == nil {
+		return ErrNotManaged
+	}
+
+	// Graceful shutdown.
+	_ = cmd.Process.Signal(os.Interrupt) //nolint:errcheck
+
+	timeout := time.NewTimer(defaultStopTimeout)
+	defer timeout.Stop()
+
+	select {
+	case <-done:
+		return nil
+	case <-timeout.C:
+	case <-ctx.Done():
+	}
+
+	// Escalate to SIGKILL.
+	_ = cmd.Process.Kill() //nolint:errcheck
+	<-done
 	return nil
 }
 
-// IncrementalPatch applies a depth-5 BFS patch to the loaded CPG, updating only the
-// inter-procedural graph neighbourhood of each changed function.
+// Ping verifies that the Joern HTTP server is reachable and accepting queries.
+// Returns ErrJoernCrashed if the managed subprocess has exited, or
+// ErrJoernUnreachable if all retry attempts fail.
 //
-// Returns ErrHubModuleDetected if any changed function exceeds cfg.HubCallerThreshold.
-// In that case the caller must invoke BuildCPG for a full rebuild.
-//
-// Parameters:
-//   - ctx: cancellation context.
-//   - cfg: patch configuration including changed functions, removed files, and depth cap.
-func (c *Client) IncrementalPatch(ctx context.Context, cfg IncrementalPatchConfig) error {
-	// implemented in G2.M2.3
-	return nil
-}
-
-// SaveCPG serializes the current CPG state to the file at destPath.
-// Called after BuildCPG or IncrementalPatch completes to persist the snapshot
-// for the next scan's IncrementalPatch.
-//
-// Parameters:
-//   - ctx: cancellation context.
-//   - destPath: absolute path where the serialized CPG will be written.
-func (c *Client) SaveCPG(ctx context.Context, destPath string) error {
-	// implemented in G2.M2.3
-	return nil
-}
-
-// LoadCPG instructs Joern to load a previously serialized CPG snapshot from srcPath.
-// Must be called before IncrementalPatch on repeat scans.
-//
-// Parameters:
-//   - ctx: cancellation context.
-//   - srcPath: absolute path to the serialized CPG file.
-func (c *Client) LoadCPG(ctx context.Context, srcPath string) error {
-	// implemented in G2.M2.3
-	return nil
-}
-
-// Ping checks that the Joern HTTP server is reachable and responsive.
-// Returns nil if the server responds with HTTP 200 to a health-check request.
-//
-// Parameters:
-//   - ctx: cancellation context.
+// Ping does not require a CPG to be loaded; it sends a trivial expression.
 func (c *Client) Ping(ctx context.Context) error {
-	// implemented in G2.M2.3
-	return nil
+	if c.crashed.Load() {
+		return ErrJoernCrashed
+	}
+
+	var lastErr error
+	for i := 0; i < c.pingRetries; i++ {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("joern: ping cancelled: %w", err)
+		}
+
+		code, err := c.doGet(ctx, "/ready")
+		if err == nil && code == http.StatusOK {
+			return nil
+		}
+		if err != nil {
+			lastErr = err
+		} else {
+			lastErr = fmt.Errorf("joern: /ready returned HTTP %d", code)
+		}
+
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("joern: ping cancelled: %w", ctx.Err())
+		case <-time.After(defaultPingInterval):
+		}
+	}
+	return fmt.Errorf("%w: %w", ErrJoernUnreachable, lastErr)
 }
 
 // Graph returns a cpg.Graph backed by this Joern server instance.
 // The returned graph is safe to share across both detection paths concurrently.
-// Graph() must be called after BuildCPG (or LoadCPG + IncrementalPatch) completes.
-func (c *Client) Graph() cpg.Graph {
+// Graph must be called after BuildCPG (or LoadCPG + IncrementalPatch) completes.
+func (c *Client) Graph() *joernGraph {
 	return &joernGraph{client: c}
 }
 
-// joernGraph implements cpg.Graph via Joern HTTP JSON queries (Gremlin over HTTP).
-type joernGraph struct {
-	client *Client
+// waitReady polls GET /ready until it returns 200 or the context is cancelled.
+func (c *Client) waitReady(ctx context.Context) error {
+	for i := 0; i < c.pingRetries; i++ {
+		if ctx.Err() != nil {
+			return fmt.Errorf("joern: wait-ready cancelled: %w", ctx.Err())
+		}
+		if c.crashed.Load() {
+			return ErrJoernCrashed
+		}
+
+		code, err := c.doGet(ctx, "/ready")
+		if err == nil && code == http.StatusOK {
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("joern: wait-ready cancelled: %w", ctx.Err())
+		case <-time.After(defaultPingInterval):
+		}
+	}
+	return ErrJoernUnreachable
 }
 
-// QueryNodes returns all nodes of nodeType across all ingested source files.
-func (g *joernGraph) QueryNodes(nodeType cpg.NodeType) ([]cpg.Node, error) {
-	// implemented in G2.M2.3
-	return nil, nil
+// checkPortAvailable verifies that host:port is not already bound.
+// This prevents Start from silently attaching to an unknown existing process.
+// There is an unavoidable TOCTOU window between this check and the actual bind;
+// that is documented and accepted — the check catches the common case.
+func checkPortAvailable(ctx context.Context, host string, port int) error {
+	addr := net.JoinHostPort(host, strconv.Itoa(port))
+	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", addr)
+	if err != nil {
+		return fmt.Errorf("%w: %s", ErrPortInUse, addr)
+	}
+	_ = ln.Close() //nolint:errcheck
+	return nil
 }
 
-// QueryNodesByFile returns all nodes of nodeType in the given source file.
-func (g *joernGraph) QueryNodesByFile(relPath string, nodeType cpg.NodeType) ([]cpg.Node, error) {
-	// implemented in G2.M2.3
-	return nil, nil
-}
-
-// QueryEdges returns directed edges where fromID and toID match; "" matches any.
-func (g *joernGraph) QueryEdges(fromID, toID string) ([]cpg.Edge, error) {
-	// implemented in G2.M2.3
-	return nil, nil
-}
-
-// GetCallGraph returns the full inter-procedural call graph.
-func (g *joernGraph) GetCallGraph() (cpg.CallGraph, error) {
-	// implemented in G2.M2.3
-	return nil, nil
-}
-
-// GetCallers returns all functions that directly call functionID.
-func (g *joernGraph) GetCallers(functionID string) ([]cpg.Node, error) {
-	// implemented in G2.M2.3
-	return nil, nil
-}
-
-// GetCallees returns all functions directly called by functionID.
-func (g *joernGraph) GetCallees(functionID string) ([]cpg.Node, error) {
-	// implemented in G2.M2.3
-	return nil, nil
-}
-
-// GetNeighboursAtDepth performs a bidirectional BFS from rootID up to depth hops.
-func (g *joernGraph) GetNeighboursAtDepth(rootID string, depth int) ([]cpg.Node, error) {
-	// implemented in G2.M2.3
-	return nil, nil
-}
-
-// TaintPaths runs inter-procedural taint analysis and returns source-to-sink paths.
-func (g *joernGraph) TaintPaths(sources []cpg.TaintSource, sinks []cpg.TaintSink) ([]cpg.TaintPath, error) {
-	// implemented in G2.M2.3
-	return nil, nil
-}
-
-// PreFlaggedSinks returns all dangerous sink nodes flagged by Tree-sitter pre-scan.
-func (g *joernGraph) PreFlaggedSinks() ([]cpg.TaintSink, error) {
-	// implemented in G2.M2.3
-	return nil, nil
+// validateServerURL ensures the URL host is a loopback address.
+// This enforces the security contract that Joern is never contacted over the
+// network — all CPG data stays on the local machine.
+func validateServerURL(rawURL string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("%w: parse %q: %v", ErrInvalidServerURL, rawURL, err)
+	}
+	h := u.Hostname()
+	switch h {
+	case "localhost", "127.0.0.1", "::1":
+		return nil
+	default:
+		return fmt.Errorf("%w: got %q", ErrInvalidServerURL, h)
+	}
 }

@@ -46,8 +46,16 @@ type ScanConfig struct {
 	//   "Full"     — entire codebase (no scope limit).
 	ScanMode string
 
-	// JoernURL is the base URL of the pre-started Joern HTTP API server.
+	// JoernURL is the base URL of the Joern HTTP API server.
+	// Ignored when JoernBin is non-empty (the client derives the URL from
+	// JoernHost and JoernPort instead).
 	JoernURL string
+
+	// JoernBin is the path to the joern-server binary. When non-empty, the
+	// pipeline spawns and manages the Joern subprocess itself. When empty,
+	// the pipeline connects to the externally managed server at JoernURL.
+	// Example: "/usr/local/bin/joern-server" or "joern-server" (resolved via PATH).
+	JoernBin string
 
 	// OllamaURL is the base URL of the Ollama inference server.
 	OllamaURL string
