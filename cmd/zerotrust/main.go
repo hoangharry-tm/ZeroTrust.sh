@@ -162,29 +162,24 @@ func runContainer(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("resolve target path: %w", err)
 	}
 
-	if _, err := exec.LookPath("docker"); err != nil {
-		return fmt.Errorf("docker not found on PATH — install Docker Desktop (macOS) or docker.io (Linux)\n  or use --native to run with local dependencies")
-	}
+	ollamaFound := checkDeps()
 
 	pull, _ := flags.GetBool("pull")
 	if pull {
 		img, _ := flags.GetString("engine-image")
-		fmt.Fprintf(os.Stderr, "[zerotrust] pulling engine image: %s\n", img)
+		fmt.Fprintf(os.Stderr, "  Pulling engine image  %s\n", img)
 		pullCmd := exec.Command("docker", "pull", img)
 		pullCmd.Stdout = os.Stderr
 		pullCmd.Stderr = os.Stderr
 		if err := pullCmd.Run(); err != nil {
-			fmt.Fprintf(os.Stderr, "[zerotrust] pull failed (using cached image): %v\n", err)
+			fmt.Fprintf(os.Stderr, "  Pull failed — using cached image (%v)\n", err)
 		}
+		fmt.Fprintln(os.Stderr)
 	}
 
-	// Detect Ollama on the host for GPU passthrough
 	ollamaURL := ""
-	if ollamaReachable(ollamaHostURL) {
+	if ollamaFound {
 		ollamaURL = "http://host.docker.internal:11434"
-		fmt.Fprintf(os.Stderr, "[zerotrust] detected Ollama on host → GPU passthrough enabled\n")
-	} else {
-		fmt.Fprintf(os.Stderr, "[zerotrust] no Ollama detected — LLM inference will use CPU (slower)\n")
 	}
 
 	ztHome := filepath.Join(os.Getenv("HOME"), scansDBPath)

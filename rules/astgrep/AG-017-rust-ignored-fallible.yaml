@@ -1,0 +1,28 @@
+# AI-specific Unique Rule
+# Why unique: Clippy warns about `let _ = <expr>` for `#[must_use]` types but
+# doesn't specifically flag this pattern inside security-related functions.
+# AI agents use `let _ =` as a "quick fix" for unused-result warnings, silently
+# dropping authentication errors, crypto failures, or validation rejections.
+#
+# Attack scenario:
+#   AI agent writes `let _ = verify_token(token);` discarding the Result.
+#   The function continues as if authentication succeeded.
+id: AG-017-rust-ignored-fallible
+language: rust
+message: |
+  Result of a fallible operation is discarded with `let _ =` in a function
+  related to authentication, validation, or security. AI coding agents
+  commonly use this pattern to silence compiler warnings, but it silently
+  drops errors that should be handled.
+  Fix: handle the Result with `?`, `match`, or `.ok_or()` instead of discarding.
+severity: error
+metadata:
+  cwe: "CWE-391: Unchecked Error Condition"
+  owasp: "A04:2021 - Insecure Design"
+  category: cheat-detection
+  ai_specific: true
+  confidence: HIGH
+  rule_version: "1.0"
+rule:
+  any:
+    - pattern: let _ = $EXPR;

@@ -23,6 +23,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os/exec"
 	"strings"
 
@@ -82,15 +83,21 @@ type Runner struct {
 	binaryPath string
 	// rulesDir is the directory containing the YAML rule files for OpenGrep.
 	rulesDir string
+	logger   *slog.Logger
 }
 
 // New returns a Runner using the OpenGrep binary at binaryPath and rules at rulesDir.
+// If logger is nil, slog.Default() is used.
 //
 // Parameters:
 //   - binaryPath: path to the opengrep binary (e.g. "opengrep" for PATH lookup).
 //   - rulesDir: path to the rules/ directory (e.g. "rules/").
-func New(binaryPath, rulesDir string) *Runner {
-	return &Runner{binaryPath: binaryPath, rulesDir: rulesDir}
+//   - logger: structured logger for per-file parse errors.
+func New(binaryPath, rulesDir string, logger *slog.Logger) *Runner {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &Runner{binaryPath: binaryPath, rulesDir: rulesDir, logger: logger}
 }
 
 // Scan runs OpenGrep against files and returns normalised findings.
@@ -113,6 +120,14 @@ func (r *Runner) Scan(ctx context.Context, files []string) ([]finding.Finding, e
 	out, err := r.run(ctx, files)
 	if err != nil {
 		return nil, err
+	}
+	for _, e := range out.Errors {
+		r.logger.Warn("opengrep: parse error, file excluded from results",
+			"component", "opengrep",
+			"path", e.Path,
+			"code", e.Code,
+			"message", e.Message,
+		)
 	}
 	findings := make([]finding.Finding, 0, len(out.Results))
 	for _, raw := range out.Results {

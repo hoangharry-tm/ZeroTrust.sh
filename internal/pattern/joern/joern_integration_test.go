@@ -20,7 +20,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -310,7 +309,7 @@ func TestIntegration_TaintFlowsQuery(t *testing.T) {
 		t.Fatal("getUser method not found")
 	}
 
-	q := fmt.Sprintf(queryTaintFlows, getUserID)
+	q := queryTaintFlows(getUserID)
 	raw, err := c.doQuery(ctx, q)
 	if err != nil {
 		t.Fatalf("queryTaintFlows: %v", err)

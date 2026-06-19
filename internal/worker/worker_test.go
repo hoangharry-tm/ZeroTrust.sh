@@ -37,7 +37,7 @@ for line in sys.stdin:
         break
     print(json.dumps({"id": msg["id"], "status": "ok", "result": {}}), flush=True)
 `
-	m := newManager([]string{"python3", "-c", script})
+	m := newManager([]string{"python3", "-c", script}, nil)
 	if err := m.spawn(); err != nil {
 		t.Fatalf("spawn: %v", err)
 	}
@@ -63,7 +63,7 @@ func TestPingDeadWorkerReturnsError(t *testing.T) {
 	if !python3Available() {
 		t.Skip("python3 not in PATH")
 	}
-	m := newManager([]string{"python3", "-c", "import sys; sys.exit(1)"})
+	m := newManager([]string{"python3", "-c", "import sys; sys.exit(1)"}, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	// spawn will succeed (process starts), but ping should fail because
@@ -133,7 +133,7 @@ func TestCallDeadWorkerReturnsErrWorkerDead(t *testing.T) {
 	if !python3Available() {
 		t.Skip("python3 not in PATH")
 	}
-	m := newManager([]string{"python3", "-c", ""}) // immediately exits
+	m := newManager([]string{"python3", "-c", ""}, nil) // immediately exits
 	_ = m.spawn()
 	// Wait for the reader goroutine to detect the exit and handle death.
 	time.Sleep(200 * time.Millisecond)
@@ -185,7 +185,7 @@ func TestWriteRequestIDEchoedInResponse(t *testing.T) {
 }
 
 func TestIDsAreMonotonicallyIncreasing(t *testing.T) {
-	m := newManager(nil)
+	m := newManager(nil, nil)
 	id1 := m.newID()
 	id2 := m.newID()
 	id3 := m.newID()

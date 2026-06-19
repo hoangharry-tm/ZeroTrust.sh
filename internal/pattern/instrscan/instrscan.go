@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log/slog"
 	"path/filepath"
 	"strings"
 )
@@ -43,10 +44,18 @@ type Finding struct {
 }
 
 // Scanner walks an fs.FS and detects prompt injection signals in AI agent instruction files.
-type Scanner struct{}
+type Scanner struct {
+	logger *slog.Logger
+}
 
 // New returns a Scanner ready to walk an fs.FS.
-func New() *Scanner { return &Scanner{} }
+// If logger is nil, slog.Default() is used.
+func New(logger *slog.Logger) *Scanner {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &Scanner{logger: logger}
+}
 
 var unicodeDangerChars = []struct {
 	rune   rune
@@ -293,6 +302,11 @@ func (s *Scanner) Scan(fsys fs.FS) ([]Finding, error) {
 		if isMCPConfig(path) {
 			f, err := fsys.Open(path)
 			if err != nil {
+				s.logger.Warn("instrscan: cannot open MCP config, skipped",
+					"component", "instrscan",
+					"path", path,
+					"err", err,
+				)
 				return nil
 			}
 			defer f.Close()
@@ -303,11 +317,21 @@ func (s *Scanner) Scan(fsys fs.FS) ([]Finding, error) {
 		if isDependencyFile(path) {
 			f, err := fsys.Open(path)
 			if err != nil {
+				s.logger.Warn("instrscan: cannot open dependency file, skipped",
+					"component", "instrscan",
+					"path", path,
+					"err", err,
+				)
 				return nil
 			}
 			raw, err := io.ReadAll(f)
 			f.Close()
 			if err != nil {
+				s.logger.Warn("instrscan: cannot read dependency file, skipped",
+					"component", "instrscan",
+					"path", path,
+					"err", err,
+				)
 				return nil
 			}
 			df := scanDependencyFile(path, raw)
@@ -319,11 +343,21 @@ func (s *Scanner) Scan(fsys fs.FS) ([]Finding, error) {
 		}
 		f, err := fsys.Open(path)
 		if err != nil {
+			s.logger.Warn("instrscan: cannot open instruction file, skipped",
+				"component", "instrscan",
+				"path", path,
+				"err", err,
+			)
 			return nil
 		}
 		raw, err := io.ReadAll(f)
 		f.Close()
 		if err != nil {
+			s.logger.Warn("instrscan: cannot read instruction file, skipped",
+				"component", "instrscan",
+				"path", path,
+				"err", err,
+			)
 			return nil
 		}
 		uf := scanUnicodeBytes(path, raw)

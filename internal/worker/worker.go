@@ -37,6 +37,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"sync"
@@ -173,6 +174,7 @@ type LLMScanPayload struct {
 type Manager struct {
 	seq      atomic.Uint64
 	args     []string // command + arguments, e.g. ["python3", "worker/main.py"]
+	logger   *slog.Logger
 	stopping atomic.Bool
 
 	// writeMu serialises stdin writes and guards the m.stdin field.
@@ -191,9 +193,14 @@ type Manager struct {
 
 // newManager returns an uninitialised Manager with the given spawn arguments.
 // Used by Start (production) and tests (inject a custom command).
-func newManager(args []string) *Manager {
+// If logger is nil, slog.Default() is used.
+func newManager(args []string, logger *slog.Logger) *Manager {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return &Manager{
 		args:    args,
+		logger:  logger,
 		pending: make(map[string]chan *Response),
 	}
 }
@@ -204,12 +211,13 @@ func newManager(args []string) *Manager {
 // Parameters:
 //   - ctx: cancellation context; if cancelled, the subprocess is killed.
 //   - workerPath: path to the worker entry point (e.g. "worker/main.py").
-func Start(ctx context.Context, workerPath string) (*Manager, error) {
+//   - logger: structured logger; nil defaults to slog.Default().
+func Start(ctx context.Context, workerPath string, logger *slog.Logger) (*Manager, error) {
 	py := os.Getenv("ZEROTRUST_PYTHON")
 	if py == "" {
 		py = "python3"
 	}
-	m := newManager([]string{py, workerPath})
+	m := newManager([]string{py, workerPath}, logger)
 	if err := m.spawn(); err != nil {
 		return nil, fmt.Errorf("worker: spawn: %w", err)
 	}
@@ -258,7 +266,11 @@ func (m *Manager) readLoop(stdout io.Reader, cmd *exec.Cmd) {
 	for scanner.Scan() {
 		var resp Response
 		if err := json.Unmarshal(scanner.Bytes(), &resp); err != nil {
-			continue // skip malformed line; don't abort
+			m.logger.Warn("worker: malformed NDJSON line, skipping",
+				"component", "worker",
+				"err", err,
+			)
+			continue
 		}
 		m.pendMu.Lock()
 		ch := m.pending[resp.ID]
@@ -289,10 +301,16 @@ func (m *Manager) handleDeath() {
 		// Check stopping inside the restart decision block to minimize the window
 		// where a concurrent Stop() could result in an orphaned process being spawned.
 		if !m.stopping.Load() {
+			m.logger.Error("python worker process exited unexpectedly, attempting restart",
+				"component", "worker",
+			)
 			if err := m.spawn(); err == nil {
 				pingCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 				defer cancel()
 				if err := m.Ping(pingCtx); err == nil {
+					m.logger.Info("python worker restarted successfully",
+						"component", "worker",
+					)
 					m.mu.Lock()
 					m.restarted = true
 					m.mu.Unlock()
@@ -305,6 +323,11 @@ func (m *Manager) handleDeath() {
 	}
 
 	// Restart failed, already restarted once, or deliberate Stop: mark dead.
+	if !m.stopping.Load() {
+		m.logger.Error("python worker restart failed; worker is permanently dead",
+			"component", "worker",
+		)
+	}
 	m.mu.Lock()
 	m.dead = true
 	m.mu.Unlock()

@@ -37,6 +37,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"golang.org/x/sync/errgroup"
@@ -113,19 +114,27 @@ type Result struct {
 type Gate struct {
 	w                   *worker.Manager
 	escalationThreshold float64
+	logger              *slog.Logger
 }
 
 // New returns a Gate with the default escalation threshold of 0.80.
 // In high-recall mode, only surfaces classified with confidence ≥ 0.80 as safe
 // exit Path B; everything else escalates to the LLM tier.
-func New(w *worker.Manager) *Gate {
-	return &Gate{w: w, escalationThreshold: 0.80}
+// If logger is nil, slog.Default() is used.
+func New(w *worker.Manager, logger *slog.Logger) *Gate {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &Gate{w: w, escalationThreshold: 0.80, logger: logger}
 }
 
 // NewWithThreshold returns a Gate with a custom escalation threshold.
-// Raise the threshold to reduce false negatives; lower it to reduce LLM cost.
-func NewWithThreshold(w *worker.Manager, threshold float64) *Gate {
-	return &Gate{w: w, escalationThreshold: threshold}
+// If logger is nil, slog.Default() is used.
+func NewWithThreshold(w *worker.Manager, threshold float64, logger *slog.Logger) *Gate {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &Gate{w: w, escalationThreshold: threshold, logger: logger}
 }
 
 // classifyBatch sends one classify request to the Python worker for a slice of
@@ -230,6 +239,11 @@ func (g *Gate) Classify(ctx context.Context, surfaces []enrichment.EnrichedSurfa
 	if err := g2.Wait(); err != nil {
 		// Non-fatal fallback: escalate all supported surfaces rather than aborting.
 		// A classifier failure should not kill the entire Path B pipeline.
+		g.logger.Warn("classifier: batch call failed, escalating all supported surfaces to LLM",
+			"component", "classifier",
+			"surfaces", len(supported),
+			"err", err,
+		)
 		for _, is := range supported {
 			results[is.originalIdx] = Result{
 				SurfaceID:      is.surface.ID,

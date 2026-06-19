@@ -1,0 +1,31 @@
+# AI-specific Unique Rule
+# Why unique: No existing C# analyzer flags `throw new NotImplementedException()`
+# specifically in security-related methods as an AI agent stub pattern.
+# StyleCop/roslyn-analyzers check for `CAXXXX` but don't treat security
+# context specially.
+#
+# Attack scenario:
+#   AI agent generates `public bool Authenticate(string token) { throw new
+#   NotImplementedException(); }`. The method compiles, passes code review
+#   (reviewer sees "it's not implemented yet, it'll be fixed"), but ships to
+#   production where it crashes on the first authentication request.
+id: AG-025-csharp-not-implemented-exception
+language: csharp
+message: |
+  `throw new NotImplementedException()` found in a method with a name
+  suggesting authentication, security, or validation logic. AI coding
+  agents leave these stubs intentionally — the method compiles but
+  provides no actual security.
+  Fix: implement the security logic before deploying.
+severity: error
+metadata:
+  cwe: "CWE-1061: Insufficient Encapsulation"
+  owasp: "A04:2021 - Insecure Design"
+  category: cheat-detection
+  ai_specific: true
+  confidence: HIGH
+  rule_version: "1.0"
+rule:
+  any:
+    - pattern: throw new NotImplementedException()
+    - pattern: throw new NotImplementedException($MSG)

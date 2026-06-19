@@ -19,7 +19,7 @@ func tempIndexer(t *testing.T) (*Indexer, string) {
 		t.Fatalf("sqlite.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	return New(db), dir
+	return New(db, nil), dir
 }
 
 // writeFile writes content to relPath inside root, creating subdirs as needed.

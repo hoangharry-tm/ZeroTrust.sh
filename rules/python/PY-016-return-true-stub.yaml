@@ -1,0 +1,31 @@
+# Variants covered: V1 V2
+# Detection strategy:
+#   Detects security-related functions that contain `return True` but no
+#   `return False`, strongly suggesting an AI-agent stub that always succeeds.
+rules:
+  - id: PY-016-return-true-stub
+    message: |
+      Security-related function contains `return True` but no `return False`,
+      suggesting an AI coding agent stub that always returns success.
+      AI agents commonly generate these stubs to make code compile and tests
+      pass, but they provide zero actual security.
+      Fix: implement the actual security check with proper branches.
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: "CWE-306: Missing Authentication for Critical Function"
+      owasp: "A01:2021 - Broken Access Control"
+      category: cheat-detection
+      ai_specific: true
+      confidence: HIGH
+      rule_version: "1.0"
+    patterns:
+      - pattern-inside: |
+          def $FUNC(...):
+            ...
+      - metavariable-pattern:
+          metavariable: $FUNC
+          patterns:
+            - pattern-regex: (?i).*(auth|validate|check|verify|login|permission|admin|token|session|authenticate|authorize|is_admin|has_role).*
+      - pattern: return True
+      - pattern-not: return False

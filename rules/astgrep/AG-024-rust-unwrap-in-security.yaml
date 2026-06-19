@@ -1,0 +1,35 @@
+# AI-specific Unique Rule
+# Why unique: Clippy warns about `unwrap_used` in general, but no existing
+# tool specifically aggregates `.unwrap()`, `.expect()`, `.unwrap_or()`,
+# `.unwrap_or_default()` usage in security-critical functions (auth, crypto,
+# validation) across the whole project as an AI-agent risk indicator.
+#
+# Attack scenario:
+#   AI agent writes `let token = jwt::decode(headers.get("Authorization"))?;`
+#   which should return a Result, but then calls `.unwrap()` on the decoded
+#   payload. If the token is malformed, the unwrap panics and crashes the
+#   service — a panic in auth processing means all subsequent requests fail.
+#   Worse: AI agents use `.unwrap()` inside security functions because it's
+#   the shortest path to compiling code.
+id: AG-024-rust-unwrap-in-security
+language: rust
+message: |
+  `.unwrap()`, `.expect()`, or similar panicking operation found in code
+  that handles authentication, authorization, encryption, or validation.
+  AI coding agents frequently use unwrap to bypass proper error handling,
+  creating panic-attack vectors in security-critical paths.
+  Fix: use `?`, pattern matching, or proper error propagation instead of
+  panicking operations in security code.
+severity: error
+metadata:
+  cwe: "CWE-754: Improper Check for Unusual or Exceptional Conditions"
+  owasp: "A04:2021 - Insecure Design"
+  category: cheat-detection
+  ai_specific: true
+  confidence: HIGH
+  rule_version: "1.0"
+rule:
+  any:
+    - pattern: $EXPR.unwrap()
+    - pattern: $EXPR.expect($MSG)
+    - pattern: $EXPR.unwrap_or($DEFAULT)

@@ -40,3 +40,4 @@ build/
 workspace/
 internal/pattern/joern/workspace/
 *.log
+/zerotrust

@@ -204,7 +204,7 @@ func TestApplyResults_MultipleFindings(t *testing.T) {
 
 func TestVerify_EmptyInput(t *testing.T) {
 	// Verify with an empty slice must return nil, nil without panicking.
-	v := verifier.New(nil) // nil Manager is safe when no findings are given
+	v := verifier.New(nil, nil) // nil Manager is safe when no findings are given
 
 	results, err := v.Verify(context.Background(), nil)
 
@@ -213,7 +213,7 @@ func TestVerify_EmptyInput(t *testing.T) {
 }
 
 func TestVerify_EmptySlice(t *testing.T) {
-	v := verifier.New(nil)
+	v := verifier.New(nil, nil)
 
 	results, err := v.Verify(context.Background(), []finding.Finding{})
 

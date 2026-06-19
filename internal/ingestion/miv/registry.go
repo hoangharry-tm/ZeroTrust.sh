@@ -60,7 +60,12 @@ func (v *Verifier) LoadRegistry(ctx context.Context) ([]RegistryEntry, error) {
 	// Best-effort: Rekor transparency proof (3-second window).
 	rekorCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	_ = v.verifyWithRekor(rekorCtx, regBytes) // failure is non-blocking
+	if rekorErr := v.verifyWithRekor(rekorCtx, regBytes); rekorErr != nil {
+		v.logger.Warn("miv: rekor transparency check failed (non-blocking; ECDSA gate passed)",
+			"component", "miv",
+			"err", rekorErr,
+		)
+	}
 
 	var reg registryFile
 	if err := json.Unmarshal(regBytes, &reg); err != nil {

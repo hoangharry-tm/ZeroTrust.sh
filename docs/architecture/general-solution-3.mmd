@@ -1,0 +1,52 @@
+flowchart LR
+    Input[/"Codebase Directory"/]
+
+    subgraph INGEST["Ingestion"]
+        Ingestion["Ingestion — detects which files changed since the last scan, expands the changed files with nearby files for context, and checks AI model signatures before allowing model calls"]
+    end
+
+    subgraph PA["Path A — Pattern Detection"]
+        PA_PS["Pattern Scanner — runs pattern-matching rules across all source code to find known vulnerability patterns and AI agent instruction file injections"]
+        PA_TA["Taint Analyzer — builds a code graph and traces how untrusted user input flows through the code to reach security-sensitive operations"]
+        PA_LV["LLM Verifier — uses a local language model to check whether findings from the pattern scanners are real vulnerabilities or false positives"]
+    end
+
+    subgraph PB["Path B — Semantic Detection with a Three-Tier Cost Funnel"]
+        direction TB
+        subgraph T1["Tier 1 — Surface Selection"]
+            PB_SS["Surface Selector — ranks code sections by risk level using the code graph, maps their call relationships, and discards about 95 percent of files that are unlikely to contain vulnerabilities"]
+        end
+
+        subgraph T2["Tier 2 — Classifier Chain"]
+            PB_CC["Classifier Chain — runs a local machine learning model to classify each code section as vulnerable or safe and generates a structured summary for each section"]
+        end
+
+        subgraph T3["Tier 3 — LLM Reasoning"]
+            PB_LR["LLM Reasoner — picks which code sections are worth the cost of a full language model analysis, runs a bounded reasoning loop to find subtle logic bugs, and stores findings across sections to detect cross-cutting attack patterns"]
+        end
+    end
+
+    Input --> Ingestion
+    Ingestion --> PA_PS
+    Ingestion --> PA_TA
+    Ingestion --> PB_SS
+    PA_TA --> PA_LV
+    PA_PS --> PA_LV
+    PA_TA -.-> PB_SS
+    PB_SS --> PB_CC
+    PB_CC -->|"uncertain cases"| PB_LR
+
+    PA_LV --> Dedup
+    PB_CC -->|"high-confidence findings"| Dedup
+    PB_LR --> Dedup
+
+    Dedup["Dedup and Report Generator — merges findings from all detection paths, removes duplicates, assigns a severity score, and generates an HTML report with suggested patches for each finding"]
+    Dedup --> FinalReport["HTML Report"]
+
+    %% Subgraph background styles — minimal tinted palette
+    style INGEST fill:#eef2ff,stroke:#c7d2fe
+    style PA fill:#f0f9ff,stroke:#bae6fd
+    style PB fill:#ecfdf5,stroke:#a7f3d0
+    style T1 fill:#f0fdf4,stroke:#bbf7d0
+    style T2 fill:#f0fdfa,stroke:#a7f3d0
+    style T3 fill:#ecfeff,stroke:#a5f3fc

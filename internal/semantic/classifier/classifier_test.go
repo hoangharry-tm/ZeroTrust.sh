@@ -68,21 +68,21 @@ func classifyResult(results []worker.ClassifySurfaceResult) json.RawMessage {
 // ---------------------------------------------------------------------------
 
 func TestClassify_EmptyInput(t *testing.T) {
-	g := classifier.New(nil)
+	g := classifier.New(nil, nil)
 	results, err := g.Classify(context.Background(), nil)
 	require.NoError(t, err)
 	assert.Nil(t, results)
 }
 
 func TestClassify_EmptySlice(t *testing.T) {
-	g := classifier.New(nil)
+	g := classifier.New(nil, nil)
 	results, err := g.Classify(context.Background(), []enrichment.EnrichedSurface{})
 	require.NoError(t, err)
 	assert.Nil(t, results)
 }
 
 func TestClassify_UnsupportedLanguageEscalatesImmediately(t *testing.T) {
-	g := classifier.New(nil) // nil worker — unsupported path never calls it
+	g := classifier.New(nil, nil) // nil worker — unsupported path never calls it
 	surfaces := []enrichment.EnrichedSurface{surface("s1", "rust", false)}
 
 	results, err := g.Classify(context.Background(), surfaces)
@@ -96,7 +96,7 @@ func TestClassify_UnsupportedLanguageEscalatesImmediately(t *testing.T) {
 }
 
 func TestClassify_UnsupportedLanguageCSharp(t *testing.T) {
-	g := classifier.New(nil)
+	g := classifier.New(nil, nil)
 	surfaces := []enrichment.EnrichedSurface{surface("s1", "csharp", false)}
 
 	results, err := g.Classify(context.Background(), surfaces)
@@ -112,7 +112,7 @@ func TestClassify_UnsupportedLanguageCSharp(t *testing.T) {
 func TestClassify_WorkerDeadFallsBackToUncertain(t *testing.T) {
 	// A nil worker.Manager causes Call() to panic/error; verify Gate handles it.
 	// We simulate this by using a dead worker (nil).
-	g := classifier.New(nil)
+	g := classifier.New(nil, nil)
 	surfaces := []enrichment.EnrichedSurface{surface("s1", "go", false)}
 
 	// Calling Classify with a nil worker on a supported language will attempt IPC
@@ -151,7 +151,7 @@ func TestLabelConstants(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestClassify_MixedBatch_UnsupportedGetImmediateResult(t *testing.T) {
-	g := classifier.New(nil)
+	g := classifier.New(nil, nil)
 	surfaces := []enrichment.EnrichedSurface{
 		surface("rust-1", "rust", false),
 		surface("go-2", "go", false), // supported — will hit dead worker → uncertain

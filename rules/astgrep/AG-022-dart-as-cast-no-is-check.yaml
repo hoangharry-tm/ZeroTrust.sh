@@ -1,0 +1,28 @@
+# AI-specific Unique Rule
+# Why unique: Dart's analyzer warns about `as` cast without `is` check in
+# general, but no tool specifically flags this pattern in auth/crypto/
+# validation code where a failed cast throws a runtime exception that
+# might be silently caught upstream, bypassing the intended security flow.
+#
+# Attack scenario:
+#   AI agent writes `final user = request.body as User;` without an
+#   `is` check. If body is not a User, a TypeError is thrown. If caught
+#   by a generic handler, the auth check is silently bypassed.
+id: AG-022-dart-as-cast-no-is-check
+language: dart
+message: |
+  Unsafe `as` cast in a security-related context without a preceding
+  `is` check. If the cast fails, a TypeError is thrown at runtime.
+  AI coding agents frequently use `as` casts as a shortcut, skipping
+  proper type validation.
+  Fix: use `is` check before `as` cast, or use pattern matching.
+severity: warning
+metadata:
+  cwe: "CWE-704: Incorrect Type Conversion or Cast"
+  owasp: "A04:2021 - Insecure Design"
+  category: cheat-detection
+  ai_specific: true
+  confidence: MEDIUM
+  rule_version: "1.0"
+rule:
+  pattern: $EXPR as $TYPE

@@ -23,6 +23,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -60,7 +61,9 @@ import (
 // pipeline holds all constructed stage instances for a single scan.
 // It is built by newPipeline and driven by run.
 type pipeline struct {
-	cfg ScanConfig
+	cfg     ScanConfig
+	logger  *slog.Logger
+	logFile *os.File
 
 	// ingestion
 	db       *sqlite.DB
@@ -109,32 +112,49 @@ func newPipeline(ctx context.Context, cfg ScanConfig) (*pipeline, error) {
 	}
 	cfg.Target = absTarget
 
+	// Structured logger — JSON lines written to build/zerotrust.log alongside the report.
+	logDir := filepath.Dir(cfg.ReportPath)
+	if err := os.MkdirAll(logDir, 0o750); err != nil {
+		return nil, fmt.Errorf("mkdir %s: %w", logDir, err)
+	}
+	logFile, err := os.OpenFile(filepath.Join(logDir, "zerotrust.log"),
+		os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("open log file: %w", err)
+	}
+	logger := slog.New(slog.NewJSONHandler(logFile, &slog.HandlerOptions{
+		Level: slog.LevelDebug,
+	}))
+
 	// SQLite state cache at ~/.zerotrust/scans.db
 	dbPath, err := stateDBPath()
 	if err != nil {
+		_ = logFile.Close()
 		return nil, err
 	}
 	db, err := sqlite.Open(dbPath)
 	if err != nil {
+		_ = logFile.Close()
 		return nil, fmt.Errorf("open state db: %w", err)
 	}
 
 	// Python worker — started once, shared by verifier, classifier, summarizer, llmscan.
-	wm, err := worker.Start(ctx, "worker/main.py")
+	wm, err := worker.Start(ctx, "worker/main.py", logger)
 	if err != nil {
+		_ = logFile.Close()
 		return nil, fmt.Errorf("start python worker: %w", err)
 	}
 
 	// Ingestion layer
-	indexer := diffindex.New(db)
-	mivVer := miv.New("", "")
+	indexer := diffindex.New(db, logger)
+	mivVer := miv.New("", "", logger)
 	ingester := ingestion.New(indexer, mivVer)
 
 	// Ollama client — model-agnostic; model name from config.
 	llmClient := ollama.New(cfg.OllamaURL, cfg.ModelName)
 
 	// Path A
-	og := opengrep.New("opengrep", "rules/")
+	og := opengrep.New("opengrep", "rules/", logger)
 	ag := astgrep.New("ast-grep", "rules/astgrep/")
 	joernOpts := []joern.Option{joern.WithServerURL(cfg.JoernURL)}
 	if cfg.JoernBin != "" {
@@ -144,14 +164,14 @@ func newPipeline(ctx context.Context, cfg ScanConfig) (*pipeline, error) {
 	if err != nil {
 		return nil, fmt.Errorf("configure joern: %w", err)
 	}
-	is := instrscan.New()
-	vf := verifier.New(wm)
+	is := instrscan.New(logger)
+	vf := verifier.New(wm, logger)
 
 	// Path B — graph shared from Joern after CPG build
 	graph := jc.GraphWithContext(ctx)
 	tgt := targeting.New(graph)
 	enr := enrichment.New(graph, "trivy", cfg.Offline)
-	clf := classifier.New(wm)
+	clf := classifier.New(wm, logger)
 	asm := assembler.New(graph, 3)
 	sum := summarizer.New(wm)
 	bud := budget.New(cfg.TokenCap, 0.4, 0.4, 0.2)
@@ -165,6 +185,8 @@ func newPipeline(ctx context.Context, cfg ScanConfig) (*pipeline, error) {
 
 	return &pipeline{
 		cfg:      cfg,
+		logger:   logger,
+		logFile:  logFile,
 		db:       db,
 		ingester: ingester,
 		llm:      llmClient,
@@ -193,6 +215,11 @@ func newPipeline(ctx context.Context, cfg ScanConfig) (*pipeline, error) {
 // The caller is responsible for closing events after run returns.
 func (p *pipeline) run(ctx context.Context, events chan<- output.Event) error {
 	start := time.Now()
+	p.logger.Info("scan started",
+		"component", "scan",
+		"target", p.cfg.Target,
+		"mode", p.cfg.ScanMode,
+	)
 
 	// ── 0. JOERN PRE-START ────────────────────────────────────────────────────
 	// Spawn the Joern subprocess before ingestion so the JVM is warm by the
@@ -259,7 +286,12 @@ func (p *pipeline) run(ctx context.Context, events chan<- output.Event) error {
 				if depth > 0 {
 					// First expand change set with one-hop CPG neighbours.
 					expanded, expandErr := diffindex.ExpandWithCPG(ctx, ingResult.ChangeSet, graph)
-					if expandErr == nil {
+					if expandErr != nil {
+						p.logger.Error("cpg scope expansion failed, using pre-expansion modules",
+							"component", "scan",
+							"err", expandErr,
+						)
+					} else {
 						modules = joern.DetectWorkingModules(expanded.Changed)
 					}
 					joern.ExpandModuleScope(modules, graph, depth)
@@ -376,10 +408,17 @@ func (p *pipeline) run(ctx context.Context, events chan<- output.Event) error {
 	for _, s := range scored {
 		bySeverity[s.SeverityLabel]++
 	}
+	elapsed := time.Since(start)
+	p.logger.Info("scan complete",
+		"component", "scan",
+		"findings", len(scored),
+		"elapsed", elapsed,
+		"report", p.cfg.ReportPath,
+	)
 	output.Emit(events, output.Event{
 		Kind: output.EventDone,
 		Done: &output.ScanSummary{
-			Elapsed:       time.Since(start),
+			Elapsed:       elapsed,
 			TotalFindings: len(scored),
 			BySeverity:    bySeverity,
 			ReportPath:    p.cfg.ReportPath,
@@ -607,6 +646,9 @@ func (p *pipeline) close() error {
 	}
 	if p.db != nil {
 		_ = p.db.Close() //nolint:errcheck // best-effort; SQLite WAL checkpoint on close
+	}
+	if p.logFile != nil {
+		_ = p.logFile.Close() //nolint:errcheck // best-effort log file close on scan end
 	}
 	return workerErr
 }

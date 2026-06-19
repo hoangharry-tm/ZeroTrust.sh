@@ -9,12 +9,6 @@ import (
 	"github.com/hoangharry-tm/zerotrust/pkg/cpg"
 )
 
-// maxTaintPaths caps the number of taint paths returned by TaintPaths.
-// CPGs for large codebases can produce thousands of paths; this cap prevents
-// unbounded memory growth. Paths are ranked by source-to-sink hop count before
-// truncation — shorter (more direct) paths are kept.
-const maxTaintPaths = 1_000
-
 // joernGraph implements cpg.Graph via Joern HTTP JSON queries (Joern DSL over HTTP).
 // ctx is the scan lifetime context propagated to every doQuery call so that
 // Ctrl-C / deadline cancellation aborts in-flight Joern queries promptly.
@@ -25,68 +19,11 @@ type joernGraph struct {
 	ctx    context.Context //nolint:containedctx // intentional: scan lifetime, not request lifetime
 }
 
-// ─── Joern DSL query templates ────────────────────────────────────────────────
-//
-// All queries construct JSON manually via Scala 3 string interpolation
-// (s"""...""") to avoid any library dependency (upickle/toJson were removed in
-// Joern 4.0.550; spray-json compat is untested). The final .toList.mkString("[",
-// ",", "]") builds a JSON array string that parseStdout unwraps correctly.
-//
-// Field names use lowercase keys ("id", "name", "file", "line") for consistent
-// mapping; Joern's own properties use uppercase (e.g. LINE_NUMBER) but the
-// interpolation renames them.
-//
-// Integration-test note: the exact format of these queries must be verified
-// against a live Joern instance (see joern_integration_test.go). The unit tests
-// use httptest.Server mocks and do not validate Joern DSL correctness.
-
-const (
-	queryMethods = `cpg.method.map(m => s"""{"id":"${m.id.toString}","name":"${m.name}","file":"${m.filename}","line":${m.lineNumber.getOrElse(0)}}""").toList.mkString("[", ",", "]")`
-
-	queryCalls = `cpg.call.map(c => s"""{"id":"${c.id.toString}","name":"${c.name}","file":"${c.location.filename}","line":${c.lineNumber.getOrElse(0)}}""").toList.mkString("[", ",", "]")`
-
-	queryParams = `cpg.parameter.map(p => s"""{"id":"${p.id.toString}","name":"${p.name}","file":"${p.location.filename}","line":${p.lineNumber.getOrElse(0)}}""").toList.mkString("[", ",", "]")`
-
-	queryIdentifiers = `cpg.identifier.map(i => s"""{"id":"${i.id.toString}","name":"${i.name}","file":"${i.location.filename}","line":${i.lineNumber.getOrElse(0)}}""").toList.mkString("[", ",", "]")`
-
-	queryLiterals = `cpg.literal.map(l => s"""{"id":"${l.id.toString}","name":"${l.code}","file":"${l.location.filename}","line":${l.lineNumber.getOrElse(0)}}""").toList.mkString("[", ",", "]")`
-
-	// queryMethodsByFile: %s = relative file path
-	queryMethodsByFile = `cpg.method.filename("%s").map(m => s"""{"id":"${m.id.toString}","name":"${m.name}","file":"${m.filename}","line":${m.lineNumber.getOrElse(0)}}""").toList.mkString("[", ",", "]")`
-
-	// queryCallsByFile: %s = relative file path
-	queryCallsByFile = `cpg.call.filename("%s").map(c => s"""{"id":"${c.id.toString}","name":"${c.name}","file":"${c.location.filename}","line":${c.lineNumber.getOrElse(0)}}""").toList.mkString("[", ",", "]")`
-
-	// queryEdgesFrom: %s = source node ID
-	// NOTE: limited to METHOD nodes in this version; CALL and other node types
-	// require a flatgraph API not exposed in the Joern DSL.
-	queryEdgesFrom = `cpg.method.filter(_.id == %[1]sL).out.map(n => s"""{"from":"%[1]s","to":"${n.id.toString}","type":"","label":""}""").toList.mkString("[", ",", "]")`
-
-	// queryEdgesTo: %s = destination node ID
-	// NOTE: limited to METHOD nodes in this version; see queryEdgesFrom.
-	queryEdgesTo = `cpg.method.filter(_.id == %[1]sL).in.map(n => s"""{"from":"${n.id.toString}","to":"%[1]s","type":"","label":""}""").toList.mkString("[", ",", "]")`
-
-	// queryAllEdges: returns all caller→callee edges for the full call graph.
-	// Uses cpg.call.flatMap(_.callee) to enumerate every call target (flatgraph's
-	// edges() API is not exposed to the Joern DSL in v4.0.550).
-	queryAllEdges = `cpg.call.flatMap(call => call.callee.map(callee => s"""{"from":"${call.id.toString}","to":"${callee.id.toString}","type":"CALL","label":""}""")).toList.mkString("[", ",", "]")`
-
-	// queryCallersByID: %s = method node ID
-	queryCallersByID = `cpg.method.id(%s).caller.map(m => s"""{"id":"${m.id.toString}","name":"${m.name}","file":"${m.filename}","line":${m.lineNumber.getOrElse(0)}}""").toList.mkString("[", ",", "]")`
-
-	// queryCalleesByID: %s = method node ID
-	queryCalleesByID = `cpg.method.id(%s).callee.map(m => s"""{"id":"${m.id.toString}","name":"${m.name}","file":"${m.filename}","line":${m.lineNumber.getOrElse(0)}}""").toList.mkString("[", ",", "]")`
-
-	// queryTaintFlows uses Joern's modern reachableByFlows API (not run.ossdataflow
-	// + cpg.finding, which produce no findings in Joern 4.0.550). It takes a method
-	// node ID (%[1]s) and returns all taint flows from parameters to calls within
-	// that method as a JSON array.
-	//
-	// The template uses try/catch (not scala.util.Try, which is not in scope) and
-	// avoids nested s"""...""" inside the outer interpolation by computing
-	// intermediateJson as a separate val.
-	queryTaintFlows = `cpg.method.filter(_.id == %[1]sL).call.reachableByFlows(cpg.method.filter(_.id == %[1]sL).parameter).map(p => {val elems = p.elements.toList; val first = elems.head; val last = elems.last; val intermediateJson = elems.slice(1, elems.size-1).map(n => s"""{"id":"${n.id.toString}","name":"${n match{case c:Call=>c.name;case mp:MethodParameterIn=>mp.name;case i:Identifier=>i.name;case _=>""}}","file":"${try{n.property("FILENAME").asInstanceOf[String]}catch{case _=>""}}","line":${try{n.property("LINE_NUMBER").asInstanceOf[Int]}catch{case _=>0}},"type":"${n.label}"}""").mkString(","); s"""{"source":{"id":"${first.id.toString}","name":"${first match{case mp:MethodParameterIn=>mp.name;case m:Method=>m.name;case c:Call=>c.name;case _=>""}}","file":"${try{first.property("FILENAME").asInstanceOf[String]}catch{case _=>""}}","line":${try{first.property("LINE_NUMBER").asInstanceOf[Int]}catch{case _=>0}},"type":"${first.label}"},"sink":{"id":"${last.id.toString}","name":"${last match{case c:Call=>c.name;case m:Method=>m.name;case _=>""}}","file":"${try{last.property("FILENAME").asInstanceOf[String]}catch{case _=>""}}","line":${try{last.property("LINE_NUMBER").asInstanceOf[Int]}catch{case _=>0}},"type":"${last.label}"},"intermediate":[${intermediateJson}]}"""}).toList.mkString("[", ",", "]")`
-)
+// maxTaintPaths caps the number of taint paths returned by TaintPaths.
+// CPGs for large codebases can produce thousands of paths; this cap prevents
+// unbounded memory growth. Paths are ranked by source-to-sink hop count before
+// truncation — shorter (more direct) paths are kept.
+const maxTaintPaths = 1_000
 
 // ─── wire types ───────────────────────────────────────────────────────────────
 
@@ -137,9 +74,9 @@ func (g *joernGraph) QueryNodesByFile(relPath string, nodeType cpg.NodeType) ([]
 	var q string
 	switch nodeType {
 	case cpg.NodeMethod:
-		q = fmt.Sprintf(queryMethodsByFile, escapeScalaString(relPath))
+		q = queryMethodsByFile(relPath)
 	default:
-		q = fmt.Sprintf(queryCallsByFile, escapeScalaString(relPath))
+		q = queryCallsByFile(relPath)
 	}
 	raw, err := g.client.doQuery(g.ctx,q)
 	if err != nil {
@@ -159,15 +96,15 @@ func (g *joernGraph) QueryEdges(fromID, toID string) ([]cpg.Edge, error) {
 	var err error
 	switch {
 	case fromID != "" && toID == "":
-		q := fmt.Sprintf(queryEdgesFrom, fromID)
-		raw, err = g.client.doQuery(g.ctx,q)
+		q := queryEdgesFrom(fromID)
+		raw, err = g.client.doQuery(g.ctx, q)
 	case toID != "" && fromID == "":
-		q := fmt.Sprintf(queryEdgesTo, toID)
-		raw, err = g.client.doQuery(g.ctx,q)
+		q := queryEdgesTo(toID)
+		raw, err = g.client.doQuery(g.ctx, q)
 	default:
 		// Both set: query from-side and filter by toID on the Go side.
-		q := fmt.Sprintf(queryEdgesFrom, fromID)
-		raw, err = g.client.doQuery(g.ctx,q)
+		q := queryEdgesFrom(fromID)
+		raw, err = g.client.doQuery(g.ctx, q)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("joern: QueryEdges: %w", err)
@@ -193,7 +130,7 @@ func (g *joernGraph) QueryEdges(fromID, toID string) ([]cpg.Edge, error) {
 
 // GetCallGraph returns the full inter-procedural call graph.
 func (g *joernGraph) GetCallGraph() (cpg.CallGraph, error) {
-	raw, err := g.client.doQuery(g.ctx,queryAllEdges)
+	raw, err := g.client.doQuery(g.ctx, queryAllEdges())
 	if err != nil {
 		return nil, fmt.Errorf("joern: GetCallGraph: %w", err)
 	}
@@ -216,8 +153,8 @@ func (g *joernGraph) GetCallers(functionID string) ([]cpg.Node, error) {
 	if functionID == "" {
 		return nil, fmt.Errorf("joern: GetCallers: functionID must not be empty")
 	}
-	q := fmt.Sprintf(queryCallersByID, functionID)
-	raw, err := g.client.doQuery(g.ctx,q)
+	q := queryCallersByID(functionID)
+	raw, err := g.client.doQuery(g.ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("joern: GetCallers(%s): %w", functionID, err)
 	}
@@ -230,8 +167,8 @@ func (g *joernGraph) GetCallees(functionID string) ([]cpg.Node, error) {
 	if functionID == "" {
 		return nil, fmt.Errorf("joern: GetCallees: functionID must not be empty")
 	}
-	q := fmt.Sprintf(queryCalleesByID, functionID)
-	raw, err := g.client.doQuery(g.ctx,q)
+	q := queryCalleesByID(functionID)
+	raw, err := g.client.doQuery(g.ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("joern: GetCallees(%s): %w", functionID, err)
 	}
@@ -320,7 +257,7 @@ func (g *joernGraph) TaintPaths(sources []cpg.TaintSource, sinks []cpg.TaintSink
 		return nil, fmt.Errorf("joern: TaintPaths: no node IDs provided in sources or sinks")
 	}
 
-	q := fmt.Sprintf(queryTaintFlows, methodID)
+	q := queryTaintFlows(methodID)
 	raw, err := g.client.doQuery(g.ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("joern: TaintPaths: reachableByFlows: %w", err)
@@ -421,21 +358,17 @@ func parseEdges(raw []byte) ([]cpg.Edge, error) {
 func nodeTypeQuery(nt cpg.NodeType) string {
 	switch nt {
 	case cpg.NodeMethod:
-		return queryMethods
+		return queryMethods()
 	case cpg.NodeCall:
-		return queryCalls
+		return queryCalls()
 	case cpg.NodeParameter:
-		return queryParams
+		return queryParams()
 	case cpg.NodeIdentifier:
-		return queryIdentifiers
+		return queryIdentifiers()
 	case cpg.NodeLiteral:
-		return queryLiterals
+		return queryLiterals()
 	default:
-		// Generic fallback: query by _label via Joern's graph API.
-		return fmt.Sprintf(
-			`cpg.graph.nodes.filter(_._label == %q).map(n => s"""{"id":"${n.id.toString}","name":"${Try(n.property("NAME").asInstanceOf[String]).getOrElse("")}","file":"${Try(n.property("FILENAME").asInstanceOf[String]).getOrElse("")}","line":${Try(n.property("LINE_NUMBER").asInstanceOf[Int]).getOrElse(0)}}""").toList.mkString("[", ",", "]")`,
-			string(nt),
-		)
+		return queryNodeTypeGeneric(string(nt))
 	}
 }
 

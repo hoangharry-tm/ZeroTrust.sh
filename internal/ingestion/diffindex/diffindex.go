@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -55,12 +56,17 @@ type ChangeSet struct {
 
 // Indexer computes the differential file set for each scan.
 type Indexer struct {
-	db *sqlite.DB
+	db     *sqlite.DB
+	logger *slog.Logger
 }
 
 // New returns an Indexer backed by db.
-func New(db *sqlite.DB) *Indexer {
-	return &Indexer{db: db}
+// If logger is nil, slog.Default() is used.
+func New(db *sqlite.DB, logger *slog.Logger) *Indexer {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &Indexer{db: db, logger: logger}
 }
 
 // Diff walks projectRoot, hashes every file, and compares against the cached
@@ -93,7 +99,12 @@ func (ix *Indexer) Diff(ctx context.Context, projectID, projectRoot string) (*Ch
 
 	err = filepath.WalkDir(projectRoot, func(absPath string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
-			return nil // skip unreadable entries; don't abort walk
+			ix.logger.Warn("diffindex: unreadable path, excluded from changeset",
+				"component", "diffindex",
+				"path", absPath,
+				"err", walkErr,
+			)
+			return nil
 		}
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -117,7 +128,12 @@ func (ix *Indexer) Diff(ctx context.Context, projectID, projectRoot string) (*Ch
 
 		hash, err := hashFile(absPath)
 		if err != nil {
-			return nil // skip unreadable files; don't abort walk
+			ix.logger.Warn("diffindex: file hash failed, excluded from changeset",
+				"component", "diffindex",
+				"path", absPath,
+				"err", err,
+			)
+			return nil
 		}
 
 		seen[relPath] = true

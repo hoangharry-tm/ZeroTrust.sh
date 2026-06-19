@@ -32,6 +32,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 
 	"golang.org/x/sync/errgroup"
 
@@ -85,21 +86,31 @@ type ASCConfig struct {
 
 // Verifier applies LLM reasoning to filter false positives from pattern findings.
 type Verifier struct {
-	w   *worker.Manager
-	asc ASCConfig
+	w      *worker.Manager
+	asc    ASCConfig
+	logger *slog.Logger
 }
 
 // New returns a Verifier backed by w with default ASC settings.
-func New(w *worker.Manager) *Verifier {
+// If logger is nil, slog.Default() is used.
+func New(w *worker.Manager, logger *slog.Logger) *Verifier {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return &Verifier{
-		w:   w,
-		asc: ASCConfig{MaxRounds: 2, ConfidenceThreshold: 0.70},
+		w:      w,
+		asc:    ASCConfig{MaxRounds: 2, ConfidenceThreshold: 0.70},
+		logger: logger,
 	}
 }
 
 // NewWithASC returns a Verifier with custom ASC configuration.
-func NewWithASC(w *worker.Manager, asc ASCConfig) *Verifier {
-	return &Verifier{w: w, asc: asc}
+// If logger is nil, slog.Default() is used.
+func NewWithASC(w *worker.Manager, asc ASCConfig, logger *slog.Logger) *Verifier {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &Verifier{w: w, asc: asc, logger: logger}
 }
 
 // Verify classifies each finding using CoD + SCoT reasoning via the Python
@@ -146,6 +157,11 @@ func (v *Verifier) Verify(ctx context.Context, findings []finding.Finding) ([]Re
 			}
 			if resp.Status == worker.ResponseError {
 				// Application-level error from the Python handler: degrade gracefully.
+				v.logger.Warn("verifier: handler error, degrading to fallback result",
+					"component", "verifier",
+					"finding_id", f.ID,
+					"worker_error", resp.Error,
+				)
 				results[i] = fallbackResult(f)
 				return nil
 			}
@@ -153,6 +169,11 @@ func (v *Verifier) Verify(ctx context.Context, findings []finding.Finding) ([]Re
 			var vr worker.VerifyResult
 			if err := json.Unmarshal(resp.Result, &vr); err != nil {
 				// Malformed response: degrade gracefully rather than abort.
+				v.logger.Warn("verifier: malformed worker response, degrading to fallback result",
+					"component", "verifier",
+					"finding_id", f.ID,
+					"err", err,
+				)
 				results[i] = fallbackResult(f)
 				return nil
 			}

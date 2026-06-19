@@ -30,6 +30,7 @@ import (
 	_ "embed"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -101,20 +102,27 @@ type Verifier struct {
 	publicKeyPath string // if empty, uses embeddedPublicKey
 	rekorURL      string // Sigstore Rekor base URL; injectable for tests
 	httpClient    *http.Client
+	logger        *slog.Logger
 }
 
 // New returns a Verifier using the bundled registry and public key at the given paths.
 // Passing empty strings causes the embedded defaults to be used.
+// If logger is nil, slog.Default() is used.
 //
 // Parameters:
 //   - registryPath: path to the signed model hash registry JSON file.
 //   - publicKeyPath: path to the cosign public key (.pub) for registry verification.
-func New(registryPath, publicKeyPath string) *Verifier {
+//   - logger: structured logger for verification lifecycle events.
+func New(registryPath, publicKeyPath string, logger *slog.Logger) *Verifier {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return &Verifier{
 		registryPath:  registryPath,
 		publicKeyPath: publicKeyPath,
 		rekorURL:      "https://rekor.sigstore.dev",
 		httpClient:    &http.Client{Timeout: 3 * time.Second}, // Rekor is best-effort; 3s matches spec
+		logger:        logger,
 	}
 }
 
@@ -135,6 +143,11 @@ func New(registryPath, publicKeyPath string) *Verifier {
 //   - *Result: the verification outcome with status, hashes, and message.
 //   - error: non-nil only for infrastructure failures (file unreadable, registry malformed).
 func (v *Verifier) Verify(ctx context.Context, modelPath string) (*Result, error) {
+	v.logger.Info("miv: verifying model integrity",
+		"component", "miv",
+		"path", modelPath,
+	)
+
 	// 1. Hash the GGUF file.
 	actualHash, err := hashGGUF(ctx, modelPath)
 	if err != nil {
@@ -174,6 +187,12 @@ func (v *Verifier) Verify(ctx context.Context, modelPath string) (*Result, error
 					Message:      "model integrity verified — hash matches signed registry",
 				}, nil
 			}
+			v.logger.Warn("miv: model hash mismatch — blocking all LLM calls",
+				"component", "miv",
+				"model_id", modelID,
+				"actual_hash", actualHash,
+				"expected_hash", e.SHA256,
+			)
 			return &Result{
 				Status:       StatusBlock,
 				ModelID:      modelID,

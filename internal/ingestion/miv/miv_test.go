@@ -80,7 +80,7 @@ func writeRegistry(t *testing.T, entries []RegistryEntry) (v *Verifier, dir stri
 	}))
 	t.Cleanup(rekorSrv.Close)
 
-	v = New(filepath.Join(dir, "registry.json"), filepath.Join(dir, "cosign.pub"))
+	v = New(filepath.Join(dir, "registry.json"), filepath.Join(dir, "cosign.pub"), nil)
 	v.rekorURL = rekorSrv.URL
 	return
 }
@@ -220,7 +220,7 @@ func TestLoadRegistryEmbeddedPasses(t *testing.T) {
 	}))
 	defer rekorSrv.Close()
 
-	v := New("", "")
+	v := New("", "", nil)
 	v.rekorURL = rekorSrv.URL
 
 	entries, err := v.LoadRegistry(context.Background())
@@ -243,7 +243,7 @@ func TestLoadRegistryTamperedSignatureFails(t *testing.T) {
 	}))
 	defer rekorSrv.Close()
 
-	v := New(filepath.Join(dir, "registry.json"), filepath.Join(dir, "cosign.pub"))
+	v := New(filepath.Join(dir, "registry.json"), filepath.Join(dir, "cosign.pub"), nil)
 	v.rekorURL = rekorSrv.URL
 
 	_, err := v.LoadRegistry(context.Background())
@@ -266,7 +266,7 @@ func TestLoadRegistryRekorHitDoesNotBlockOnECDSAFailure(t *testing.T) {
 	}))
 	defer rekorSrv.Close()
 
-	v := New(filepath.Join(dir, "registry.json"), filepath.Join(dir, "cosign.pub"))
+	v := New(filepath.Join(dir, "registry.json"), filepath.Join(dir, "cosign.pub"), nil)
 	v.rekorURL = rekorSrv.URL
 
 	_, err := v.LoadRegistry(context.Background())
@@ -371,7 +371,7 @@ func TestRekorTimeoutFallsBackToECDSA(t *testing.T) {
 		<-unblock // hang until the test signals we're done
 	}))
 
-	v := New(filepath.Join(dir, "registry.json"), filepath.Join(dir, "cosign.pub"))
+	v := New(filepath.Join(dir, "registry.json"), filepath.Join(dir, "cosign.pub"), nil)
 	v.rekorURL = rekorSrv.URL
 
 	// Even though Rekor hangs, ECDSA fallback should succeed.
