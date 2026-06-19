@@ -50,7 +50,7 @@ run the pipeline directly with local toolchain installations.`,
 
 	root.Flags().StringP("model", "m", "", "Ollama model name (e.g. llama3.2)")
 	root.Flags().BoolP("offline", "o", false, "disable all network requests (Trivy offline mode)")
-	root.Flags().String("output", "", "output mode: minimal|tree|tui (default: auto-detect from TTY)")
+	root.Flags().String("output", "", "output mode: minimal|web (default: web on TTY, minimal otherwise)")
 	root.Flags().String("report", "", "HTML report output path (default: build/report.html)")
 	root.Flags().String("project-id", "", "override project ID used for scan-state caching")
 	root.Flags().String("mode", "Default", "scan scope mode: Default | Thorough | Full")

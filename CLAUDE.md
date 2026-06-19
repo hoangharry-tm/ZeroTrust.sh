@@ -79,6 +79,13 @@ internal/semantic/      Path B
   llmscan/              LLM Semantic Scan
 internal/dedup/         Dedup + SSVC confidence scoring
 internal/report/        HTML report + patches
+internal/output/        Output system (Renderer interface, Event bus)
+  minimal.go            MinimalRenderer — plain text, CI/pipe safe
+  web/                  WebRenderer — live HTML dashboard via SSE
+    renderer.go         HTTP server, URL print, event fan-out
+    sse.go              SSE hub (register/broadcast/drain)
+    events.go           output.Event → named SSE event + HTML fragment
+    ui/index.html       Embedded dashboard (native EventSource, no framework)
 internal/worker/        Python worker manager (NDJSON IPC, restart)
 worker/main.py          NDJSON dispatcher
 worker/handlers/        llm_verify · classify · summarize · llm_scan

@@ -3,7 +3,7 @@ package output
 import "context"
 
 // Renderer consumes pipeline events and drives the CLI display for one scan.
-// Implementations: MinimalRenderer, TreeRenderer, TUIRenderer.
+// Implementations: MinimalRenderer, WebRenderer.
 type Renderer interface {
 	// Render blocks until ch is closed (scan complete) or ctx is cancelled.
 	Render(ctx context.Context, ch <-chan Event) error

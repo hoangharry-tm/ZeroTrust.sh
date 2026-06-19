@@ -1,0 +1,764 @@
+<!DOCTYPE html>
+<!--
+  ZeroTrust.sh — Live Dashboard
+  Go serves this file. The browser connects to /events (SSE) and receives
+  HTML fragments that are inserted directly via native EventSource API.
+  No external framework. Fully offline.
+-->
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>zerotrust — scanning</title>
+  <style>
+    /* ── reset & base ──────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:         #0d1117;
+      --bg-panel:   #161b22;
+      --bg-hover:   #1c2128;
+      --border:     #30363d;
+      --border-dim: #21262d;
+      --text:       #e6edf3;
+      --text-dim:   #8b949e;
+      --text-faint: #484f58;
+
+      --c-block:  #ff6b6b;
+      --c-high:   #f85149;
+      --c-medium: #d29922;
+      --c-low:    #8b949e;
+      --c-ai:     #a371f7;
+      --c-ok:     #3fb950;
+      --c-warn:   #d29922;
+      --c-stage:  #58a6ff;
+      --c-accent: #1f6feb;
+
+      --font-mono: "JetBrains Mono", "Fira Code", "Cascadia Code", ui-monospace, monospace;
+      --font-ui:   -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --radius:    6px;
+    }
+
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font-ui);
+      font-size: 13px;
+      line-height: 1.5;
+      overflow: hidden;
+    }
+
+    /* ── layout ────────────────────────────────────────────────── */
+    .app {
+      display: grid;
+      grid-template-rows: 42px 1fr 36px;
+      height: 100vh;
+    }
+
+    /* ── header ────────────────────────────────────────────────── */
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 16px;
+      background: var(--bg-panel);
+      border-bottom: 1px solid var(--border);
+      user-select: none;
+    }
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .logo {
+      font-family: var(--font-mono);
+      font-weight: 700;
+      font-size: 13px;
+      color: var(--text);
+      letter-spacing: -0.3px;
+    }
+    .logo span { color: var(--c-stage); }
+    .header-path {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--text-dim);
+      background: var(--border-dim);
+      padding: 2px 8px;
+      border-radius: var(--radius);
+    }
+    .header-badge {
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: var(--radius);
+      background: var(--border-dim);
+      color: var(--text-dim);
+    }
+    .status-dot {
+      display: inline-block;
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: var(--c-ok);
+      margin-right: 5px;
+      animation: pulse 1.4s ease-in-out infinite;
+    }
+    .status-dot.done { background: var(--c-ok); animation: none; }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0.3; }
+    }
+    .header-right {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--text-dim);
+    }
+    .scan-status { color: var(--c-ok); }
+
+    /* ── main content: three panels ────────────────────────────── */
+    .content {
+      display: flex;
+      overflow: hidden;
+    }
+
+    /* ── panel ─────────────────────────────────────────────────── */
+    .panel {
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      min-width: 160px;
+    }
+    .panel-progress  { flex: 0 0 280px; border-right: 1px solid var(--border); }
+    .panel-findings  { flex: 1 1 0; border-right: 1px solid var(--border); }
+    .panel-logs      { flex: 0 0 320px; }
+
+    .panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 14px;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg-panel);
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+      color: var(--text-dim);
+      cursor: pointer;
+      user-select: none;
+      flex-shrink: 0;
+    }
+    .panel-header:hover { background: var(--bg-hover); }
+    .panel-header .count {
+      font-weight: 400;
+      font-family: var(--font-mono);
+      color: var(--text-faint);
+    }
+    .collapse-icon { color: var(--text-faint); font-size: 10px; transition: transform 0.15s; }
+    .panel.collapsed .collapse-icon { transform: rotate(-90deg); }
+    .panel.collapsed .panel-body { display: none; }
+
+    .panel-body {
+      flex: 1;
+      overflow-y: auto;
+      overflow-x: hidden;
+      padding: 10px 0;
+      scrollbar-width: thin;
+      scrollbar-color: var(--border) transparent;
+    }
+    .panel-body::-webkit-scrollbar { width: 4px; }
+    .panel-body::-webkit-scrollbar-track { background: transparent; }
+    .panel-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+    /* ── draggable divider ─────────────────────────────────────── */
+    .divider {
+      width: 4px;
+      background: transparent;
+      cursor: col-resize;
+      flex-shrink: 0;
+      position: relative;
+      z-index: 10;
+      transition: background 0.1s;
+    }
+    .divider:hover, .divider.dragging { background: var(--c-accent); }
+
+    /* ── scan progress panel ───────────────────────────────────── */
+    .stage-block { padding: 4px 0; }
+    .stage-header {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 14px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--c-stage);
+    }
+    .stage-header .arrow { color: var(--text-faint); }
+    .stage-line {
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+      padding: 2px 14px 2px 28px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--text-dim);
+      line-height: 1.6;
+    }
+    .stage-line .key {
+      color: var(--text);
+      min-width: 72px;
+      flex-shrink: 0;
+    }
+    .stage-line .val { color: var(--text-dim); }
+    .stage-line .ok  { color: var(--c-ok); margin-right: 2px; }
+    .stage-line .warn { color: var(--c-warn); margin-right: 2px; }
+
+    /* ── findings panel ────────────────────────────────────────── */
+    .filter-bar {
+      display: none;
+      gap: 6px;
+      padding: 8px 14px;
+      border-bottom: 1px solid var(--border-dim);
+      flex-shrink: 0;
+      flex-wrap: wrap;
+    }
+    .chip {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      font-weight: 700;
+      padding: 2px 8px;
+      border-radius: 20px;
+      cursor: pointer;
+      border: 1px solid transparent;
+      transition: all 0.1s;
+      user-select: none;
+    }
+    .chip:hover { opacity: 0.8; }
+    .chip.active { border-color: currentColor; }
+    .chip-block  { color: var(--c-block);  background: rgba(255,107,107,0.1); }
+    .chip-high   { color: var(--c-high);   background: rgba(248,81,73,0.1); }
+    .chip-medium { color: var(--c-medium); background: rgba(210,153,34,0.1); }
+    .chip-ai     { color: var(--c-ai);     background: rgba(163,113,247,0.1); }
+    .chip-low    { color: var(--c-low);    background: rgba(139,148,158,0.1); }
+
+    .finding-card {
+      margin: 4px 10px;
+      border-radius: var(--radius);
+      border: 1px solid var(--border-dim);
+      background: var(--bg-panel);
+      overflow: hidden;
+      cursor: pointer;
+      transition: border-color 0.1s, background 0.1s;
+    }
+    .finding-card:hover { border-color: var(--border); background: var(--bg-hover); }
+    .finding-card.expanded { border-color: var(--border); }
+
+    .finding-main {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 10px;
+    }
+    .sev-bar {
+      width: 3px;
+      align-self: stretch;
+      border-radius: 2px;
+      flex-shrink: 0;
+    }
+    .sev-block  { background: var(--c-block); }
+    .sev-high   { background: var(--c-high); }
+    .sev-medium { background: var(--c-medium); }
+    .sev-ai     { background: var(--c-ai); }
+    .sev-low    { background: var(--c-low); }
+
+    .finding-meta { flex: 1; min-width: 0; }
+    .finding-top {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 2px;
+    }
+    .sev-label {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+    }
+    .sev-label.block  { color: var(--c-block); }
+    .sev-label.high   { color: var(--c-high); }
+    .sev-label.medium { color: var(--c-medium); }
+    .sev-label.ai     { color: var(--c-ai); }
+    .sev-label.low    { color: var(--c-low); }
+
+    .finding-rule {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .finding-loc {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      color: var(--text-dim);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .finding-cwe {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      color: var(--text-faint);
+      flex-shrink: 0;
+    }
+    .badge-ab {
+      font-size: 9px;
+      font-family: var(--font-mono);
+      background: rgba(63,185,80,0.15);
+      color: var(--c-ok);
+      border: 1px solid rgba(63,185,80,0.3);
+      border-radius: 3px;
+      padding: 0 4px;
+      flex-shrink: 0;
+    }
+
+    .finding-detail {
+      display: none;
+      padding: 0 10px 10px 23px;
+      border-top: 1px solid var(--border-dim);
+    }
+    .finding-card.expanded .finding-detail { display: block; }
+    .detail-row {
+      display: flex;
+      gap: 8px;
+      padding: 4px 0;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      border-bottom: 1px solid var(--border-dim);
+    }
+    .detail-row:last-child { border-bottom: none; }
+    .detail-key { color: var(--text-faint); min-width: 80px; flex-shrink: 0; }
+    .detail-val { color: var(--text-dim); }
+    .detail-val.highlight { color: var(--text); }
+
+    /* ── logs panel toolbar ───────────────────────────────────────── */
+    .log-filter {
+      padding: 6px 10px;
+      border-bottom: 1px solid var(--border-dim);
+      flex-shrink: 0;
+    }
+    .log-filter input {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border-dim);
+      border-radius: var(--radius);
+      color: var(--text);
+      font-family: var(--font-mono);
+      font-size: 11px;
+      padding: 4px 8px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    .log-filter input:focus { border-color: var(--c-accent); }
+    .log-filter input::placeholder { color: var(--text-faint); }
+
+    /* ── log row — terminal-noir style ───────────────────────────── */
+    .log-row {
+      display: flex;
+      align-items: flex-start;
+      padding: 3px 12px 3px 0;
+      border-left: 2px solid transparent;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      line-height: 1.62;
+      transition: background 80ms ease;
+      cursor: default;
+      user-select: text;
+      min-width: 0;
+    }
+    .log-row:hover { background: rgba(255,255,255,0.028); }
+    .log-row--debug { opacity: 0.42; }
+    .log-row--debug:hover { opacity: 0.7; }
+    .log-row--warn {
+      border-left-color: var(--c-warn);
+      background: rgba(210,153,34,0.05);
+    }
+    .log-row--warn:hover { background: rgba(210,153,34,0.09); }
+    .log-row--err {
+      border-left-color: var(--c-block);
+      background: rgba(255,107,107,0.06);
+    }
+    .log-row--err:hover { background: rgba(255,107,107,0.11); }
+
+    .log-lv {
+      flex-shrink: 0;
+      width: 32px;
+      padding: 0 6px 0 6px;
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+      text-align: right;
+      padding-top: 2px;
+      user-select: none;
+    }
+    .log-row--debug .log-lv { color: var(--text-faint); }
+    .log-row--info  .log-lv { color: var(--border); }
+    .log-row--warn  .log-lv { color: var(--c-warn); }
+    .log-row--err   .log-lv { color: var(--c-block); }
+
+    .log-ts {
+      flex-shrink: 0;
+      padding-right: 9px;
+      color: var(--text-faint);
+      font-size: 10px;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+      padding-top: 1px;
+    }
+
+    .log-comp {
+      flex-shrink: 0;
+      margin-right: 8px;
+      margin-top: 1px;
+      padding: 0px 5px 1px;
+      font-size: 9.5px;
+      font-weight: 700;
+      letter-spacing: 0.3px;
+      color: var(--bg);
+      background: var(--c-stage);
+      border-radius: 3px;
+      white-space: nowrap;
+      line-height: 1.6;
+      align-self: flex-start;
+    }
+    .log-row--warn .log-comp { background: var(--c-warn);  color: #1c1005; }
+    .log-row--err  .log-comp { background: var(--c-block); color: #1c0505; }
+
+    .log-body {
+      flex: 1;
+      min-width: 0;
+      color: var(--text-dim);
+      word-break: break-word;
+    }
+    .log-row--warn .log-body { color: #c9a227; }
+    .log-row--err  .log-body { color: #ff8c8c; }
+
+    .log-attrs { display: inline; }
+    .log-kv {
+      display: inline;
+      margin-left: 8px;
+      font-size: 10px;
+      white-space: nowrap;
+    }
+    .log-key { color: var(--text-faint); }
+    .log-key::after { content: '='; }
+    .log-val { color: var(--text-dim); }
+    .log-row--warn .log-val { color: rgba(210,153,34,0.8); }
+    .log-row--err  .log-val { color: rgba(255,107,107,0.8); }
+
+    /* ── status bar ────────────────────────────────────────────── */
+    .statusbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 14px;
+      background: var(--bg-panel);
+      border-top: 1px solid var(--border);
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--text-dim);
+      user-select: none;
+    }
+    .statusbar-left  { display: flex; align-items: center; gap: 12px; }
+    .statusbar-right { display: flex; align-items: center; gap: 12px; }
+    .stat { display: flex; align-items: center; gap: 4px; }
+    .stat-num { font-weight: 700; }
+    .stat-num.block  { color: var(--c-block); }
+    .stat-num.high   { color: var(--c-high); }
+    .stat-num.medium { color: var(--c-medium); }
+    .stat-num.low    { color: var(--c-low); }
+    .sep { color: var(--text-faint); }
+    .report-link {
+      color: var(--c-stage);
+      text-decoration: none;
+      cursor: pointer;
+    }
+    .report-link:hover { text-decoration: underline; }
+
+    /* ── empty state ───────────────────────────────────────────── */
+    .empty {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      color: var(--text-faint);
+      font-family: var(--font-mono);
+      font-size: 11px;
+      gap: 6px;
+    }
+    .empty-icon { font-size: 24px; opacity: 0.3; }
+
+    /* ── fade-in animation ─────────────────────────────────────── */
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(4px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    .fade-in { animation: fadeIn 0.18s ease-out; }
+
+    /* ── responsive ────────────────────────────────────────────── */
+    @media (max-width: 900px) {
+      html, body { overflow: auto; }
+      .app { grid-template-rows: 42px 1fr 36px; min-height: 100dvh; height: auto; }
+      .content { flex-direction: column; overflow: visible; height: auto; }
+      .divider { display: none; }
+      .panel { flex: none !important; width: 100%; min-width: 0; border-right: none !important; border-bottom: 1px solid var(--border); }
+      .panel-progress { height: 220px; order: 2; }
+      .panel-findings { height: 360px; order: 1; }
+      .panel-logs     { height: 260px; order: 3; border-bottom: none; }
+      .panel.collapsed { height: auto; }
+      .panel.collapsed .panel-body { display: none; }
+      .log-row { padding-top: 5px; padding-bottom: 5px; }
+      .log-comp { font-size: 9px; }
+    }
+    @media (max-width: 520px) {
+      .log-ts { display: none; }
+      .log-lv { width: 26px; padding-left: 4px; padding-right: 4px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .fade-in { animation: none; }
+      .status-dot { animation: none; }
+    }
+  </style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ── header ──────────────────────────────────────────────── -->
+  <header class="header">
+    <div class="header-left">
+      <span class="logo">zero<span>trust</span></span>
+      <span class="header-path" id="header-path">scanning…</span>
+    </div>
+    <div class="header-right">
+      <span id="scan-status" class="scan-status">
+        <span class="status-dot" id="status-dot"></span>
+        <span id="status-text">scanning</span>
+      </span>
+      <span id="elapsed" class="text-dim">0.0s</span>
+    </div>
+  </header>
+
+  <!-- ── main ────────────────────────────────────────────────── -->
+  <div class="content" id="content">
+
+    <!-- scan progress -->
+    <div class="panel panel-progress" id="panel-progress">
+      <div class="panel-header" onclick="togglePanel('panel-progress')">
+        <span>Scan Progress</span>
+        <span class="collapse-icon">▾</span>
+      </div>
+      <div class="panel-body" id="progress-body"></div>
+    </div>
+
+    <div class="divider" id="div-1"></div>
+
+    <!-- findings -->
+    <div class="panel panel-findings" id="panel-findings">
+      <div class="panel-header" onclick="togglePanel('panel-findings')">
+        <span>Findings</span>
+        <span class="count" id="findings-count"></span>
+        <span class="collapse-icon">▾</span>
+      </div>
+      <div class="filter-bar" id="filter-bar">
+        <span class="chip chip-block active" onclick="filterFindings('block', this)">BLOCK</span>
+        <span class="chip chip-high  active" onclick="filterFindings('high', this)">HIGH</span>
+        <span class="chip chip-medium active" onclick="filterFindings('medium', this)">MEDIUM</span>
+        <span class="chip chip-ai   active" onclick="filterFindings('ai', this)">AI</span>
+        <span class="chip chip-low  active" onclick="filterFindings('low', this)">LOW</span>
+      </div>
+      <div class="panel-body" id="findings-body"></div>
+    </div>
+
+    <div class="divider" id="div-2"></div>
+
+    <!-- logs -->
+    <div class="panel panel-logs" id="panel-logs">
+      <div class="panel-header" onclick="togglePanel('panel-logs')">
+        <span>Live Logs</span>
+        <span class="count" id="log-count"></span>
+        <span class="collapse-icon">▾</span>
+      </div>
+      <div class="log-filter">
+        <input type="text" id="log-search" placeholder="Filter logs…" oninput="filterLogs(this.value)">
+      </div>
+      <div class="panel-body" id="logs-body"></div>
+    </div>
+
+  </div>
+
+  <!-- ── status bar ──────────────────────────────────────────── -->
+  <div class="statusbar">
+    <div class="statusbar-left" id="statusbar-left">
+      <span class="stat"><span class="stat-num block" id="stat-block">0</span> BLOCK</span>
+      <span class="sep">·</span>
+      <span class="stat"><span class="stat-num high" id="stat-high">0</span> HIGH</span>
+      <span class="sep">·</span>
+      <span class="stat"><span class="stat-num medium" id="stat-medium">0</span> MEDIUM</span>
+      <span class="sep">·</span>
+      <span class="stat"><span class="stat-num low" id="stat-low">0</span> LOW</span>
+    </div>
+    <div class="statusbar-right" id="statusbar-right"></div>
+  </div>
+
+</div>
+
+<script>
+// ── panel collapse ──────────────────────────────────────────────
+function togglePanel(id) {
+  document.getElementById(id).classList.toggle('collapsed');
+}
+
+// ── draggable dividers ──────────────────────────────────────────
+function makeDraggable(divId, panelAId, panelBId) {
+  const div    = document.getElementById(divId);
+  const panelA = document.getElementById(panelAId);
+  const panelB = document.getElementById(panelBId);
+  let dragging = false, startPos = 0, startA = 0, startB = 0;
+
+  div.addEventListener('mousedown', e => {
+    if (window.innerWidth <= 900) return;
+    dragging = true;
+    startPos = e.clientX;
+    startA   = panelA.getBoundingClientRect().width;
+    startB   = panelB.getBoundingClientRect().width;
+    div.classList.add('dragging');
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    e.preventDefault();
+  });
+
+  document.addEventListener('mousemove', e => {
+    if (!dragging) return;
+    const delta = e.clientX - startPos;
+    panelA.style.flex = `0 0 ${Math.max(120, startA + delta)}px`;
+    panelB.style.flex = `0 0 ${Math.max(120, startB - delta)}px`;
+  });
+
+  document.addEventListener('mouseup', () => {
+    if (!dragging) return;
+    dragging = false;
+    div.classList.remove('dragging');
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+  });
+}
+makeDraggable('div-1', 'panel-progress', 'panel-findings');
+makeDraggable('div-2', 'panel-findings', 'panel-logs');
+
+// ── finding expand/collapse ─────────────────────────────────────
+function toggleFinding(el) {
+  el.closest('.finding-card').classList.toggle('expanded');
+}
+
+// ── severity filter ─────────────────────────────────────────────
+const activeFilters = new Set(['block','high','medium','ai','low']);
+function filterFindings(sev, chip) {
+  chip.classList.toggle('active');
+  if (activeFilters.has(sev)) activeFilters.delete(sev);
+  else activeFilters.add(sev);
+  document.querySelectorAll('.finding-card').forEach(c => {
+    c.style.display = activeFilters.has(c.dataset.sev) ? '' : 'none';
+  });
+}
+
+// ── log filter ──────────────────────────────────────────────────
+function filterLogs(q) {
+  const lc = q.toLowerCase();
+  document.querySelectorAll('.log-row').forEach(e => {
+    e.style.display = e.textContent.toLowerCase().includes(lc) ? '' : 'none';
+  });
+}
+
+// ── counters ────────────────────────────────────────────────────
+const counts = { block:0, high:0, medium:0, low:0, log:0 };
+function bumpSev(sev) {
+  counts[sev] = (counts[sev] || 0) + 1;
+  const el = document.getElementById('stat-' + sev);
+  if (el) el.textContent = counts[sev];
+  const total = counts.block + counts.high + counts.medium + counts.low;
+  document.getElementById('findings-count').textContent = total > 0 ? total : '';
+}
+function bumpLog() {
+  counts.log++;
+  document.getElementById('log-count').textContent = counts.log;
+}
+
+// ── elapsed timer ────────────────────────────────────────────────
+const scanStart = Date.now();
+let elapsedInterval = setInterval(() => {
+  document.getElementById('elapsed').textContent =
+    ((Date.now() - scanStart) / 1000).toFixed(1) + 's';
+}, 100);
+
+// ── SSE connection ───────────────────────────────────────────────
+const source = new EventSource('/events');
+
+source.addEventListener('stage', e => {
+  document.getElementById('progress-body').insertAdjacentHTML('beforeend', e.data);
+});
+
+source.addEventListener('finding', e => {
+  const body = document.getElementById('findings-body');
+  body.insertAdjacentHTML('beforeend', e.data);
+  // show filter bar on first finding
+  document.getElementById('filter-bar').style.display = 'flex';
+  // update severity counter from the newly inserted card
+  const card = body.lastElementChild;
+  if (card && card.dataset.sev) bumpSev(card.dataset.sev);
+  // apply current log filter to new item (reuse filterFindings active set)
+  if (!activeFilters.has(card.dataset.sev)) card.style.display = 'none';
+});
+
+source.addEventListener('log', e => {
+  const body = document.getElementById('logs-body');
+  body.insertAdjacentHTML('beforeend', e.data);
+  body.scrollTop = body.scrollHeight;
+  bumpLog();
+  // apply text filter to new log row
+  const q = (document.getElementById('log-search').value || '').toLowerCase();
+  if (q) {
+    const row = body.lastElementChild;
+    if (row && !row.textContent.toLowerCase().includes(q)) row.style.display = 'none';
+  }
+});
+
+source.addEventListener('summary', e => {
+  try {
+    const s = JSON.parse(e.data);
+    if (s.left)    document.getElementById('statusbar-left').innerHTML  = s.left;
+    if (s.right)   document.getElementById('statusbar-right').innerHTML = s.right;
+    if (s.elapsed) document.getElementById('elapsed').textContent = s.elapsed;
+  } catch (_) {}
+  // mark scan done
+  clearInterval(elapsedInterval);
+  document.getElementById('status-dot').classList.add('done');
+  document.getElementById('status-text').textContent = 'done';
+});
+
+source.onerror = () => {
+  // server shut down after scan — this is expected
+  source.close();
+  document.getElementById('status-dot').classList.add('done');
+  if (document.getElementById('status-text').textContent === 'scanning') {
+    document.getElementById('status-text').textContent = 'done';
+  }
+  clearInterval(elapsedInterval);
+};
+</script>
+</body>
+</html>
