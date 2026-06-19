@@ -46,7 +46,7 @@ Build the Go binary skeleton, ingestion layer (MIV + DI content-hash), pattern d
 | **ML0.1B** | **CLI Output Layer** | Jun 17 | 10.0 | **Done** | Delivered Jun 17 — 7 days early |
 | L0.1B.T1 | Output mode detection: `isatty` check on `os.Stdout`; auto-select minimal (no TTY) or tree (TTY); `--output minimal\|tree\|tui` flag override | Jun 17 | 1.5 | Done | Selection in `cmd/zerotrust/output_select.go` — avoids `output`→`output/tui`→`output` import cycle |
 | L0.1B.T2 | Minimal renderer: plain stdout, ANSI stripped in pipe, coloured in TTY; exit codes 0/1/2 | Jun 17 | 3.0 | Done | `internal/output/minimal.go`; `fatih/color` for severity labels |
-| L0.1B.T3 | TUI skeleton: Bubble Tea 2-panel layout; 5 tabs (log · findings · summary · suppressed · patches); scanning + done states | Jun 17 | 4.0 | Done | `internal/output/tui/{model,update,view}.go`; matches `docs/cli-output-design.md` spec; tree renderer added as Option C (`internal/output/tree.go`) |
+| L0.1B.T3 | TUI skeleton: Bubble Tea 2-panel layout; 5 tabs (log · findings · summary · suppressed · patches); scanning + done states | Jun 17 | 4.0 | Done | `internal/output/tui/{model,update,view}.go`; matches `docs/design/cli-output-design.md` spec; tree renderer added as Option C (`internal/output/tree.go`) |
 | L0.1B.T4 | Wire live pipeline events into TUI panels; keyboard navigation; Glamour for markdown | Jun 17 | 1.5 | Done | Typed `output.Event` channel; `EventStageStart/End/Finding/Log/Error/Done`; all renderers consume same channel |
 | **ML0.2** | **Ollama HTTP Client** | Jun 17 | 4.0 | **Done** | Delivered Jun 17 — 7 days early |
 | L0.2.T1 | Ollama HTTP client wrapper (Go → `localhost:11434`); model-agnostic — model name is config, not code | Jun 17 | 4.0 | Done | `Chat` + `BackboneCheck` implemented; `ErrModelBlocked` + `SetMIVBlocked()` gate; 14 tests |
@@ -97,7 +97,7 @@ Prove Joern works in this environment before committing any production Joern wor
 | ID | Name | Dates | E (h) | Status | Notes |
 | :---: | --- | :---: | :---: | :---: | --- |
 | **ML1** | **Joern Spike** | Jun 18 | 20.0 | **Code Done Jun 18** | Binary installed + async HTTP protocol fixed; integration tests in final fix |
-| L1.T1 | Joern install + version-pin; confirm async HTTP API + loopback binding | Jun 18 | 3.0 | **Done** | v4.0.550 Homebrew; `--server` flag mode; async 2-step API confirmed empirically; `docs/joern-http-api.md` updated |
+| L1.T1 | Joern install + version-pin; confirm async HTTP API + loopback binding | Jun 18 | 3.0 | **Done** | v4.0.550 Homebrew; `--server` flag mode; async 2-step API confirmed empirically; `docs/engineering/joern-http-api.md` updated |
 | L1.T2 | Go subprocess: spawn Joern; health-check + retry loop; crash watcher | Jun 18 | 4.0 | **Done** | Full async HTTP client (`postQuery`+`fetchResult`); `fetchResult` handles init-time `success=false`; ANSI strip; `parseStdout` LastIndex; 37 unit tests |
 | L1.T3 | CPG build on Spring Boot test codebase | Jun 18 | 4.0 | **Done (unit)** | `BuildCPG` + `IncrementalPatch` + `SaveCPG`/`LoadCPG`; path traversal guard; `ErrHubModuleDetected` |
 | L1.T4 | CPG query interface: all 9 methods + integration tests | Jun 18 | 9.0 | **Done (unit)** | 37 unit tests pass; 5 integration tests written; `Start()` confirmed working; final fix: increase `Ping()` test context from 10s → 2min |

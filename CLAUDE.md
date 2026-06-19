@@ -84,14 +84,20 @@ worker/main.py          NDJSON dispatcher
 worker/handlers/        llm_verify · classify · summarize · llm_scan
 worker/models/          UniXcoder wrapper · XGrammar-2 enforcer
 worker/schemas/         Pydantic wire schemas
-rules/python/           PY-001–010 OpenGrep rules
+rules/python/           PY-001–017 OpenGrep rules
 rules/java/             JV-001–009 OpenGrep rules
-rules/generic/          AI agent instruction file rules
-rules/astgrep/          ast-grep rules (Dart, Swift, Rust gaps)
+rules/generic/          AI agent instruction file rules + Go stub detection
+rules/astgrep/          ast-grep rules (Rust, Kotlin, C#, Dart gaps)
 testdata/spring-boot-app/   Fake Spring Boot REST API
 testdata/rules-tests/       Must-fire / must-not-fire test cases
 docker/engine/          Engine Docker image (multi-stage)
 docker/sandbox/         PoE sandbox (seccomp + Dockerfile)
+docs/architecture/      Mermaid diagrams + narrative specs
+docs/design/            UI/UX prototypes (web-ui-preview.html, report-example.html, cli-output-design.md)
+docs/engineering/       Integration reference notes (Joern DSL tips, Joern HTTP API)
+docs/planning/          Implementation plan + status diagram
+docs/presentations/     Tech-lead presentation materials
+docs/rules/             Rule rationale and selling points
 ```
 
 ## Status
