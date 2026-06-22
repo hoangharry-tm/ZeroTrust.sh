@@ -55,56 +55,20 @@ Two parallel detection paths (Path A + Path B) preceded by an integrity-checked 
 ## Codebase
 
 ```
-cmd/zerotrust/          CLI entry point (cobra; Docker orchestration + direct execution)
-pkg/cpg/                Shared CPG Graph interface
-pkg/ollama/             Ollama HTTP client
-pkg/sqlite/             SQLite state cache (modernc.org/sqlite)
-internal/finding/       Finding struct + Channel (locked pipeline interface)
-internal/ingestion/
-  miv/                  Model Integrity Verifier
-  diffindex/            Differential Indexer
-internal/pattern/       Path A
-  opengrep/             OpenGrep subprocess wrapper
-  astgrep/              ast-grep subprocess wrapper
-  joern/                Joern CPG HTTP client
-  instrscan/            AI agent instruction file scanner
-  verifier/             LLM Verifier
-internal/semantic/      Path B
-  targeting/            Heuristic Targeting
-  enrichment/           Call Graph + CVE + Resource ID dataflow
-  classifier/           UniXcoder IPC bridge
-  assembler/            Call Chain Context Assembler (depth-3)
-  summarizer/           Threat Feature Extractor IPC bridge
-  budget/               Token Budget Controller
-  llmscan/              LLM Semantic Scan
-internal/dedup/         Dedup + SSVC confidence scoring
-internal/report/        HTML report + patches
-internal/output/        Output system (Renderer interface, Event bus)
-  minimal.go            MinimalRenderer — plain text, CI/pipe safe
-  web/                  WebRenderer — live HTML dashboard via SSE
-    renderer.go         HTTP server, URL print, event fan-out
-    sse.go              SSE hub (register/broadcast/drain)
-    events.go           output.Event → named SSE event + HTML fragment
-    ui/index.html       Embedded dashboard (native EventSource, no framework)
-internal/worker/        Python worker manager (NDJSON IPC, restart)
-worker/main.py          NDJSON dispatcher
-worker/handlers/        llm_verify · classify · summarize · llm_scan
-worker/models/          UniXcoder wrapper · XGrammar-2 enforcer
-worker/schemas/         Pydantic wire schemas
-rules/python/           PY-001–017 OpenGrep rules
-rules/java/             JV-001–009 OpenGrep rules
-rules/generic/          AI agent instruction file rules + Go stub detection
-rules/astgrep/          ast-grep rules (Rust, Kotlin, C#, Dart gaps)
-testdata/spring-boot-app/   Fake Spring Boot REST API
-testdata/rules-tests/       Must-fire / must-not-fire test cases
-docker/engine/          Engine Docker image (multi-stage)
-docker/sandbox/         PoE sandbox (seccomp + Dockerfile)
-docs/architecture/      Mermaid diagrams + narrative specs
-docs/design/            UI/UX prototypes (web-ui-preview.html, report-example.html, cli-output-design.md)
-docs/engineering/       Integration reference notes (Joern DSL tips, Joern HTTP API)
-docs/planning/          Implementation plan + status diagram
-docs/presentations/     Tech-lead presentation materials
-docs/rules/             Rule rationale and selling points
+cmd/zerotrust/
+pkg/cpg/  pkg/ollama/  pkg/sqlite/
+internal/finding/
+internal/ingestion/miv/  internal/ingestion/diffindex/
+internal/pattern/opengrep/  astgrep/  joern/  instrscan/  verifier/
+internal/semantic/targeting/  enrichment/  classifier/  assembler/  summarizer/  budget/  llmscan/
+internal/dedup/  internal/report/
+internal/output/minimal.go  internal/output/web/{renderer,sse,events}.go  internal/output/web/ui/index.html
+internal/worker/
+worker/main.py  worker/handlers/  worker/models/  worker/schemas/
+rules/python/  rules/java/  rules/generic/  rules/astgrep/
+testdata/spring-boot-app/  testdata/rules-tests/
+docker/engine/  docker/sandbox/
+docs/architecture/  docs/design/  docs/engineering/  docs/planning/  docs/presentations/  docs/rules/
 ```
 
 ## Status
