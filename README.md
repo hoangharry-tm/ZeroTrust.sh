@@ -105,7 +105,6 @@ Scans a 21-file multi-language codebase. Writes `zerotrust-report.html`.
 Two independent detection paths run in parallel. Neither gates the other. A finding confirmed by both receives a +15pp confidence boost.
 
 ```mermaid
-%%{init: {'theme': 'base', 'themeVariables': { 'background': '#0d1117', 'primaryColor': '#161b22', 'primaryBorderColor': '#30363d', 'primaryTextColor': '#e6edf3', 'lineColor': '#8b949e', 'secondaryColor': '#0d1117', 'tertiaryColor': '#161b22', 'fontFamily': 'JetBrains Mono, monospace' }}}%%
 flowchart LR
     Input[/"Codebase Directory"/]
 
@@ -144,9 +143,9 @@ flowchart LR
     Dedup["Dedup + SSVC Scoring"]
     Dedup --> Report["HTML Report + Patches"]
 
-    style Ingestion fill:#161b22,stroke:#6366f1,stroke-width:2px
-    style PA fill:#161b22,stroke:#0ea5e9,stroke-width:2px
-    style PB fill:#161b22,stroke:#10b981,stroke-width:2px
+    style Ingestion fill:#eef2ff,stroke:#c7d2fe
+    style PA fill:#f0f9ff,stroke:#bae6fd
+    style PB fill:#ecfdf5,stroke:#a7f3d0
 ```
 
 **Path A — fast, deterministic.** OpenGrep + ast-grep pattern matching across 42 rules. Joern CPG inter-file taint analysis. LLM Verifier (Chain-of-Doubt + SCoT + XGrammar-2) filters false positives. High-confidence rules bypass the verifier directly to Dedup.
