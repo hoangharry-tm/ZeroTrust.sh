@@ -8,7 +8,7 @@ export default function Architecture() {
       </p>
       <div class="rounded-lg overflow-hidden border border-[#30363d] bg-[#161b22]">
         <iframe
-          src="../docs/architecture/general-solution-3.html"
+          src="/ZeroTrust.sh/architecture.html"
           width="100%"
           height="600"
           style="border: none; border-radius: 0.5rem; display: block;"
