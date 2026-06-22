@@ -1,0 +1,41 @@
+flowchart LR
+    Input[/"Codebase Directory"/]
+
+    subgraph Ingestion["Ingestion"]
+        DI["Differential Indexer"]
+        MIV["Model Integrity Verifier"]
+    end
+
+    subgraph PA["Path A — Pattern Detection"]
+        PS["Pattern Scanner"]
+        TA["Taint Analyzer"]
+        LV["LLM Verifier"]
+    end
+
+    subgraph PB["Path B — Semantic Detection"]
+        SS["Surface Selector"]
+        CC["Classifier Chain"]
+        LR["LLM Reasoner"]
+    end
+
+    Input --> DI
+    Input --> MIV
+    DI --> PS
+    DI --> TA
+    DI --> SS
+    TA --> LV
+    PS --> LV
+    TA -.-> SS
+    SS --> CC
+    CC -->|"uncertain"| LR
+
+    LV --> Dedup
+    CC -->|"high confidence"| Dedup
+    LR --> Dedup
+
+    Dedup["Dedup + SSVC Scoring"]
+    Dedup --> Report["HTML Report + Patches"]
+
+    style Ingestion fill:#1e1b4b,stroke:#818cf8
+    style PA fill:#0c1929,stroke:#38bdf8
+    style PB fill:#052e16,stroke:#34d399

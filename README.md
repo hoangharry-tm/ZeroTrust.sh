@@ -104,7 +104,15 @@ Scans a 21-file multi-language codebase. Writes `zerotrust-report.html`.
 
 Two independent detection paths run in parallel. Neither gates the other. A finding confirmed by both receives a +15pp confidence boost.
 
-```mermaid
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/diagrams/architecture-dark.svg">
+  <img src="docs/diagrams/architecture-light.svg" alt="ZeroTrust.sh architecture — two parallel detection paths">
+</picture>
+
+<details>
+<summary><b>Diagram source</b></summary>
+
+```text
 flowchart LR
     Input[/"Codebase Directory"/]
 
@@ -147,6 +155,7 @@ flowchart LR
     style PA fill:#f0f9ff,stroke:#bae6fd
     style PB fill:#ecfdf5,stroke:#a7f3d0
 ```
+</details>
 
 **Path A — fast, deterministic.** OpenGrep + ast-grep pattern matching across 42 rules. Joern CPG inter-file taint analysis. LLM Verifier (Chain-of-Doubt + SCoT + XGrammar-2) filters false positives. High-confidence rules bypass the verifier directly to Dedup.
 
