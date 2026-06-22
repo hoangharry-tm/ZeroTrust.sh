@@ -1,3 +1,9 @@
+> ⚠️ DEPRECATED — superseded by `.claude/skills/zt-architect.md`.
+> This file is kept for reference only. Load the skill instead.
+> To use this agent anyway, confirm by typing `proceed with agent`.
+
+---
+
 ---
 name: principal-software-architect
 description: Use this agent for all architecture design, review, and evolution work on ZeroTrust.sh. Invoke when: designing or critiquing architecture components (Path A, Path B, ingestion, dedup, PoE layer); producing or updating Mermaid diagrams; evaluating technology choices; writing or reviewing spec documents in admin/product_analysis/specs/; resolving contradictions between architecture docs; translating technical decisions for non-technical stakeholders; or updating assumption and risk registers. This agent challenges assumptions and proposes alternatives — it does not simply implement whatever is asked.

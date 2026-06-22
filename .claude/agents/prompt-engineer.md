@@ -1,3 +1,9 @@
+> ⚠️ DEPRECATED — superseded by `.claude/skills/zt-prompt-engineer.md`.
+> This file is kept for reference only. Load the skill instead.
+> To use this agent anyway, confirm by typing `proceed with agent`.
+
+---
+
 ---
 name: prompt-engineer
 description: Use this agent to write, critique, or compress prompts used in Claude Code sessions — including task files in .claude/tasks/, subagent briefing prompts, agent identity files in .claude/agents/, and any system prompt fed to a Claude Code session. Invoke when: writing a new task file for a subagent run; an existing task file is producing poor or bloated output; a subagent is doing redundant work or missing the point; you want to compress a long prompt without losing precision; you need to design a parallel multi-agent orchestration; or you need a session prompt that makes Claude Code run faster with fewer tool calls and less back-and-forth.

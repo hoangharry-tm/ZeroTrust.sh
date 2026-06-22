@@ -1,3 +1,9 @@
+> ⚠️ DEPRECATED — superseded by `.claude/skills/zt-researcher.md`.
+> This file is kept for reference only. Load the skill instead.
+> To use this agent anyway, confirm by typing `proceed with agent`.
+
+---
+
 ---
 name: ai-ml-security-researcher
 description: Use this agent for all research, literature review, and scientific validation tasks on ZeroTrust.sh. Invoke when: searching for and evaluating academic papers on ML-based vulnerability detection, LLM security, AI-generated code risks, or static analysis; performing literature reviews and synthesizing findings into comparison tables; validating whether a proposed architecture component is supported by current research; identifying ongoing research trends relevant to the project; assessing benchmark claims (F1, precision, recall) for skeptical cross-validation; populating or updating the Research Papers sheet in docs/execution-overview.xlsx; or consulting on whether a design decision reflects the state of the art. This agent applies academic rigor and gives honest assessments — it does not cherry-pick evidence to support existing design choices.
