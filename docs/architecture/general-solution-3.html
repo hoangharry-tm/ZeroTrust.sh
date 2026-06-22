@@ -19,6 +19,7 @@ html,body{width:100%;height:100%;overflow:hidden;background:#0f172a;font-family:
 .mermaid svg text{font-family:inherit!important}
 #tooltip{position:fixed;display:none;z-index:10001;background:#1e293b;color:#e2e8f0;font-size:.75rem;line-height:1.55;padding:14px 18px;border-radius:8px;max-width:400px;box-shadow:0 12px 28px rgba(0,0,0,.5);pointer-events:none;opacity:0;transition:opacity .1s;border:1px solid #334155}
 #tooltip.show{opacity:1}
+#tooltip.cluster-tip{border-left:4px solid #f59e0b;border-radius:8px 6px 6px 8px}
 #tooltip h3{font-size:.8125rem;font-weight:600;margin-bottom:4px;color:#fff;letter-spacing:-.01em}
 #tooltip .desc{margin-bottom:6px;color:#94a3b8;font-size:.6875rem;line-height:1.45}
 #tooltip ol{margin:3px 0 0;padding-left:16px;color:#7e8ba3;font-size:.6875rem}
@@ -265,19 +266,19 @@ if (el) {
 function attachAll(s) {
   s.querySelectorAll('.node').forEach(function(n) {
     var t = n.textContent.replace(/\s+/g,' ').trim();
-    if (TOOLTIPS[t]) { n.style.cursor = 'pointer'; bind(n, TOOLTIPS[t]); }
+    if (TOOLTIPS[t]) { n.style.cursor = 'pointer'; bind(n, TOOLTIPS[t], false); }
   });
   s.querySelectorAll('.cluster').forEach(function(c) {
     var clone = c.cloneNode(true);
     clone.querySelectorAll('.node, .cluster').forEach(function(ch) { ch.remove(); });
     var t = clone.textContent.replace(/\s+/g,' ').trim();
-    if (TOOLTIPS[t]) { c.style.cursor = 'pointer'; bind(c, TOOLTIPS[t]); }
+    if (TOOLTIPS[t]) { c.style.cursor = 'pointer'; bind(c, TOOLTIPS[t], true); }
   });
 }
 
 // ---- Tooltip ----
-function bind(el, data) {
-  el.addEventListener('mouseenter', function(e) { show(e, data); });
+function bind(el, data, isCluster) {
+  el.addEventListener('mouseenter', function(e) { show(e, data, isCluster); });
   el.addEventListener('mousemove', move);
   el.addEventListener('mouseleave', hide);
 }
@@ -285,8 +286,10 @@ function bind(el, data) {
 var tt = document.getElementById('tooltip');
 var ht = null;
 
-function show(e, d) {
+function show(e, d, isCluster) {
   if (ht) { clearTimeout(ht); ht = null; }
+  tt.classList.remove('cluster-tip');
+  if (isCluster) tt.classList.add('cluster-tip');
   var b = d.badge ? '<span class="badge '+d.badgeClass+'">'+esc(d.badge)+'</span>' : '';
   tt.innerHTML = b + '<h3>'+esc(d.title)+'</h3><p class="desc">'+esc(d.desc)+'</p><ol>'+d.steps.map(function(s){return '<li>'+esc(s)+'</li>';}).join('')+'</ol>';
   tt.style.display = 'block';
@@ -306,7 +309,7 @@ function pos(e) {
 }
 
 function hide() {
-  tt.classList.remove('show');
+  tt.classList.remove('show', 'cluster-tip');
   ht = setTimeout(function(){ tt.style.display = 'none'; }, 150);
 }
 
