@@ -1,8 +1,12 @@
 export default function Hero() {
   return (
-    <section class="flex flex-col items-center justify-center min-h-screen px-4 text-center py-20">
-      <h1 class="font-mono text-5xl md:text-7xl font-bold text-[#e6edf3] mb-4">
-        ZeroTrust.sh
+    <section
+      id="hero"
+      class="relative flex flex-col items-center justify-center min-h-screen px-4 text-center py-20 overflow-hidden"
+    >
+      <h1 class="font-mono text-5xl md:text-7xl font-bold mb-4">
+        <span class="text-[#C2410C]">Zero</span>
+        <span class="bg-linear-to-r from-[#3fb950] via-[#4ade80] to-[#58a6ff] bg-clip-text text-transparent animate-gradient-shift">Trust.sh</span>
       </h1>
       <p class="text-xl md:text-2xl text-[#e6edf3] mb-2 max-w-2xl">
         Local, offline SAST for code written by AI coding agents.
@@ -15,22 +19,28 @@ export default function Hero() {
           href="https://github.com/hoangharry-tm/ZeroTrust.sh"
           target="_blank"
           rel="noopener noreferrer"
-          class="px-6 py-3 bg-[#3fb950] text-[#0d1117] font-semibold rounded-md hover:opacity-90 transition-opacity"
+          class="group relative px-8 py-3.5 rounded-full font-semibold text-sm transition-all duration-300 bg-[#C2410C]/10 backdrop-blur-xl border border-[#C2410C]/30 text-[#C2410C] hover:bg-[#C2410C]/20 hover:border-[#C2410C]/50 shadow-[inset_0_1px_0_rgba(255,255,255,0.15)] hover:shadow-[0_0_25px_rgba(194,65,12,0.3)] active:scale-[0.98]"
         >
-          ⭐ Star on GitHub
+          <span class="flex items-center gap-2">
+            ⭐ Star on GitHub
+            <span class="w-6 h-6 rounded-full bg-[#C2410C]/20 flex items-center justify-center text-xs transition-transform duration-300 group-hover:translate-x-0.5 group-hover:-translate-y-0.5">→</span>
+          </span>
         </a>
         <a
           href="#architecture"
-          class="px-6 py-3 border border-[#30363d] text-[#e6edf3] rounded-md hover:bg-[#161b22] transition-colors"
+          class="group relative px-8 py-3.5 rounded-full font-semibold text-sm transition-all duration-300 bg-white/[0.03] backdrop-blur-xl border border-white/[0.08] text-[#e6edf3] hover:bg-white/[0.06] hover:border-white/[0.15] shadow-[inset_0_1px_0_rgba(255,255,255,0.08)] active:scale-[0.98]"
         >
-          View Architecture
+          <span class="flex items-center gap-2">
+            View Architecture
+            <span class="w-6 h-6 rounded-full bg-white/[0.08] flex items-center justify-center text-xs transition-transform duration-300 group-hover:translate-x-0.5">→</span>
+          </span>
         </a>
       </div>
       <div class="flex gap-3 font-mono text-sm flex-wrap justify-center">
-        <span class="px-2 py-1 border border-[#f85149] text-[#f85149] rounded">[BLOCK]</span>
-        <span class="px-2 py-1 border border-[#d29922] text-[#d29922] rounded">[HIGH]</span>
-        <span class="px-2 py-1 border border-[#58a6ff] text-[#58a6ff] rounded">[MEDIUM]</span>
-        <span class="px-2 py-1 border border-[#8b949e] text-[#8b949e] rounded">[LOW]</span>
+        <span class="px-3 py-1.5 border border-[#f85149]/40 text-[#f85149] rounded-full animate-glow-pulse">[BLOCK]</span>
+        <span class="px-3 py-1.5 border border-[#d29922]/40 text-[#d29922] rounded-full animate-glow-pulse-slow">[HIGH]</span>
+        <span class="px-3 py-1.5 border border-[#58a6ff]/30 text-[#58a6ff] rounded-full">[MEDIUM]</span>
+        <span class="px-3 py-1.5 border border-[#8b949e]/30 text-[#8b949e] rounded-full">[LOW]</span>
       </div>
     </section>
   )

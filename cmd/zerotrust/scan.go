@@ -158,6 +158,10 @@ func newPipeline(ctx context.Context, cfg ScanConfig) (*pipeline, error) {
 		logger.Warn("failed to create scan_run record", "component", "scan", "err", createErr)
 	}
 
+	// Propagate model name to Python worker handlers (llm_verify, llm_scan).
+	if cfg.ModelName != "" {
+		_ = os.Setenv("ZEROTRUST_MODEL", cfg.ModelName)
+	}
 	// Python worker — started once, shared by verifier, classifier, summarizer, llmscan.
 	wm, err := worker.Start(ctx, "worker/main.py", logger)
 	if err != nil {
@@ -174,7 +178,8 @@ func newPipeline(ctx context.Context, cfg ScanConfig) (*pipeline, error) {
 	llmClient := ollama.New(cfg.OllamaURL, cfg.ModelName)
 
 	// Path A
-	og := opengrep.New("opengrep", "rules/", logger)
+	// rules/astgrep/ uses ast-grep YAML format; opengrep rejects it. Pass only compatible dirs.
+	og := opengrep.NewMulti("opengrep", logger, "rules/java/", "rules/python/", "rules/generic/")
 	ag := astgrep.New("ast-grep", "rules/astgrep/")
 	joernOpts := []joern.Option{joern.WithServerURL(cfg.JoernURL)}
 	if cfg.JoernBin != "" {
@@ -520,9 +525,13 @@ func (p *pipeline) run(ctx context.Context, events chan<- output.Event) error {
 func (p *pipeline) runPathA(ctx context.Context, res *ingestion.Result, scopeFiles []string, ch finding.Channel, events chan<- output.Event) error {
 	output.Emit(events, output.Event{Kind: output.EventStageStart, Stage: "path a"})
 
+	// DiffIndex returns paths relative to the project root; make them absolute
+	// so subprocess scanners (opengrep, ast-grep) can find them from any CWD.
 	var changed []string
 	if res.ChangeSet != nil {
-		changed = res.ChangeSet.Changed
+		for _, rel := range res.ChangeSet.Changed {
+			changed = append(changed, filepath.Join(p.cfg.Target, rel))
+		}
 	}
 
 	// rawBuf collects findings from all detectors; protected by mu.
@@ -631,7 +640,9 @@ func (p *pipeline) runPathA(ctx context.Context, res *ingestion.Result, scopeFil
 
 	// Verify the remainder; degrade gracefully on worker failure.
 	if len(needsVerify) > 0 {
+		verifyStart := time.Now()
 		results, err := p.verif.Verify(ctx, needsVerify)
+		verifyElapsed := time.Since(verifyStart)
 		if err != nil {
 			output.Emit(events, output.Event{
 				Kind: output.EventLog,
@@ -644,8 +655,14 @@ func (p *pipeline) runPathA(ctx context.Context, res *ingestion.Result, scopeFil
 			}
 		} else {
 			verified := verifier.ApplyResults(needsVerify, results)
+			// ponytail: batch latency divided by count; per-finding p50/p95 needs the benchmark harness
+			perFindingMs := verifyElapsed.Milliseconds()
+			if len(needsVerify) > 0 {
+				perFindingMs = verifyElapsed.Milliseconds() / int64(len(needsVerify))
+			}
 			for _, f := range verified {
 				fc := f
+				p.logger.Info("verifier latency", "finding_id", fc.ID, "ms", perFindingMs)
 				output.Emit(events, output.Event{Kind: output.EventFinding, Finding: &fc})
 				ch <- fc
 			}

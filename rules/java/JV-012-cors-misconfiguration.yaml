@@ -59,6 +59,6 @@ rules:
       rule_version: "1.0"
     patterns:
       - pattern-either:
-          - pattern: .allowedOrigins("*")
-          - pattern: .allowedOriginPatterns("*")
-          - pattern: .allowedOrigins("*", ...)
+          - pattern: $OBJ.allowedOrigins("*")
+          - pattern: $OBJ.allowedOriginPatterns("*")
+          - pattern: $OBJ.allowedOrigins("*", ...)

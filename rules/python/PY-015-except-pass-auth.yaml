@@ -27,10 +27,6 @@ rules:
           metavariable: $FUNC
           patterns:
             - pattern-regex: (?i).*(auth|validate|check|verify|login|permission|admin|token|session|authenticate|authorize).*
-      - pattern-either:
-          - pattern: |
-              except:
-                  pass
-          - pattern: |
-              except $E:
-                  pass
+      - pattern: |
+          except:
+              pass

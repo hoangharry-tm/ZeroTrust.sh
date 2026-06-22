@@ -110,4 +110,84 @@
 - [x] L2.2.T3: Adaptive Self-Consistency — `_run_asc()` collects up to 2 extra samples at temperatures [0.35, 0.6]; majority vote excluding uncertain; all-uncertain → average confidence, original justification; `asc_rounds` field propagated to Go via `VerifyResult`
 - [x] L2.2.T4: High-confidence bypass — `verifier.HighConfidenceThreshold = 0.90` constant; `runPathA` partitions findings before LLM call; bypass findings sent directly to `ch`; `verifier.Verify()` + `verifier.ApplyResults()` wired for remainder; graceful fallback on `ErrWorkerDead`
 - [x] Go verifier package — `internal/pattern/verifier/verifier.go`: `Verify()` errgroup fan-out, `ApplyResults()` verdict→severity mapping, `fallbackResult()` 20% confidence penalty on transient failure; 12 unit tests
-- [ ] L2.2.T5: Latency benchmark — target < 2s per finding round-trip; log p50/p95 to `docs/benchmarks/latency_path_a.md` *(requires live Ollama + Joern; deferred to ML2.3 integration test)*
+- [x] L2.2.T5: Latency benchmark — p50 ≈ 21 s per finding (qwen2.5-coder:7b, Apple M3, warm); 2s target MISSED; bottleneck = LLM inference; see `docs/benchmarks/latency_path_a.md`
+
+---
+
+## Today's Work — 2026-06-22
+
+### Task 1 — L2.2.T5: Path A Latency Benchmark
+
+**Goal**: Measure and document p50/p95 round-trip latency for a single finding through the full Path A pipeline (OpenGrep/Joern → LLM Verifier → result). Confirm p50 < 2s target. Produce `docs/benchmarks/latency_path_a.md`.
+
+**Prerequisites**: Ollama running (`ollama serve`), Joern running (`joern --server --server-host 127.0.0.1`), spring-boot-app available at `testdata/spring-boot-app/`.
+
+**Minor goals**:
+- [x] **T5.1** — Instrumented; verifier latency logged at `slog.Info("verifier latency", ...)` in `cmd/zerotrust/scan.go`; fixed opengrep dotfile crash, absolute path bug, multi-dir rule config, ZEROTRUST_MODEL env propagation.
+- [x] **T5.2** — 3 scans run (warm Ollama, Joern offline); p50 ≈ 21 s, p95 ≈ 37 s; see `docs/benchmarks/latency_path_a.md`.
+- [x] **T5.3** — Already fixed in prior session: `integrationTimeout = 5 * time.Minute` at `internal/pattern/joern/joern_integration_test.go:37`.
+- [x] **T5.4** — Written: `docs/benchmarks/latency_path_a.md` (env, p50/p95, wall-clock, caveats, next steps).
+- [x] **T5.5** — p50 ≥ 2s: bottleneck = Ollama TTFT+generation for qwen2.5-coder:7b (~21 s/finding). Fix options documented in `docs/benchmarks/latency_path_a.md`: lower HighConfidenceThreshold for deterministic CWEs, use qwen2.5:3b for verifier, or batch into single TagDispatch call.
+
+**Done when**: `docs/benchmarks/latency_path_a.md` exists, `make test-integration` passes, L2.2.T5 checkbox above is ticked.
+
+---
+
+### Task 2 — ML3.1: Heuristic Targeting + Call Graph + CVE Enrichment + Resource ID Dataflow
+
+**Goal**: Implement Path B Tier 1 — the surface selection stage that eliminates ~95% of files before the UniXcoder classifier. Produces a ranked `[]Surface` slice consumed by ML3.2. `internal/semantic/targeting/targeting.go` is currently a skeleton.
+
+**Estimated effort**: ~26h total (plan window Jul 17–21 but executing now, ~3 weeks early).
+
+**Minor goals**:
+
+#### T1 — External-input node queries (2.5h)
+- [ ] **T1.1** — In `internal/semantic/targeting/targeting.go`, implement `queryExternalInputNodes(ctx, graph)` using `graph.QueryNodes()`: match METHOD nodes where any parameter or return-from-call is sourced from HTTP params (`getParameter`, `getHeader`, `getBody`, `pathVariable`), env vars (`os.Getenv`, `System.getenv`), file reads (`os.Open`, `Files.readAllBytes`), or stdin (`os.Stdin`, `System.in`). Return `[]cpg.Node`.
+- [ ] **T1.2** — Add unit tests in `internal/semantic/targeting/targeting_test.go` using a mock `cpg.Graph` (implement `MockGraph` satisfying `cpg.Graph` interface). At minimum: one test per input category (HTTP / env / file / stdin), one test for empty CPG.
+
+#### T2 — Auth-boundary node queries (2.5h)
+- [ ] **T2.1** — Implement `queryAuthBoundaryNodes(ctx, graph)`: match METHOD nodes whose name matches patterns `*auth*`, `*login*`, `*verify*`, `*check*`, `*authorize*`; or annotated with `@PreAuthorize`, `@Secured`, `@RolesAllowed` (Java); or middleware functions that call JWT/session validators (Go: `*middleware*`, `*guard*`).
+- [ ] **T2.2** — Unit tests: at minimum one Java annotation case, one Go middleware name pattern, one non-matching control.
+
+#### T3 — Call graph extraction (3h)
+- [ ] **T3.1** — Implement `buildCallGraph(ctx, graph, seeds []cpg.Node) CallGraph` where `CallGraph` is a map `nodeID → []callerIDs`. Uses `graph.GetCallers()` and `graph.GetCallees()` per seed node up to depth 2. Depth 2 is sufficient for Tier 1 — depth 3 is reserved for the Assembler (ML3.3).
+- [ ] **T3.2** — Expose `CallGraphDepth(nodeID string) int` on `CallGraph` — returns minimum hop count from any external-input node; used by the budget controller's reachability weight later.
+- [ ] **T3.3** — Unit tests: connected graph case, disconnected node case, cycle detection (node already visited → skip).
+
+#### T4 — Trivy `fs` CVE enrichment (3h)
+- [ ] **T4.1** — `internal/semantic/enrichment/trivy.go` already has a Trivy wrapper. Extend it with `ScanForCVEs(ctx, dir string) ([]CVEMatch, error)` if not already present. Wire the result into `targeting.go` so surfaces at files with a CVE match are flagged `HasCVEMatch: true` on the `Surface` struct.
+- [ ] **T4.2** — Test: mock Trivy JSON output (use a fixture file, not a live subprocess) → assert CVEMatch fields populated correctly. Add fixture at `testdata/trivy/scan_output.json`.
+
+#### T5 — CVE auto-flag routing (2h)
+- [ ] **T5.1** — Implement `AutoFlagCVESurfaces(surfaces []Surface) (autoFlagged []Surface, remainder []Surface)`: splits surfaces where `HasCVEMatch && CVSSScore >= 4.0` into `autoFlagged`. Auto-flagged surfaces skip the classifier and go directly to Dedup with `ConfidenceScore` derived from CVSS: ≥9.0→0.95 (BLOCK), 7–8.9→0.82 (HIGH), 4–6.9→0.68 (MEDIUM).
+- [ ] **T5.2** — Unit tests: threshold boundary cases (8.9 vs 9.0), missing CVSS score fallback (treat as 5.0).
+
+#### T6 — BOLAZ resource ID dataflow / IDOR candidate detection (12h)
+- [ ] **T6.1** — Define P-API sources and C-API anchors in a config struct `IDORConfig` (not hardcoded): P-API = HTTP path params, query params, request body field accessors; C-API = session user ID, JWT sub-claim, constant literals, `@PathVariable` annotated with `@AuthenticationPrincipal`.
+- [ ] **T6.2** — Implement `queryIDORCandidates(ctx, graph, cfg IDORConfig) ([]Surface, error)` via Joern taint queries: source = P-API node → sink = object-fetch node (DB query, cache lookup, file access) where no C-API anchor appears on the taint path. Use `graph.TaintPaths()` with the P-API/C-API source/sink definitions.
+- [ ] **T6.3** — Mark returned surfaces `IsIDORCandidate: true`. These surfaces bypass the UniXcoder classifier unconditionally (routing enforced in ML3.2 T4).
+- [ ] **T6.4** — Unit tests: IDOR-present case (P-API reaches DB sink, no C-API on path), IDOR-absent case (C-API anchor present on path), case with multiple P-API sources.
+- [ ] **T6.5** — Document the P-API/C-API model in a comment block at the top of the relevant file — cite BolaRay (CCS 2024) with a one-line description. No inline prose beyond that.
+
+#### T7 — Surface struct (2h)
+- [ ] **T7.1** — Define `Surface` struct in `internal/semantic/targeting/surface.go`:
+  ```go
+  type Surface struct {
+      ID                string
+      File              string
+      Function          string
+      NodeType          string
+      CallGraphDepth    int
+      CVEMatches        []enrichment.CVEMatch
+      IsIDORCandidate   bool
+      HasCVEMatch       bool
+      CVSSScore         float64
+  }
+  ```
+- [ ] **T7.2** — `Targeter.Run(ctx, graph, dir) ([]Surface, error)` — orchestrates T1–T6, returns ranked `[]Surface` sorted by: IDOR candidates first, then CVE auto-flagged, then by call graph reachability (lower depth = higher priority).
+
+#### T8 — Tier 1 elimination measurement (3h)
+- [ ] **T8.1** — Add a benchmark test in `internal/semantic/targeting/targeting_test.go` that runs `Targeter.Run` against the spring-boot-app CPG (integration tag). Assert: `len(surfaces) / totalFiles <= 0.05` (95% elimination target). If actual elimination is lower, do not adjust thresholds to hit the number — record honestly.
+- [ ] **T8.2** — Write `docs/benchmarks/tier1_elimination.md`: actual elimination rate, surface count, total file count, test codebase used, what the design target is (95%), and whether it was met. If not met, note the gap and hypothesize why (small codebase, many HTTP endpoints, etc.).
+
+**Done when**: `make test` passes (all new unit tests green), `Targeter.Run` compiles and returns a `[]Surface` on a mock CPG, integration test documents the actual elimination rate, `docs/benchmarks/tier1_elimination.md` exists.

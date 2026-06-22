@@ -24,19 +24,30 @@ rules:
       ai_specific: true
       confidence: HIGH
       rule_version: "1.0"
-    patterns:
-      - pattern-inside: |
-          func $FUNC(...) ... {
-            ...
-          }
-      - metavariable-pattern:
-          metavariable: $FUNC
-          patterns:
-            - pattern-regex: (?i).*(auth|validate|check|verify|login|permission|admin|token|session|authenticate|authorize|is_admin|has_role|can_access).*
-      - pattern-either:
-          - pattern: |
-              return true, nil
-          - pattern: |
-              return false, nil
-          - pattern: |
-              return nil
+    pattern-either:
+      - patterns:
+          - pattern-inside: |
+              func $FUNC(...) $RET {
+                ...
+              }
+          - metavariable-pattern:
+              metavariable: $FUNC
+              patterns:
+                - pattern-regex: (?i).*(auth|validate|check|verify|login|permission|admin|token|session|authenticate|authorize|is_admin|has_role|can_access).*
+          - pattern-either:
+              - pattern: return true, nil
+              - pattern: return false, nil
+              - pattern: return nil
+      - patterns:
+          - pattern-inside: |
+              func $FUNC(...) ($R1, $R2) {
+                ...
+              }
+          - metavariable-pattern:
+              metavariable: $FUNC
+              patterns:
+                - pattern-regex: (?i).*(auth|validate|check|verify|login|permission|admin|token|session|authenticate|authorize|is_admin|has_role|can_access).*
+          - pattern-either:
+              - pattern: return true, nil
+              - pattern: return false, nil
+              - pattern: return nil

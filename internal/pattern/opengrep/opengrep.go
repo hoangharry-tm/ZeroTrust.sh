@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/hoangharry-tm/zerotrust/internal/finding"
@@ -81,8 +82,9 @@ type RawError struct {
 type Runner struct {
 	// binaryPath is the absolute or PATH-resolved path to the opengrep binary.
 	binaryPath string
-	// rulesDir is the directory containing the YAML rule files for OpenGrep.
-	rulesDir string
+	// ruleDirs are the directories containing opengrep-compatible YAML rule files.
+	// Use multiple dirs to exclude non-opengrep rule formats (e.g. rules/astgrep/).
+	ruleDirs []string
 	logger   *slog.Logger
 }
 
@@ -93,11 +95,22 @@ type Runner struct {
 //   - binaryPath: path to the opengrep binary (e.g. "opengrep" for PATH lookup).
 //   - rulesDir: path to the rules/ directory (e.g. "rules/").
 //   - logger: structured logger for per-file parse errors.
+// New returns a Runner. rulesDir may be a single directory or a glob-style pattern;
+// to use multiple directories pass them as separate New calls or use NewMulti.
 func New(binaryPath, rulesDir string, logger *slog.Logger) *Runner {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Runner{binaryPath: binaryPath, rulesDir: rulesDir, logger: logger}
+	return &Runner{binaryPath: binaryPath, ruleDirs: []string{rulesDir}, logger: logger}
+}
+
+// NewMulti returns a Runner that passes each dir as a separate --config flag.
+// Use this to exclude non-opengrep rule formats (e.g. rules/astgrep/).
+func NewMulti(binaryPath string, logger *slog.Logger, ruleDirs ...string) *Runner {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &Runner{binaryPath: binaryPath, ruleDirs: ruleDirs, logger: logger}
 }
 
 // Scan runs OpenGrep against files and returns normalised findings.
@@ -117,7 +130,17 @@ func (r *Runner) Scan(ctx context.Context, files []string) ([]finding.Finding, e
 	if len(files) == 0 {
 		return nil, nil
 	}
-	out, err := r.run(ctx, files)
+	// ponytail: opengrep crashes (exit 2) on dotfiles like .gitkeep — skip them
+	var scannable []string
+	for _, f := range files {
+		if base := filepath.Base(f); !strings.HasPrefix(base, ".") {
+			scannable = append(scannable, f)
+		}
+	}
+	if len(scannable) == 0 {
+		return nil, nil
+	}
+	out, err := r.run(ctx, scannable)
 	if err != nil {
 		return nil, err
 	}
@@ -178,7 +201,11 @@ func (r *Runner) Version(ctx context.Context) (string, error) {
 // Exit code 0 (no findings) and exit code 1 (findings found) are both treated
 // as success. Exit codes ≥ 2 indicate a real error.
 func (r *Runner) run(ctx context.Context, files []string) (*ScanOutput, error) {
-	args := append([]string{"--json", "--config", r.rulesDir}, files...)
+	args := []string{"--json"}
+	for _, d := range r.ruleDirs {
+		args = append(args, "--config", d)
+	}
+	args = append(args, files...)
 	cmd := exec.CommandContext(ctx, r.binaryPath, args...)
 
 	var stdout, stderr bytes.Buffer
@@ -187,8 +214,12 @@ func (r *Runner) run(ctx context.Context, files []string) (*ScanOutput, error) {
 
 	err := cmd.Run()
 	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
-			// exit code 1 means findings were found — not an error
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			code := exitErr.ExitCode()
+			// exit 1 = findings found; exit 7 = rule parse errors but still produces JSON
+			if code != 1 && code != 7 {
+				return nil, fmt.Errorf("opengrep: %w (stderr: %s)", err, stderr.String())
+			}
 		} else {
 			return nil, fmt.Errorf("opengrep: %w (stderr: %s)", err, stderr.String())
 		}

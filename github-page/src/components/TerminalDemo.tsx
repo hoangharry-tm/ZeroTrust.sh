@@ -73,7 +73,7 @@ export default function TerminalDemo() {
     let animInterval: ReturnType<typeof setInterval>
     let cursorInterval: ReturnType<typeof setInterval>
 
-    cursorInterval = setInterval(() => setCursor(c => !c), 500)
+    cursorInterval = setInterval(() => setCursor(c => !c), 530)
 
     function animate() {
       lineIndex = 0
@@ -83,9 +83,9 @@ export default function TerminalDemo() {
         setDisplayedLines(lineIndex)
         if (lineIndex >= lines.length) {
           clearInterval(animInterval)
-          setTimeout(animate, 3000)
+          setTimeout(animate, 2500)
         }
-      }, 180)
+      }, 130)
     }
 
     animate()
@@ -97,7 +97,7 @@ export default function TerminalDemo() {
   })
 
   return (
-    <section class="py-20 px-4 max-w-3xl mx-auto">
+    <section id="demo" class="py-20 px-4 max-w-3xl mx-auto">
       <h2 class="text-3xl font-semibold text-center mb-12">See it in action</h2>
       <div class="rounded-lg overflow-hidden border border-[#30363d]">
         <div class="bg-[#161b22] px-4 py-3 flex items-center gap-2 border-b border-[#30363d]">
@@ -106,15 +106,18 @@ export default function TerminalDemo() {
           <span class="w-3 h-3 rounded-full bg-[#3fb950] inline-block"></span>
           <span class="ml-2 text-[#8b949e] text-sm font-mono">zerotrust — zsh</span>
         </div>
-        <div class="bg-[#0d1117] p-6 font-mono text-sm min-h-[320px]">
-          {lines.slice(0, displayedLines()).map((line, i) => (
-            <div class="leading-6">
-              {colorLine(line)}
-              {i === displayedLines() - 1 && (
-                <span class={`text-[#e6edf3] ${cursor() ? 'opacity-100' : 'opacity-0'}`}>_</span>
-              )}
-            </div>
-          ))}
+        <div class="relative bg-[#0d1117] p-6 font-mono text-sm min-h-[320px]">
+          <div class="absolute inset-0 bg-scan-line z-10" />
+          <div class="relative z-0">
+            {lines.slice(0, displayedLines()).map((line, i) => (
+              <div class="leading-6">
+                {colorLine(line)}
+                {i === displayedLines() - 1 && (
+                  <span class={`text-[#e6edf3] ${cursor() ? 'opacity-100' : 'opacity-0'}`}>_</span>
+                )}
+              </div>
+            ))}
+          </div>
         </div>
       </div>
     </section>

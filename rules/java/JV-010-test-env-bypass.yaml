@@ -88,6 +88,8 @@ rules:
           - pattern: |
               if ("true".equals(System.getenv($VAR))) {
                   return true;
+              }
           - pattern: |
               if ("true".equals(System.getenv($VAR))) {
                   return null;
+              }

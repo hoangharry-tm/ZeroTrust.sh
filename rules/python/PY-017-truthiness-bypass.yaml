@@ -26,8 +26,8 @@ rules:
           def $FUNC(...):
             ...
       - pattern-either:
-          - pattern: if $VAR:
-          - pattern: if not $VAR:
+          - pattern: "if $VAR:"
+          - pattern: "if not $VAR:"
       - metavariable-pattern:
           metavariable: $VAR
           patterns:
