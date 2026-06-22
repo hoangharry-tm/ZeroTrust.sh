@@ -2,8 +2,10 @@
 
 # **Zero**Trust.sh
 
-> **Local, offline SAST for code written by AI coding agents.**  
-> Source never leaves your machine. No VCS token. No cloud upload. No trust.
+<p align="center">
+  <strong>Local, offline SAST for code written by AI coding agents.</strong><br>
+  Source never leaves your machine. No VCS token. No cloud upload. No trust.
+</p>
 
 [![Website](https://img.shields.io/badge/website-%23C2410C.svg?logo=githubpages&logoColor=white)](https://hoangharry-tm.github.io/ZeroTrust.sh/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
@@ -16,8 +18,6 @@
 **[Website](https://hoangharry-tm.github.io/ZeroTrust.sh/) · [Architecture](docs/architecture/detail.md) · [Plan](docs/planning/implementation-plan.md) · [Report Mockup](docs/report-example.html)**
 
 </div>
-
----
 
 ## The Problem
 
@@ -62,13 +62,11 @@ ZeroTrust.sh's instrscan engine was built for this.
 
 External URLs, shell/execute capabilities, and over-broad filesystem scopes injected into <code>.mcp.json</code>. `return True` in `*auth*` functions. `TODO: add auth` with no follow-through. Disabled assertions.
 
-`#d29922` `#8b949e` — pattern rules catch these reliably.
+Pattern rules catch these reliably.
 </details>
 
 > [!NOTE]
 > Traditional SAST tools require cloud upload, run against CVE databases, and assume a human wrote the code. **ZeroTrust.sh does not.**
-
----
 
 ## Quickstart
 
@@ -102,13 +100,12 @@ go build -o build/zerotrust ./cmd/zerotrust
 
 Scans a 21-file multi-language codebase. Writes `zerotrust-report.html`.
 
----
-
 ## Architecture
 
 Two independent detection paths run in parallel. Neither gates the other. A finding confirmed by both receives a +15pp confidence boost.
 
 ```mermaid
+%%{init: {'theme': 'base', 'themeVariables': { 'background': '#0d1117', 'primaryColor': '#161b22', 'primaryBorderColor': '#30363d', 'primaryTextColor': '#e6edf3', 'lineColor': '#8b949e', 'secondaryColor': '#0d1117', 'tertiaryColor': '#161b22', 'fontFamily': 'JetBrains Mono, monospace' }}}%%
 flowchart LR
     Input[/"Codebase Directory"/]
 
@@ -146,6 +143,10 @@ flowchart LR
 
     Dedup["Dedup + SSVC Scoring"]
     Dedup --> Report["HTML Report + Patches"]
+
+    style Ingestion fill:#161b22,stroke:#6366f1,stroke-width:2px
+    style PA fill:#161b22,stroke:#0ea5e9,stroke-width:2px
+    style PB fill:#161b22,stroke:#10b981,stroke-width:2px
 ```
 
 **Path A — fast, deterministic.** OpenGrep + ast-grep pattern matching across 42 rules. Joern CPG inter-file taint analysis. LLM Verifier (Chain-of-Doubt + SCoT + XGrammar-2) filters false positives. High-confidence rules bypass the verifier directly to Dedup.
@@ -173,8 +174,6 @@ flowchart LR
 | **Dedup + SSVC** | Cross-path boost +15pp; BLOCK/HIGH/MEDIUM/LOW/SUPPRESSED |
 </details>
 
----
-
 ## Severity Levels
 
 | Severity | Meaning |
@@ -184,8 +183,6 @@ flowchart LR
 | 🔵 **MEDIUM** | Conditional or chained exploit path |
 | ⚪ **LOW** | Best practice violation, low risk |
 | 🟢 **SUPPRESSED** | Budget-exhausted — not silent drop |
-
----
 
 ## Current Status
 
@@ -204,8 +201,6 @@ flowchart LR
 
 > [!CAUTION]
 > Public testing release deadline: **August 6, 2026**.
-
----
 
 ## Language Coverage
 
@@ -231,8 +226,6 @@ flowchart LR
 
 </details>
 
----
-
 ## Tech Stack
 
 | Layer | Technology |
@@ -248,8 +241,6 @@ flowchart LR
 | State cache | SQLite — `modernc.org/sqlite` (pure-Go, no CGo) |
 | HTML report | Go `html/template` + `embed`, native EventSource |
 | Distribution | Single Go binary — Docker default, `--native` opt-in |
-
----
 
 <details>
 <summary><b>Repository structure</b></summary>
@@ -275,8 +266,6 @@ github-page/            SolidJS landing page — https://hoangharry-tm.github.io
 
 </details>
 
----
-
 ## Requirements
 
 **Docker mode (default)**
@@ -286,8 +275,6 @@ github-page/            SolidJS landing page — https://hoangharry-tm.github.io
 **Native mode (`--native`)**
 - JDK 19+, Joern, OpenGrep, ast-grep
 - Python 3.11+ with worker dependencies (`pip install -r worker/requirements.txt`)
-
----
 
 ## Contributing
 
@@ -306,8 +293,6 @@ Before submitting a rule PR: run `make test` and confirm 0 FP on clean controls.
 **Docs:** [Architecture](docs/architecture/detail.md) · [Implementation Plan](docs/planning/implementation-plan.md) · [Research Papers](docs/research-papers.md) · [Report Mockup](docs/report-example.html)
 
 **Website:** [hoangharry-tm.github.io/ZeroTrust.sh](https://hoangharry-tm.github.io/ZeroTrust.sh/)
-
----
 
 Apache 2.0
 
