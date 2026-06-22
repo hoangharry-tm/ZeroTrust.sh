@@ -33,7 +33,7 @@ Verification flow:
 - [type Result](<#Result>)
 - [type Status](<#Status>)
 - [type Verifier](<#Verifier>)
-  - [func New\(registryPath, publicKeyPath string\) \*Verifier](<#New>)
+  - [func New\(registryPath, publicKeyPath string, logger \*slog.Logger\) \*Verifier](<#New>)
   - [func \(v \*Verifier\) LoadRegistry\(ctx context.Context\) \(\[\]RegistryEntry, error\)](<#Verifier.LoadRegistry>)
   - [func \(v \*Verifier\) Verify\(ctx context.Context, modelPath string\) \(\*Result, error\)](<#Verifier.Verify>)
 
@@ -47,7 +47,7 @@ var ErrNotGGUF = errors.New("not a GGUF file")
 ```
 
 <a name="RegistryEntry"></a>
-## type [RegistryEntry](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/ingestion/miv/miv.go#L87-L96>)
+## type [RegistryEntry](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/ingestion/miv/miv.go#L88-L97>)
 
 RegistryEntry is one record in the signed JSON model hash registry.
 
@@ -76,7 +76,7 @@ type RegistryEntry struct {
 ```
 
 <a name="Result"></a>
-## type [Result](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/ingestion/miv/miv.go#L64-L75>)
+## type [Result](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/ingestion/miv/miv.go#L65-L76>)
 
 Result is returned by Verify.
 
@@ -96,7 +96,7 @@ type Result struct {
 ```
 
 <a name="Status"></a>
-## type [Status](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/ingestion/miv/miv.go#L51>)
+## type [Status](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/ingestion/miv/miv.go#L52>)
 
 Status is the tiered verification outcome.
 
@@ -119,7 +119,7 @@ const (
 ```
 
 <a name="Verifier"></a>
-## type [Verifier](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/ingestion/miv/miv.go#L99-L104>)
+## type [Verifier](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/ingestion/miv/miv.go#L100-L106>)
 
 Verifier hashes the GGUF model file and compares it against the signed registry.
 
@@ -130,18 +130,19 @@ type Verifier struct {
 ```
 
 <a name="New"></a>
-### func [New](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/ingestion/miv/miv.go#L112>)
+### func [New](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/ingestion/miv/miv.go#L116>)
 
 ```go
-func New(registryPath, publicKeyPath string) *Verifier
+func New(registryPath, publicKeyPath string, logger *slog.Logger) *Verifier
 ```
 
-New returns a Verifier using the bundled registry and public key at the given paths. Passing empty strings causes the embedded defaults to be used.
+New returns a Verifier using the bundled registry and public key at the given paths. Passing empty strings causes the embedded defaults to be used. If logger is nil, slog.Default\(\) is used.
 
 Parameters:
 
 - registryPath: path to the signed model hash registry JSON file.
 - publicKeyPath: path to the cosign public key \(.pub\) for registry verification.
+- logger: structured logger for verification lifecycle events.
 
 <a name="Verifier.LoadRegistry"></a>
 ### func \(\*Verifier\) [LoadRegistry](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/ingestion/miv/registry.go#L44>)
@@ -169,7 +170,7 @@ Returns:
 - error: non\-nil if the file is unreadable or the ECDSA signature fails.
 
 <a name="Verifier.Verify"></a>
-### func \(\*Verifier\) [Verify](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/ingestion/miv/miv.go#L137>)
+### func \(\*Verifier\) [Verify](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/ingestion/miv/miv.go#L145>)
 
 ```go
 func (v *Verifier) Verify(ctx context.Context, modelPath string) (*Result, error)

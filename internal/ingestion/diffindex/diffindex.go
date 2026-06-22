@@ -237,6 +237,12 @@ var binaryExts = map[string]bool{
 	".png": true, ".jpg": true, ".jpeg": true, ".gif": true, ".webp": true, ".ico": true,
 	".pdf": true, ".zip": true, ".tar": true, ".gz": true, ".bz2": true, ".xz": true,
 	".wasm": true, ".db": true, ".sqlite": true,
+	// SQLite WAL-mode sidecar files have compound extensions: filepath.Ext()
+	// returns ".db-shm" and ".db-wal" (the suffix after the last dot in the
+	// full filename, e.g. "test.db-shm" → ".db-shm"). Without these entries
+	// the sidecar files created by the state cache (pkg/sqlite) appear in the
+	// ChangeSet whenever the DB lives inside the scanned project root.
+	".db-shm": true, ".db-wal": true,
 }
 
 // shouldSkip reports whether a file or directory at relPath should be excluded.

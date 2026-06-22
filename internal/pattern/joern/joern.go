@@ -52,12 +52,17 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/hoangharry-tm/zerotrust/pkg/cpg"
 )
 
 // defaults for all configurable timeouts and retry counts.
@@ -123,6 +128,14 @@ type Client struct {
 	subprocessStderr io.Writer // JVM stderr sink; defaults to io.Discard
 
 	httpClient *http.Client
+
+	// pre-flagged sinks — populated by PreFlagSinks before CPG build.
+	preFlaggedMu    sync.Mutex
+	preFlaggedSinks []cpg.TaintSink
+
+	// joernVersion is the semantic version string detected at startup.
+	// Used to invalidate old CPG snapshots on version change.
+	joernVersion string
 
 	// subprocess state — protected by mu.
 	// cmd is non-nil only when this client spawned the process via Start.
@@ -290,6 +303,103 @@ func (c *Client) Ping(ctx context.Context) error {
 		}
 	}
 	return fmt.Errorf("%w: %w", ErrJoernUnreachable, lastErr)
+}
+
+// PreFlagSinks scans source files for dangerous sink patterns using the
+// language-specific taint taxonomy. The pre-flagged sinks are cached and
+// returned by PreFlaggedSinks(). This runs before the CPG build so sinks
+// are always in scope regardless of module segmentation mode.
+//
+// Scanning is best-effort: unreadable files and unsupported languages are
+// silently skipped. Results are stored on the Client; PreFlaggedSinks() on
+// the graph reads from the same cache.
+func (c *Client) PreFlagSinks(ctx context.Context, files []string) error {
+	var sinks []cpg.TaintSink
+
+	for _, f := range files {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		lang, ok := DetectLanguage(f)
+		if !ok {
+			continue
+		}
+		cfg, ok := TaintConfigs[lang]
+		if !ok {
+			continue
+		}
+
+		content, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		lines := strings.Split(string(content), "\n")
+		for i, line := range lines {
+			for _, sink := range cfg.Sinks {
+				idx := strings.Index(line, sink.Name)
+				if idx < 0 {
+					continue
+				}
+				// Confirm it looks like a function call: optional whitespace then '('
+				rest := strings.TrimSpace(line[idx+len(sink.Name):])
+				if strings.HasPrefix(rest, "(") {
+					sinks = append(sinks, cpg.TaintSink{
+						Kind: sink.Kind,
+						File: f,
+						Line: i + 1,
+					})
+					break
+				}
+			}
+		}
+	}
+
+	c.preFlaggedMu.Lock()
+	c.preFlaggedSinks = sinks
+	c.preFlaggedMu.Unlock()
+	return nil
+}
+
+// Version queries the Joern server for its semantic version string.
+// The result is cached on the Client after the first successful call.
+func (c *Client) Version(ctx context.Context) (string, error) {
+	if c.joernVersion != "" {
+		return c.joernVersion, nil
+	}
+	raw, err := c.doQuery(ctx, `cpg.metaData.version.l.headOption.getOrElse("unknown")`)
+	if err != nil {
+		return "", fmt.Errorf("joern: version query: %w", err)
+	}
+	v := strings.TrimSpace(string(raw))
+	// Strip surrounding quotes if present (Joern may return a quoted string).
+	if len(v) >= 2 && v[0] == '"' && v[len(v)-1] == '"' {
+		v = v[1 : len(v)-1]
+	}
+	if v == "" {
+		v = "unknown"
+	}
+	c.joernVersion = v
+	return v, nil
+}
+
+// PreFlaggedSinks returns the cached pre-flagged sink list populated by
+// PreFlagSinks. Safe to call concurrently.
+func (c *Client) PreFlaggedSinks() []cpg.TaintSink {
+	c.preFlaggedMu.Lock()
+	defer c.preFlaggedMu.Unlock()
+	out := make([]cpg.TaintSink, len(c.preFlaggedSinks))
+	copy(out, c.preFlaggedSinks)
+	return out
+}
+
+// VersionSnapshotPath returns the version-file path for a given project ID.
+// The version file lives beside the CPG snapshot at ~/.zerotrust/{projectID}.version.
+func VersionSnapshotPath(projectID string) string {
+	home, _ := os.UserHomeDir()
+	if home == "" {
+		return filepath.Join(".zerotrust", projectID+".version")
+	}
+	return filepath.Join(home, ".zerotrust", projectID+".version")
 }
 
 // Graph returns a cpg.Graph backed by this Joern server instance.

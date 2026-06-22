@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -213,6 +214,11 @@ func TestRunTrivy_SkipsNetworkWhenBinaryPresentAndOffline(t *testing.T) {
 	}
 	e := New(nil, "trivy", true)
 	m, err := e.RunTrivy(context.Background(), t.TempDir())
+	if errors.Is(err, ErrTrivyDBNotInitialized) {
+		// DB has never been bootstrapped on this machine. The sentinel is the
+		// correct structured response — the raw Trivy fatal must not leak through.
+		return
+	}
 	require.NoError(t, err)
 	assert.NotNil(t, m)
 }

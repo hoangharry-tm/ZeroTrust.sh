@@ -29,7 +29,7 @@ rules/generic/   AI agent instruction file rules
 - [type RawFinding](<#RawFinding>)
 - [type RawPosition](<#RawPosition>)
 - [type Runner](<#Runner>)
-  - [func New\(binaryPath, rulesDir string\) \*Runner](<#New>)
+  - [func New\(binaryPath, rulesDir string, logger \*slog.Logger\) \*Runner](<#New>)
   - [func \(r \*Runner\) Scan\(ctx context.Context, files \[\]string\) \(\[\]finding.Finding, error\)](<#Runner.Scan>)
   - [func \(r \*Runner\) ScanHighConfidence\(ctx context.Context, files \[\]string\) \(\[\]finding.Finding, error\)](<#Runner.ScanHighConfidence>)
   - [func \(r \*Runner\) Version\(ctx context.Context\) \(string, error\)](<#Runner.Version>)
@@ -37,7 +37,7 @@ rules/generic/   AI agent instruction file rules
 
 
 <a name="RawError"></a>
-## type [RawError](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/opengrep/opengrep.go#L73-L77>)
+## type [RawError](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/opengrep/opengrep.go#L74-L78>)
 
 RawError is an OpenGrep execution error \(e.g. parse failure on a source file\).
 
@@ -50,7 +50,7 @@ type RawError struct {
 ```
 
 <a name="RawExtra"></a>
-## type [RawExtra](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/opengrep/opengrep.go#L54-L64>)
+## type [RawExtra](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/opengrep/opengrep.go#L55-L65>)
 
 RawExtra contains the per\-rule metadata fields from OpenGrep JSON output.
 
@@ -69,7 +69,7 @@ type RawExtra struct {
 ```
 
 <a name="RawFinding"></a>
-## type [RawFinding](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/opengrep/opengrep.go#L34-L44>)
+## type [RawFinding](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/opengrep/opengrep.go#L35-L45>)
 
 RawFinding is the JSON structure emitted by OpenGrep's \-\-json output. It is unmarshalled from the subprocess stdout before normalisation.
 
@@ -88,7 +88,7 @@ type RawFinding struct {
 ```
 
 <a name="RawPosition"></a>
-## type [RawPosition](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/opengrep/opengrep.go#L47-L51>)
+## type [RawPosition](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/opengrep/opengrep.go#L48-L52>)
 
 RawPosition is the line/column location within a source file.
 
@@ -101,7 +101,7 @@ type RawPosition struct {
 ```
 
 <a name="Runner"></a>
-## type [Runner](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/opengrep/opengrep.go#L80-L85>)
+## type [Runner](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/opengrep/opengrep.go#L81-L87>)
 
 Runner invokes OpenGrep as a subprocess against a file set.
 
@@ -112,21 +112,22 @@ type Runner struct {
 ```
 
 <a name="New"></a>
-### func [New](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/opengrep/opengrep.go#L92>)
+### func [New](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/opengrep/opengrep.go#L96>)
 
 ```go
-func New(binaryPath, rulesDir string) *Runner
+func New(binaryPath, rulesDir string, logger *slog.Logger) *Runner
 ```
 
-New returns a Runner using the OpenGrep binary at binaryPath and rules at rulesDir.
+New returns a Runner using the OpenGrep binary at binaryPath and rules at rulesDir. If logger is nil, slog.Default\(\) is used.
 
 Parameters:
 
 - binaryPath: path to the opengrep binary \(e.g. "opengrep" for PATH lookup\).
 - rulesDir: path to the rules/ directory \(e.g. "rules/"\).
+- logger: structured logger for per\-file parse errors.
 
 <a name="Runner.Scan"></a>
-### func \(\*Runner\) [Scan](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/opengrep/opengrep.go#L109>)
+### func \(\*Runner\) [Scan](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/opengrep/opengrep.go#L116>)
 
 ```go
 func (r *Runner) Scan(ctx context.Context, files []string) ([]finding.Finding, error)
@@ -147,7 +148,7 @@ Returns:
 - error: non\-nil if the subprocess fails to start or returns a non\-zero exit code.
 
 <a name="Runner.ScanHighConfidence"></a>
-### func \(\*Runner\) [ScanHighConfidence](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/opengrep/opengrep.go#L134>)
+### func \(\*Runner\) [ScanHighConfidence](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/opengrep/opengrep.go#L149>)
 
 ```go
 func (r *Runner) ScanHighConfidence(ctx context.Context, files []string) ([]finding.Finding, error)
@@ -166,7 +167,7 @@ Returns:
 - error: non\-nil on subprocess or parse failure.
 
 <a name="Runner.Version"></a>
-### func \(\*Runner\) [Version](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/opengrep/opengrep.go#L153>)
+### func \(\*Runner\) [Version](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/opengrep/opengrep.go#L168>)
 
 ```go
 func (r *Runner) Version(ctx context.Context) (string, error)
@@ -179,7 +180,7 @@ Parameters:
 - ctx: cancellation context.
 
 <a name="ScanOutput"></a>
-## type [ScanOutput](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/opengrep/opengrep.go#L67-L70>)
+## type [ScanOutput](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/opengrep/opengrep.go#L68-L71>)
 
 ScanOutput is the top\-level JSON structure produced by \`opengrep \-\-json\`.
 

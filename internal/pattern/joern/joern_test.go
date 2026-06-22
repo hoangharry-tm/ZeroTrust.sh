@@ -7,11 +7,14 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/hoangharry-tm/zerotrust/internal/finding"
 	"github.com/hoangharry-tm/zerotrust/pkg/cpg"
 )
 
@@ -757,5 +760,376 @@ func TestCommonParent(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("commonParent(%v) = %q, want %q", tc.paths, got, tc.want)
 		}
+	}
+}
+
+// ─── classifySourceKind ────────────────────────────────────────────────────────
+
+func TestClassifySourceKind_JavaSource(t *testing.T) {
+	got := classifySourceKind("getParameter", "app/MainController.java")
+	if got != "http_param" {
+		t.Errorf("classifySourceKind(getParameter) = %q, want %q", got, "http_param")
+	}
+}
+
+func TestClassifySourceKind_JavaHeader(t *testing.T) {
+	got := classifySourceKind("getHeader", "app/MainController.java")
+	if got != "http_header" {
+		t.Errorf("classifySourceKind(getHeader) = %q, want %q", got, "http_header")
+	}
+}
+
+func TestClassifySourceKind_PythonEnvVar(t *testing.T) {
+	got := classifySourceKind("os.environ", "app/routes.py")
+	if got != "env_var" {
+		t.Errorf("classifySourceKind(os.environ) = %q, want %q", got, "env_var")
+	}
+}
+
+func TestClassifySourceKind_GoPostForm(t *testing.T) {
+	got := classifySourceKind("r.PostFormValue", "app/handler.go")
+	if got != "http_body" {
+		t.Errorf("classifySourceKind(r.PostFormValue) = %q, want %q", got, "http_body")
+	}
+}
+
+func TestClassifySourceKind_FallsBackToName(t *testing.T) {
+	got := classifySourceKind("unknownFunction", "app/file.java")
+	if got != "unknownFunction" {
+		t.Errorf("classifySourceKind(unknown) = %q, want %q", got, "unknownFunction")
+	}
+}
+
+func TestClassifySourceKind_UnsupportedLanguage(t *testing.T) {
+	got := classifySourceKind("getParameter", "app/file.rs")
+	if got != "getParameter" {
+		t.Errorf("classifySourceKind(rust) = %q, want %q", got, "getParameter")
+	}
+}
+
+// ─── PreFlagSinks ──────────────────────────────────────────────────────────────
+
+func TestPreFlagSinks_JavaSQLSink(t *testing.T) {
+	ctx := context.Background()
+	c, err := New(WithServerURL("http://127.0.0.1:18081"), WithQueryTimeout(time.Second))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	dir := t.TempDir()
+	f := filepath.Join(dir, "MainController.java")
+	if err := os.WriteFile(f, []byte("ResultSet rs = stmt.executeQuery(sql);\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	_ = os.WriteFile(filepath.Join(dir, "ignored.rs"), []byte("fn main() {}\n"), 0o644)
+
+	if err := c.PreFlagSinks(ctx, []string{f}); err != nil {
+		t.Fatalf("PreFlagSinks: %v", err)
+	}
+
+	sinks := c.PreFlaggedSinks()
+	if len(sinks) != 1 {
+		t.Fatalf("PreFlaggedSinks: got %d sinks, want 1", len(sinks))
+	}
+	if sinks[0].Kind != cpg.SinkSQL {
+		t.Errorf("sink.Kind = %v, want %v", sinks[0].Kind, cpg.SinkSQL)
+	}
+	if sinks[0].Line != 1 {
+		t.Errorf("sink.Line = %d, want 1", sinks[0].Line)
+	}
+}
+
+func TestPreFlagSinks_PythonEval(t *testing.T) {
+	ctx := context.Background()
+	c, err := New(WithServerURL("http://127.0.0.1:18082"), WithQueryTimeout(time.Second))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	dir := t.TempDir()
+	f := filepath.Join(dir, "routes.py")
+	code := "def process():\n    result = eval(user_input)\n    return result\n"
+	if err := os.WriteFile(f, []byte(code), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	if err := c.PreFlagSinks(ctx, []string{f}); err != nil {
+		t.Fatalf("PreFlagSinks: %v", err)
+	}
+
+	sinks := c.PreFlaggedSinks()
+	if len(sinks) == 0 {
+		t.Fatal("PreFlaggedSinks: no sinks found, want at least 1")
+	}
+	if sinks[0].Kind != cpg.SinkEval {
+		t.Errorf("sink.Kind = %v, want %v", sinks[0].Kind, cpg.SinkEval)
+	}
+	if sinks[0].Line != 2 {
+		t.Errorf("sink.Line = %d, want 2", sinks[0].Line)
+	}
+}
+
+func TestPreFlagSinks_UnsupportedLanguage(t *testing.T) {
+	ctx := context.Background()
+	c, err := New(WithServerURL("http://127.0.0.1:18083"), WithQueryTimeout(time.Second))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	dir := t.TempDir()
+	f := filepath.Join(dir, "file.rs")
+	_ = os.WriteFile(f, []byte("fn main() { eval(); }"), 0o644)
+
+	if err := c.PreFlagSinks(ctx, []string{f}); err != nil {
+		t.Fatalf("PreFlagSinks: %v", err)
+	}
+	if sinks := c.PreFlaggedSinks(); len(sinks) != 0 {
+		t.Errorf("PreFlaggedSinks: got %d sinks for .rs file, want 0", len(sinks))
+	}
+}
+
+func TestPreFlagSinks_ContextCancellation(t *testing.T) {
+	c, err := New(WithServerURL("http://127.0.0.1:18084"), WithQueryTimeout(time.Second))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err = c.PreFlagSinks(ctx, []string{"some/file.java"})
+	if err == nil {
+		t.Error("PreFlagSinks with cancelled context: expected error, got nil")
+	}
+}
+
+// ─── Version ───────────────────────────────────────────────────────────────────
+
+func TestVersion_ReturnsCached(t *testing.T) {
+	// Version should cache the queried value.
+	var callCount int
+	srv := mockServer(t, func(q string) (string, bool) {
+		callCount++
+		return `"4.0.550"`, true
+	})
+	c := newTestClient(t, srv)
+
+	v1, err := c.Version(context.Background())
+	if err != nil {
+		t.Fatalf("Version: %v", err)
+	}
+	if v1 != "4.0.550" {
+		t.Errorf("Version = %q, want %q", v1, "4.0.550")
+	}
+
+	// Second call should use cache, not query server.
+	v2, err := c.Version(context.Background())
+	if err != nil {
+		t.Fatalf("Version (cached): %v", err)
+	}
+	if v2 != v1 {
+		t.Errorf("Version cached = %q, want %q", v2, v1)
+	}
+	if callCount != 1 {
+		t.Errorf("Version: expected 1 query, got %d", callCount)
+	}
+}
+
+// ─── VersionSnapshotPath ───────────────────────────────────────────────────────
+
+func TestVersionSnapshotPath(t *testing.T) {
+	got := VersionSnapshotPath("test-project")
+	if !strings.Contains(got, "test-project") {
+		t.Errorf("VersionSnapshotPath = %q, want path containing test-project", got)
+	}
+	if !strings.HasSuffix(got, ".version") {
+		t.Errorf("VersionSnapshotPath = %q, want .version suffix", got)
+	}
+}
+
+// ─── PreFlaggedSinks (graph) ───────────────────────────────────────────────────
+
+func TestGraphPreFlaggedSinks(t *testing.T) {
+	c, err := New(WithServerURL("http://127.0.0.1:18085"), WithQueryTimeout(time.Second))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// Pre-populate sinks directly (bypassing file scan).
+	c.preFlaggedMu.Lock()
+	c.preFlaggedSinks = []cpg.TaintSink{
+		{Kind: cpg.SinkSQL, File: "test.java", Line: 10},
+	}
+	c.preFlaggedMu.Unlock()
+
+	g := c.Graph()
+	sinks, err := g.PreFlaggedSinks()
+	if err != nil {
+		t.Fatalf("PreFlaggedSinks: %v", err)
+	}
+	if len(sinks) != 1 {
+		t.Fatalf("PreFlaggedSinks: got %d sinks, want 1", len(sinks))
+	}
+	if sinks[0].Kind != cpg.SinkSQL {
+		t.Errorf("sink.Kind = %v, want %v", sinks[0].Kind, cpg.SinkSQL)
+	}
+}
+
+// ─── TaintPathToFinding ────────────────────────────────────────────────────────
+
+func TestTaintPathToFinding_SetsMatchedCode(t *testing.T) {
+	dir := t.TempDir()
+	f := filepath.Join(dir, "MainController.java")
+	_ = os.WriteFile(f, []byte("package app;\nimport db.*;\nResultSet rs = stmt.executeQuery(sql);\n"), 0o644)
+
+	path := cpg.TaintPath{
+		Source: cpg.TaintSource{NodeID: "1", Kind: "http_param", File: f, Line: 1},
+		Sink:   cpg.TaintSink{NodeID: "2", Kind: cpg.SinkSQL, File: f, Line: 3},
+	}
+	finding := TaintPathToFinding(path, LanguageJava)
+	if finding.MatchedCode != "ResultSet rs = stmt.executeQuery(sql);" {
+		t.Errorf("MatchedCode = %q, want %q", finding.MatchedCode, "ResultSet rs = stmt.executeQuery(sql);")
+	}
+}
+
+func TestTaintPathToFinding_ConfidenceMapsToSeverity(t *testing.T) {
+	path := cpg.TaintPath{
+		Source: cpg.TaintSource{NodeID: "1", Kind: "http_param", File: "f.java", Line: 1},
+		Sink:   cpg.TaintSink{NodeID: "2", Kind: cpg.SinkSQL, File: "f.java", Line: 3},
+	}
+	f := TaintPathToFinding(path, LanguageJava)
+	if f.Confidence != 0.75 {
+		t.Errorf("Confidence = %f, want 0.75", f.Confidence)
+	}
+	if want := finding.SeverityFromConfidence(0.75); f.SeverityLabel != want {
+		t.Errorf("SeverityLabel = %q, want %q", f.SeverityLabel, want)
+	}
+}
+
+func TestTaintPathToFinding_SSVCAutomatable(t *testing.T) {
+	tests := []struct {
+		kind cpg.SinkKind
+		want string
+	}{
+		{cpg.SinkSQL, "Yes"},
+		{cpg.SinkCommand, "Yes"},
+		{cpg.SinkEval, "Yes"},
+		{cpg.SinkFileWrite, "No"},
+		{cpg.SinkDeserialization, "No"},
+	}
+	for _, tc := range tests {
+		path := cpg.TaintPath{
+			Source: cpg.TaintSource{NodeID: "1", Kind: "http_param", File: "f.java", Line: 1},
+			Sink:   cpg.TaintSink{NodeID: "2", Kind: tc.kind, File: "f.java", Line: 3},
+		}
+		f := TaintPathToFinding(path, LanguageJava)
+		if f.SSVC.Automatable != tc.want {
+			t.Errorf("SSVC.Automatable for %v = %q, want %q", tc.kind, f.SSVC.Automatable, tc.want)
+		}
+	}
+}
+
+func TestTaintPathToFinding_SSVCTechnicalImpact(t *testing.T) {
+	tests := []struct {
+		kind cpg.SinkKind
+		want string
+	}{
+		{cpg.SinkSQL, "Total"},
+		{cpg.SinkCommand, "Total"},
+		{cpg.SinkEval, "Total"},
+		{cpg.SinkDeserialization, "Total"},
+		{cpg.SinkFileWrite, "Partial"},
+		{cpg.SinkTemplate, "Partial"},
+	}
+	for _, tc := range tests {
+		path := cpg.TaintPath{
+			Source: cpg.TaintSource{NodeID: "1", Kind: "http_param", File: "f.java", Line: 1},
+			Sink:   cpg.TaintSink{NodeID: "2", Kind: tc.kind, File: "f.java", Line: 3},
+		}
+		f := TaintPathToFinding(path, LanguageJava)
+		if f.SSVC.TechnicalImpact != tc.want {
+			t.Errorf("SSVC.TechnicalImpact for %v = %q, want %q", tc.kind, f.SSVC.TechnicalImpact, tc.want)
+		}
+	}
+}
+
+func TestTaintPathToFinding_PoeContextPopulated(t *testing.T) {
+	path := cpg.TaintPath{
+		Source: cpg.TaintSource{NodeID: "src1", Kind: "http_param", File: "f.java", Line: 1},
+		Sink:   cpg.TaintSink{NodeID: "snk2", Kind: cpg.SinkSQL, File: "f.java", Line: 5},
+		IntermediateNodes: []cpg.Node{
+			{ID: "n1", Name: "sanitize", File: "f.java", Line: 3},
+		},
+	}
+	f := TaintPathToFinding(path, LanguageJava)
+	if f.PoeContext == nil {
+		t.Fatal("PoeContext is nil")
+	}
+	if f.PoeContext.SourceNode != "src1" {
+		t.Errorf("PoeContext.SourceNode = %q, want %q", f.PoeContext.SourceNode, "src1")
+	}
+	if f.PoeContext.SinkNode != "snk2" {
+		t.Errorf("PoeContext.SinkNode = %q, want %q", f.PoeContext.SinkNode, "snk2")
+	}
+}
+
+// ─── TaintPathsToFindings ──────────────────────────────────────────────────────
+
+func TestTaintPathsToFindings_EmptyInput(t *testing.T) {
+	result := TaintPathsToFindings(nil, LanguageJava)
+	if result != nil {
+		t.Errorf("TaintPathsToFindings(nil) = %v, want nil", result)
+	}
+}
+
+func TestTaintPathsToFindings_ComputesID(t *testing.T) {
+	paths := []cpg.TaintPath{
+		{
+			Source: cpg.TaintSource{NodeID: "1", Kind: "http_param", File: "f.java", Line: 1},
+			Sink:   cpg.TaintSink{NodeID: "2", Kind: cpg.SinkSQL, File: "f.java", Line: 3},
+		},
+	}
+	result := TaintPathsToFindings(paths, LanguageJava)
+	if len(result) != 1 {
+		t.Fatalf("TaintPathsToFindings: got %d, want 1", len(result))
+	}
+	if result[0].ID == "" {
+		t.Error("TaintPathsToFindings: ID is empty")
+	}
+	if result[0].CWE != "CWE-89" {
+		t.Errorf("TaintPathsToFindings: CWE = %q, want %q", result[0].CWE, "CWE-89")
+	}
+	if result[0].RuleID != "JOERN-TAINT-sql" {
+		t.Errorf("TaintPathsToFindings: RuleID = %q, want %q", result[0].RuleID, "JOERN-TAINT-sql")
+	}
+}
+
+// ─── extractSnippet ────────────────────────────────────────────────────────────
+
+func TestExtractSnippet_ReadsLine(t *testing.T) {
+	dir := t.TempDir()
+	f := filepath.Join(dir, "test.java")
+	_ = os.WriteFile(f, []byte("line1\nline2\nline3\n"), 0o644)
+
+	got := extractSnippet(f, 2)
+	if got != "line2" {
+		t.Errorf("extractSnippet(line 2) = %q, want %q", got, "line2")
+	}
+}
+
+func TestExtractSnippet_OutOfRange(t *testing.T) {
+	dir := t.TempDir()
+	f := filepath.Join(dir, "test.java")
+	_ = os.WriteFile(f, []byte("line1\n"), 0o644)
+
+	got := extractSnippet(f, 999)
+	if got != "" {
+		t.Errorf("extractSnippet(out of range) = %q, want empty", got)
+	}
+}
+
+func TestExtractSnippet_MissingFile(t *testing.T) {
+	got := extractSnippet("/nonexistent/file.java", 1)
+	if got != "" {
+		t.Errorf("extractSnippet(missing file) = %q, want empty", got)
 	}
 }

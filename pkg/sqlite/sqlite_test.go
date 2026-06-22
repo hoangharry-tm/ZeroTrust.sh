@@ -353,3 +353,406 @@ func TestDeleteScanStateNonexistentIsNoop(t *testing.T) {
 		t.Errorf("unexpected error deleting non-existent row: %v", err)
 	}
 }
+
+// ─── schema version ──────────────────────────────────────────────────────────
+
+func TestSchemaVersionAfterOpen(t *testing.T) {
+	db, cleanup := tempDB(t)
+	defer cleanup()
+
+	var ver int
+	if err := db.Conn().QueryRow("PRAGMA user_version").Scan(&ver); err != nil {
+		t.Fatalf("read user_version: %v", err)
+	}
+	if ver != currentSchemaVersion {
+		t.Errorf("user_version: got %d, want %d", ver, currentSchemaVersion)
+	}
+}
+
+func TestAllTablesExist(t *testing.T) {
+	db, cleanup := tempDB(t)
+	defer cleanup()
+
+	want := []string{
+		"scan_state", "suppressions",
+		"projects", "scan_runs", "findings",
+		"ssvc_scores", "poe_results", "cpg_cache",
+	}
+	for _, name := range want {
+		var got string
+		err := db.Conn().QueryRow(
+			`SELECT name FROM sqlite_master WHERE type='table' AND name=?`, name,
+		).Scan(&got)
+		if err != nil || got != name {
+			t.Errorf("table %q missing: %v", name, err)
+		}
+	}
+}
+
+// ─── PRAGMA checks ───────────────────────────────────────────────────────────
+
+func TestWALModeEnabled(t *testing.T) {
+	db, cleanup := tempDB(t)
+	defer cleanup()
+
+	var mode string
+	if err := db.Conn().QueryRow("PRAGMA journal_mode").Scan(&mode); err != nil {
+		t.Fatalf("PRAGMA journal_mode: %v", err)
+	}
+	if mode != "wal" {
+		t.Errorf("journal_mode: got %q, want %q", mode, "wal")
+	}
+}
+
+func TestForeignKeysEnabled(t *testing.T) {
+	db, cleanup := tempDB(t)
+	defer cleanup()
+
+	var on int
+	if err := db.Conn().QueryRow("PRAGMA foreign_keys").Scan(&on); err != nil {
+		t.Fatalf("PRAGMA foreign_keys: %v", err)
+	}
+	if on != 1 {
+		t.Errorf("foreign_keys: got %d, want 1", on)
+	}
+}
+
+func TestFilePermissions(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "perm.db")
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	db.Close()
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Errorf("file mode: got %04o, want 0600", got)
+	}
+}
+
+// ─── projects ────────────────────────────────────────────────────────────────
+
+func TestUpsertAndGetProject(t *testing.T) {
+	db, cleanup := tempDB(t)
+	defer cleanup()
+
+	ctx := t.Context()
+	row := ProjectRow{
+		ProjectID:       "p-abc",
+		RootPath:        "/home/dev/myapp",
+		PrimaryLanguage: "Go",
+		FirstSeenAt:     1718000000,
+		LastScannedAt:   1718001000,
+	}
+	if err := db.UpsertProject(ctx, row); err != nil {
+		t.Fatalf("UpsertProject: %v", err)
+	}
+
+	got, err := db.GetProject(ctx, "p-abc")
+	if err != nil {
+		t.Fatalf("GetProject: %v", err)
+	}
+	if got.RootPath != "/home/dev/myapp" {
+		t.Errorf("RootPath: got %q, want %q", got.RootPath, "/home/dev/myapp")
+	}
+	if got.PrimaryLanguage != "Go" {
+		t.Errorf("PrimaryLanguage: got %q, want %q", got.PrimaryLanguage, "Go")
+	}
+}
+
+func TestUpsertProjectPreservesFirstSeen(t *testing.T) {
+	db, cleanup := tempDB(t)
+	defer cleanup()
+
+	ctx := t.Context()
+	row := ProjectRow{
+		ProjectID: "p-x", RootPath: "/x",
+		FirstSeenAt: 1000, LastScannedAt: 1000,
+	}
+	if err := db.UpsertProject(ctx, row); err != nil {
+		t.Fatalf("first upsert: %v", err)
+	}
+
+	row.LastScannedAt = 9999
+	if err := db.UpsertProject(ctx, row); err != nil {
+		t.Fatalf("second upsert: %v", err)
+	}
+
+	got, err := db.GetProject(ctx, "p-x")
+	if err != nil {
+		t.Fatalf("GetProject: %v", err)
+	}
+	// first_seen_at must not be overwritten
+	if got.FirstSeenAt != 1000 {
+		t.Errorf("FirstSeenAt: got %d, want 1000", got.FirstSeenAt)
+	}
+	// last_scanned_at should reflect the latest call
+	if got.LastScannedAt != 9999 {
+		t.Errorf("LastScannedAt: got %d, want 9999", got.LastScannedAt)
+	}
+}
+
+func TestGetProjectNotFound(t *testing.T) {
+	db, cleanup := tempDB(t)
+	defer cleanup()
+
+	ctx := t.Context()
+	_, err := db.GetProject(ctx, "missing")
+	if err != sql.ErrNoRows {
+		t.Errorf("expected sql.ErrNoRows, got %v", err)
+	}
+}
+
+// ─── scan_runs ───────────────────────────────────────────────────────────────
+
+func TestCreateAndFinalizeScanRun(t *testing.T) {
+	db, cleanup := tempDB(t)
+	defer cleanup()
+
+	ctx := t.Context()
+
+	// project must exist first (FK)
+	if err := db.UpsertProject(ctx, ProjectRow{
+		ProjectID: "p1", RootPath: "/p1", FirstSeenAt: 1, LastScannedAt: 1,
+	}); err != nil {
+		t.Fatalf("UpsertProject: %v", err)
+	}
+
+	run := ScanRunRow{
+		RunID:     "run-001",
+		ProjectID: "p1",
+		StartedAt: 1718000000,
+		ScanMode:  "default",
+		Status:    "running",
+	}
+	if err := db.CreateScanRun(ctx, run); err != nil {
+		t.Fatalf("CreateScanRun: %v", err)
+	}
+
+	if err := db.FinalizeScanRun(ctx, "run-001", 1718001000, 12, 3); err != nil {
+		t.Fatalf("FinalizeScanRun: %v", err)
+	}
+
+	var status string
+	var total int
+	if err := db.Conn().QueryRowContext(ctx,
+		`SELECT status, findings_total FROM scan_runs WHERE run_id = ?`, "run-001",
+	).Scan(&status, &total); err != nil {
+		t.Fatalf("query scan_runs: %v", err)
+	}
+	if status != "complete" {
+		t.Errorf("status: got %q, want %q", status, "complete")
+	}
+	if total != 3 {
+		t.Errorf("findings_total: got %d, want 3", total)
+	}
+}
+
+func TestFinalizeScanRunNotFound(t *testing.T) {
+	db, cleanup := tempDB(t)
+	defer cleanup()
+
+	ctx := t.Context()
+	if err := db.FinalizeScanRun(ctx, "ghost-run", 0, 0, 0); err == nil {
+		t.Error("expected error when run_id not found, got nil")
+	}
+}
+
+// ─── findings ────────────────────────────────────────────────────────────────
+
+// setupProjectAndRun inserts prerequisite project + run rows so finding FK is satisfied.
+func setupProjectAndRun(t *testing.T, db *DB, projectID, runID string) {
+	t.Helper()
+	ctx := t.Context()
+	if err := db.UpsertProject(ctx, ProjectRow{
+		ProjectID: projectID, RootPath: "/" + projectID,
+		FirstSeenAt: 1, LastScannedAt: 1,
+	}); err != nil {
+		t.Fatalf("UpsertProject: %v", err)
+	}
+	if err := db.CreateScanRun(ctx, ScanRunRow{
+		RunID: runID, ProjectID: projectID, StartedAt: 1, Status: "running",
+	}); err != nil {
+		t.Fatalf("CreateScanRun: %v", err)
+	}
+}
+
+func TestUpsertAndListFindings(t *testing.T) {
+	db, cleanup := tempDB(t)
+	defer cleanup()
+
+	ctx := t.Context()
+	setupProjectAndRun(t, db, "proj", "run-1")
+
+	f := FindingRow{
+		FindingID:   "fid-001",
+		ProjectID:   "proj",
+		RunID:       "run-1",
+		FilePath:    "src/auth.go",
+		LineStart:   42,
+		LineEnd:     44,
+		CWE:         "CWE-89",
+		Severity:    "HIGH",
+		Confidence:  0.9,
+		SourcePath:  "PATTERN",
+		RuleID:      "SQL-001",
+		MatchedCode: "db.Query(input)",
+		FirstSeenAt: 1718000000,
+		LastSeenAt:  1718000000,
+	}
+	if err := db.UpsertFinding(ctx, f); err != nil {
+		t.Fatalf("UpsertFinding: %v", err)
+	}
+
+	got, err := db.ListFindings(ctx, "proj")
+	if err != nil {
+		t.Fatalf("ListFindings: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 finding, got %d", len(got))
+	}
+	if got[0].FindingID != "fid-001" {
+		t.Errorf("FindingID: got %q, want %q", got[0].FindingID, "fid-001")
+	}
+	if got[0].Severity != "HIGH" {
+		t.Errorf("Severity: got %q, want %q", got[0].Severity, "HIGH")
+	}
+}
+
+func TestUpsertFindingUpdatesLastSeenAt(t *testing.T) {
+	db, cleanup := tempDB(t)
+	defer cleanup()
+
+	ctx := t.Context()
+	setupProjectAndRun(t, db, "proj", "run-1")
+
+	f := FindingRow{
+		FindingID:   "fid-002",
+		ProjectID:   "proj",
+		RunID:       "run-1",
+		FilePath:    "a.go",
+		LineStart:   1,
+		LineEnd:     1,
+		Severity:    "LOW",
+		Confidence:  0.5,
+		SourcePath:  "PATTERN",
+		FirstSeenAt: 1000,
+		LastSeenAt:  1000,
+	}
+	if err := db.UpsertFinding(ctx, f); err != nil {
+		t.Fatalf("first UpsertFinding: %v", err)
+	}
+
+	f.LastSeenAt = 9999
+	if err := db.UpsertFinding(ctx, f); err != nil {
+		t.Fatalf("second UpsertFinding: %v", err)
+	}
+
+	findings, err := db.ListFindings(ctx, "proj")
+	if err != nil {
+		t.Fatalf("ListFindings: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding after upsert, got %d", len(findings))
+	}
+	// first_seen_at must not change
+	if findings[0].FirstSeenAt != 1000 {
+		t.Errorf("FirstSeenAt: got %d, want 1000", findings[0].FirstSeenAt)
+	}
+	if findings[0].LastSeenAt != 9999 {
+		t.Errorf("LastSeenAt: got %d, want 9999", findings[0].LastSeenAt)
+	}
+}
+
+func TestCountFindingsByRun(t *testing.T) {
+	db, cleanup := tempDB(t)
+	defer cleanup()
+
+	ctx := t.Context()
+	setupProjectAndRun(t, db, "proj", "run-cnt")
+
+	severities := []string{"HIGH", "HIGH", "MEDIUM", "LOW"}
+	for i, sev := range severities {
+		f := FindingRow{
+			FindingID:  filepath.Join("fid", string(rune('a'+i))),
+			ProjectID:  "proj",
+			RunID:      "run-cnt",
+			FilePath:   "x.go",
+			LineStart:  i + 1,
+			LineEnd:    i + 1,
+			Severity:   sev,
+			Confidence: 0.8,
+			SourcePath: "PATTERN",
+		}
+		if err := db.UpsertFinding(ctx, f); err != nil {
+			t.Fatalf("UpsertFinding %d: %v", i, err)
+		}
+	}
+
+	counts, err := db.CountFindingsByRun(ctx, "run-cnt")
+	if err != nil {
+		t.Fatalf("CountFindingsByRun: %v", err)
+	}
+	if counts["HIGH"] != 2 {
+		t.Errorf("HIGH count: got %d, want 2", counts["HIGH"])
+	}
+	if counts["MEDIUM"] != 1 {
+		t.Errorf("MEDIUM count: got %d, want 1", counts["MEDIUM"])
+	}
+	if counts["LOW"] != 1 {
+		t.Errorf("LOW count: got %d, want 1", counts["LOW"])
+	}
+}
+
+// ─── cpg_cache ───────────────────────────────────────────────────────────────
+
+func TestUpsertAndGetCPGCache(t *testing.T) {
+	db, cleanup := tempDB(t)
+	defer cleanup()
+
+	ctx := t.Context()
+	if err := db.UpsertProject(ctx, ProjectRow{
+		ProjectID: "cpg-proj", RootPath: "/cpg",
+		FirstSeenAt: 1, LastScannedAt: 1,
+	}); err != nil {
+		t.Fatalf("UpsertProject: %v", err)
+	}
+
+	row := CPGCacheRow{
+		ProjectID:        "cpg-proj",
+		CPGPath:          "/home/.zerotrust/cpg-proj.cpg",
+		ScopeMode:        "default",
+		BuiltAt:          1718000000,
+		ChangedFunctions: 5,
+	}
+	if err := db.UpsertCPGCache(ctx, row); err != nil {
+		t.Fatalf("UpsertCPGCache: %v", err)
+	}
+
+	got, err := db.GetCPGCache(ctx, "cpg-proj")
+	if err != nil {
+		t.Fatalf("GetCPGCache: %v", err)
+	}
+	if got.CPGPath != row.CPGPath {
+		t.Errorf("CPGPath: got %q, want %q", got.CPGPath, row.CPGPath)
+	}
+	if got.ChangedFunctions != 5 {
+		t.Errorf("ChangedFunctions: got %d, want 5", got.ChangedFunctions)
+	}
+}
+
+func TestGetCPGCacheNotFound(t *testing.T) {
+	db, cleanup := tempDB(t)
+	defer cleanup()
+
+	ctx := t.Context()
+	_, err := db.GetCPGCache(ctx, "no-such-project")
+	if err != sql.ErrNoRows {
+		t.Errorf("expected sql.ErrNoRows, got %v", err)
+	}
+}

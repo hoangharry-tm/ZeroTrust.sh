@@ -12,7 +12,7 @@ All Python\-side operations communicate through this single process boundary:
 
 - LLM Verifier \(Path A\): verifies pattern findings with CoD \+ SCoT reasoning.
 - UniXcoder classifier \(Path B Tier 2\): classifies uncertain surfaces.
-- Threat Feature Extractor \(Path B Tier 2\): converts call chains to JSON summaries.
+- Semantic Function Summarizer \(Path B Tier 2\): converts call chains to JSON summaries.
 - LLM Semantic Scan \(Path B Tier 3\): runs the bounded ReAct loop.
 
 Transport: newline\-delimited JSON \(NDJSON\) over stdin/stdout. Each request has a unique ID; the worker echoes the ID in its response, allowing concurrent callers to match responses to outstanding requests.
@@ -26,7 +26,7 @@ Message type routing \(worker/main.py dispatcher\):
 ```
 "llm_verify"  → handlers/llm_verify.py   (Path A LLM Verifier)
 "classify"    → handlers/classify.py      (UniXcoder classifier)
-"summarize"   → handlers/summarize.py     (Threat Feature Extractor)
+"summarize"   → handlers/summarize.py     (Semantic Summarizer)
 "llm_scan"    → handlers/llm_scan.py      (LLM Semantic Scan)
 "ping"        → built-in health check
 "shutdown"    → graceful process exit
@@ -41,7 +41,7 @@ Message type routing \(worker/main.py dispatcher\):
 - [type ClassifySurfaceResult](<#ClassifySurfaceResult>)
 - [type LLMScanPayload](<#LLMScanPayload>)
 - [type Manager](<#Manager>)
-  - [func Start\(ctx context.Context, workerPath string\) \(\*Manager, error\)](<#Start>)
+  - [func Start\(ctx context.Context, workerPath string, logger \*slog.Logger\) \(\*Manager, error\)](<#Start>)
   - [func \(m \*Manager\) Call\(ctx context.Context, msgType MessageType, payload any\) \(\*Response, error\)](<#Manager.Call>)
   - [func \(m \*Manager\) Ping\(ctx context.Context\) error](<#Manager.Ping>)
   - [func \(m \*Manager\) Stop\(\) error](<#Manager.Stop>)
@@ -63,7 +63,7 @@ var ErrWorkerDead = errors.New("worker: process dead; restart failed")
 ```
 
 <a name="ClassifyPayload"></a>
-## type [ClassifyPayload](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/worker/worker.go#L132-L134>)
+## type [ClassifyPayload](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/worker/worker.go#L134-L136>)
 
 ClassifyPayload is the JSON payload for MsgClassify requests.
 
@@ -74,7 +74,7 @@ type ClassifyPayload struct {
 ```
 
 <a name="ClassifyResult"></a>
-## type [ClassifyResult](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/worker/worker.go#L144-L146>)
+## type [ClassifyResult](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/worker/worker.go#L146-L148>)
 
 ClassifyResult is the JSON result for MsgClassify responses.
 
@@ -85,7 +85,7 @@ type ClassifyResult struct {
 ```
 
 <a name="ClassifySurface"></a>
-## type [ClassifySurface](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/worker/worker.go#L137-L141>)
+## type [ClassifySurface](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/worker/worker.go#L139-L143>)
 
 ClassifySurface is one surface within a ClassifyPayload.
 
@@ -98,7 +98,7 @@ type ClassifySurface struct {
 ```
 
 <a name="ClassifySurfaceResult"></a>
-## type [ClassifySurfaceResult](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/worker/worker.go#L149-L153>)
+## type [ClassifySurfaceResult](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/worker/worker.go#L151-L155>)
 
 ClassifySurfaceResult is the classifier output for one surface.
 
@@ -111,7 +111,7 @@ type ClassifySurfaceResult struct {
 ```
 
 <a name="LLMScanPayload"></a>
-## type [LLMScanPayload](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/worker/worker.go#L161-L166>)
+## type [LLMScanPayload](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/worker/worker.go#L163-L168>)
 
 LLMScanPayload is the JSON payload for MsgLLMScan requests.
 
@@ -125,7 +125,7 @@ type LLMScanPayload struct {
 ```
 
 <a name="Manager"></a>
-## type [Manager](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/worker/worker.go#L172-L189>)
+## type [Manager](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/worker/worker.go#L174-L192>)
 
 Manager owns the long\-lived Python worker subprocess and serialises all IPC.
 
@@ -138,10 +138,10 @@ type Manager struct {
 ```
 
 <a name="Start"></a>
-### func [Start](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/worker/worker.go#L206>)
+### func [Start](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/worker/worker.go#L215>)
 
 ```go
-func Start(ctx context.Context, workerPath string) (*Manager, error)
+func Start(ctx context.Context, workerPath string, logger *slog.Logger) (*Manager, error)
 ```
 
 Start spawns the Python worker at workerPath, waits for it to be ready \(via a ping/pong handshake\), and returns a Manager.
@@ -150,9 +150,10 @@ Parameters:
 
 - ctx: cancellation context; if cancelled, the subprocess is killed.
 - workerPath: path to the worker entry point \(e.g. "worker/main.py"\).
+- logger: structured logger; nil defaults to slog.Default\(\).
 
 <a name="Manager.Call"></a>
-### func \(\*Manager\) [Call](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/worker/worker.go#L334>)
+### func \(\*Manager\) [Call](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/worker/worker.go#L362>)
 
 ```go
 func (m *Manager) Call(ctx context.Context, msgType MessageType, payload any) (*Response, error)
@@ -167,7 +168,7 @@ Parameters:
 - payload: the handler\-specific request payload \(marshalled to JSON\).
 
 <a name="Manager.Ping"></a>
-### func \(\*Manager\) [Ping](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/worker/worker.go#L398>)
+### func \(\*Manager\) [Ping](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/worker/worker.go#L426>)
 
 ```go
 func (m *Manager) Ping(ctx context.Context) error
@@ -180,7 +181,7 @@ Parameters:
 - ctx: cancellation context.
 
 <a name="Manager.Stop"></a>
-### func \(\*Manager\) [Stop](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/worker/worker.go#L412>)
+### func \(\*Manager\) [Stop](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/worker/worker.go#L440>)
 
 ```go
 func (m *Manager) Stop() error
@@ -189,7 +190,7 @@ func (m *Manager) Stop() error
 Stop sends a shutdown message to the worker and waits up to 3 seconds for the process to exit gracefully, then closes stdin. It is safe to call Stop even if the worker is already dead.
 
 <a name="MessageType"></a>
-## type [MessageType](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/worker/worker.go#L52>)
+## type [MessageType](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/worker/worker.go#L54>)
 
 MessageType is the string label that routes a request to the correct Python handler.
 
@@ -205,7 +206,7 @@ const (
     MsgLLMVerify MessageType = "llm_verify"
     // MsgClassify routes to the UniXcoder classifier handler.
     MsgClassify MessageType = "classify"
-    // MsgSummarize routes to the Threat Feature Extractor handler.
+    // MsgSummarize routes to the Semantic Function Summarizer handler.
     MsgSummarize MessageType = "summarize"
     // MsgLLMScan routes to the LLM Semantic Scan handler.
     MsgLLMScan MessageType = "llm_scan"
@@ -217,7 +218,7 @@ const (
 ```
 
 <a name="Request"></a>
-## type [Request](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/worker/worker.go#L80-L87>)
+## type [Request](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/worker/worker.go#L82-L89>)
 
 Request is an NDJSON message sent to the Python worker over stdin.
 
@@ -233,7 +234,7 @@ type Request struct {
 ```
 
 <a name="Response"></a>
-## type [Response](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/worker/worker.go#L90-L99>)
+## type [Response](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/worker/worker.go#L92-L101>)
 
 Response is an NDJSON message received from the Python worker over stdout.
 
@@ -251,7 +252,7 @@ type Response struct {
 ```
 
 <a name="ResponseStatus"></a>
-## type [ResponseStatus](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/worker/worker.go#L70>)
+## type [ResponseStatus](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/worker/worker.go#L72>)
 
 ResponseStatus is the status field in a worker Response.
 
@@ -271,7 +272,7 @@ const (
 ```
 
 <a name="SummarizePayload"></a>
-## type [SummarizePayload](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/worker/worker.go#L156-L158>)
+## type [SummarizePayload](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/worker/worker.go#L158-L160>)
 
 SummarizePayload is the JSON payload for MsgSummarize requests.
 
@@ -282,7 +283,7 @@ type SummarizePayload struct {
 ```
 
 <a name="VerifyPayload"></a>
-## type [VerifyPayload](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/worker/worker.go#L102-L118>)
+## type [VerifyPayload](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/worker/worker.go#L104-L120>)
 
 VerifyPayload is the JSON payload for MsgLLMVerify requests.
 
@@ -307,7 +308,7 @@ type VerifyPayload struct {
 ```
 
 <a name="VerifyResult"></a>
-## type [VerifyResult](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/worker/worker.go#L121-L129>)
+## type [VerifyResult](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/worker/worker.go#L123-L131>)
 
 VerifyResult is the JSON result for MsgLLMVerify responses.
 

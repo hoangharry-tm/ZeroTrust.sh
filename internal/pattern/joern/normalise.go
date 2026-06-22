@@ -2,6 +2,8 @@ package joern
 
 import (
 	"fmt"
+	"os"
+	"strings"
 
 	"github.com/hoangharry-tm/zerotrust/internal/finding"
 	"github.com/hoangharry-tm/zerotrust/pkg/cpg"
@@ -11,10 +13,8 @@ import (
 // The language is used for sink kind → CWE mapping.
 // Returns a HIGH-confidence finding (0.75) for Joern-detected taint flows.
 func TaintPathToFinding(path cpg.TaintPath, lang Language) finding.Finding {
-	// Determine CWE from the sink kind via the language's sink definitions.
 	cwe := cweForSinkKind(path.Sink.Kind, lang)
 
-	// Build a concise justification.
 	sourceInfo := fmt.Sprintf("%s (%s:%d)", path.Source.Kind, path.Source.File, path.Source.Line)
 	sinkInfo := fmt.Sprintf("%s (%s:%d)", string(path.Sink.Kind), path.Sink.File, path.Sink.Line)
 	justification := fmt.Sprintf("Taint flow from %s to sink %s", sourceInfo, sinkInfo)
@@ -22,20 +22,26 @@ func TaintPathToFinding(path cpg.TaintPath, lang Language) finding.Finding {
 		justification += " [sanitized path]"
 	}
 
+	// Extract source snippet from the sink file at the sink line.
+	matchedCode := extractSnippet(path.Sink.File, path.Sink.Line)
+
+	confidence := 0.75
+	severityLabel := finding.SeverityFromConfidence(confidence)
+
 	return finding.Finding{
 		Path:      path.Sink.File,
 		LineRange: finding.LineRange{Start: path.Sink.Line, End: path.Sink.Line},
 		CWE:       cwe,
-		SeverityLabel: finding.SeverityHigh,
-		Confidence:    0.75,
+		SeverityLabel: severityLabel,
+		Confidence:    confidence,
 		SourcePath:    finding.SourcePattern,
 		Justification: justification,
-		MatchedCode:   "",
+		MatchedCode:   matchedCode,
 		RuleID:        fmt.Sprintf("JOERN-TAINT-%s", string(path.Sink.Kind)),
 		SSVC: finding.SSVCDimensions{
 			Exploitation:    "None",
-			Automatable:     "Yes",
-			TechnicalImpact: "Partial",
+			Automatable:     ssvcAutomatable(path.Sink.Kind),
+			TechnicalImpact: ssvcTechnicalImpact(path.Sink.Kind),
 		},
 		PoeContext: &finding.PoeContext{
 			SourceNode: path.Source.NodeID,
@@ -48,6 +54,47 @@ func TaintPathToFinding(path cpg.TaintPath, lang Language) finding.Finding {
 				string(path.Sink.Kind)),
 		},
 	}
+}
+
+// ssvcAutomatable maps a sink kind to its SSVC Automatable dimension.
+// SQL injection, command injection, and eval are scriptable ("Yes").
+// File writes and deserialization require context-specific payloads ("No").
+func ssvcAutomatable(kind cpg.SinkKind) string {
+	switch kind {
+	case cpg.SinkSQL, cpg.SinkCommand, cpg.SinkEval:
+		return "Yes"
+	case cpg.SinkFileWrite, cpg.SinkDeserialization, cpg.SinkTemplate, cpg.SinkRedirect:
+		return "No"
+	default:
+		return "No"
+	}
+}
+
+// ssvcTechnicalImpact maps a sink kind to its SSVC Technical Impact dimension.
+func ssvcTechnicalImpact(kind cpg.SinkKind) string {
+	switch kind {
+	case cpg.SinkSQL, cpg.SinkCommand, cpg.SinkDeserialization, cpg.SinkEval:
+		return "Total"
+	default:
+		return "Partial"
+	}
+}
+
+// extractSnippet reads a single line from a source file. Returns empty string
+// if the file cannot be read or the line is out of range.
+func extractSnippet(filePath string, line int) string {
+	if filePath == "" || line < 1 {
+		return ""
+	}
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		return ""
+	}
+	lines := strings.Split(string(content), "\n")
+	if line > len(lines) {
+		return ""
+	}
+	return strings.TrimSpace(lines[line-1])
 }
 
 // TaintPathsToFindings converts a slice of Joern taint paths into Findings.

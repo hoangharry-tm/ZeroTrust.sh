@@ -37,15 +37,15 @@ Classifier: vulnerable  → Escalate=true,  EscalateReason="vulnerable" (→ LLM
 - [func IsSupported\(lang string\) bool](<#IsSupported>)
 - [type EscalateReason](<#EscalateReason>)
 - [type Gate](<#Gate>)
-  - [func New\(w \*worker.Manager\) \*Gate](<#New>)
-  - [func NewWithThreshold\(w \*worker.Manager, threshold float64\) \*Gate](<#NewWithThreshold>)
+  - [func New\(w \*worker.Manager, logger \*slog.Logger\) \*Gate](<#New>)
+  - [func NewWithThreshold\(w \*worker.Manager, threshold float64, logger \*slog.Logger\) \*Gate](<#NewWithThreshold>)
   - [func \(g \*Gate\) Classify\(ctx context.Context, surfaces \[\]enrichment.EnrichedSurface\) \(\[\]Result, error\)](<#Gate.Classify>)
 - [type Label](<#Label>)
 - [type Result](<#Result>)
 
 
 <a name="IsSupported"></a>
-## func [IsSupported](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/classifier/classifier.go#L93>)
+## func [IsSupported](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/classifier/classifier.go#L94>)
 
 ```go
 func IsSupported(lang string) bool
@@ -54,7 +54,7 @@ func IsSupported(lang string) bool
 IsSupported reports whether lang is handled by the UniXcoder classifier. Unsupported languages bypass the classifier and route directly to the LLM tier. lang is normalised to lowercase before the lookup.
 
 <a name="EscalateReason"></a>
-## type [EscalateReason](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/classifier/classifier.go#L64>)
+## type [EscalateReason](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/classifier/classifier.go#L65>)
 
 EscalateReason describes why a surface must proceed past the classifier gate.
 
@@ -78,7 +78,7 @@ const (
 ```
 
 <a name="Gate"></a>
-## type [Gate](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/classifier/classifier.go#L113-L116>)
+## type [Gate](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/classifier/classifier.go#L114-L118>)
 
 Gate applies the UniXcoder classifier to a batch of enriched surfaces.
 
@@ -89,25 +89,25 @@ type Gate struct {
 ```
 
 <a name="New"></a>
-### func [New](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/classifier/classifier.go#L121>)
+### func [New](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/classifier/classifier.go#L124>)
 
 ```go
-func New(w *worker.Manager) *Gate
+func New(w *worker.Manager, logger *slog.Logger) *Gate
 ```
 
-New returns a Gate with the default escalation threshold of 0.80. In high\-recall mode, only surfaces classified with confidence ≥ 0.80 as safe exit Path B; everything else escalates to the LLM tier.
+New returns a Gate with the default escalation threshold of 0.80. In high\-recall mode, only surfaces classified with confidence ≥ 0.80 as safe exit Path B; everything else escalates to the LLM tier. If logger is nil, slog.Default\(\) is used.
 
 <a name="NewWithThreshold"></a>
-### func [NewWithThreshold](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/classifier/classifier.go#L127>)
+### func [NewWithThreshold](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/classifier/classifier.go#L133>)
 
 ```go
-func NewWithThreshold(w *worker.Manager, threshold float64) *Gate
+func NewWithThreshold(w *worker.Manager, threshold float64, logger *slog.Logger) *Gate
 ```
 
-NewWithThreshold returns a Gate with a custom escalation threshold. Raise the threshold to reduce false negatives; lower it to reduce LLM cost.
+NewWithThreshold returns a Gate with a custom escalation threshold. If logger is nil, slog.Default\(\) is used.
 
 <a name="Gate.Classify"></a>
-### func \(\*Gate\) [Classify](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/classifier/classifier.go#L177>)
+### func \(\*Gate\) [Classify](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/classifier/classifier.go#L186>)
 
 ```go
 func (g *Gate) Classify(ctx context.Context, surfaces []enrichment.EnrichedSurface) ([]Result, error)
@@ -129,7 +129,7 @@ After classifier verdict:
 Supported and unsupported language surfaces are dispatched concurrently: supported surfaces go to the Python worker in one batch; unsupported surfaces receive their result immediately without an IPC round\-trip.
 
 <a name="Label"></a>
-## type [Label](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/classifier/classifier.go#L49>)
+## type [Label](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/classifier/classifier.go#L50>)
 
 Label is the 3\-band classification output from UniXcoder.
 
@@ -154,7 +154,7 @@ const (
 ```
 
 <a name="Result"></a>
-## type [Result](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/classifier/classifier.go#L99-L110>)
+## type [Result](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/classifier/classifier.go#L100-L111>)
 
 Result is the classifier output for one surface.
 

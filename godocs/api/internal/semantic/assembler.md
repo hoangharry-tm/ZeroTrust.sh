@@ -10,7 +10,7 @@ Package assembler implements the Call Chain Context Assembler \(Path B Tier 2\).
 
 For each uncertain surface the Assembler traces the call chain up to depth 3 from the Joern CPG in callee\-first \(bottom\-up\) order. Callee\-first ordering ensures that when a caller function is submitted to the Summarizer and LLM, inferences about its callees are already available in the Scan Security Context Store.
 
-Depth 3 is a token\-budget constraint \(not a taint\-correctness bound — that is depth 5 for the CPG incremental patch\). Going deeper than 3 at this stage would exceed the Threat Feature Extractor's prompt budget for most models.
+Depth 3 is a token\-budget constraint \(not a taint\-correctness bound — that is depth 5 for the CPG incremental patch\). Going deeper than 3 at this stage would exceed the Semantic Function Summarizer's prompt budget for most models.
 
 Multi\-function context enables detection of:
 

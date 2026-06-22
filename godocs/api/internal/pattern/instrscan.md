@@ -19,22 +19,22 @@ Tier 3 -- Sandboxed LLM meta-audit (Python worker, Approach 2+)
 - [func ContainsInstructionFile\(files \[\]string\) bool](<#ContainsInstructionFile>)
 - [type Finding](<#Finding>)
 - [type Scanner](<#Scanner>)
-  - [func New\(\) \*Scanner](<#New>)
+  - [func New\(logger \*slog.Logger\) \*Scanner](<#New>)
   - [func \(s \*Scanner\) Scan\(fsys fs.FS\) \(\[\]Finding, error\)](<#Scanner.Scan>)
 - [type SignalType](<#SignalType>)
 
 
 <a name="ContainsInstructionFile"></a>
-## func [ContainsInstructionFile](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/instrscan/instrscan.go#L122>)
+## func [ContainsInstructionFile](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/instrscan/instrscan.go#L283>)
 
 ```go
 func ContainsInstructionFile(files []string) bool
 ```
 
-ContainsInstructionFile reports whether any path in files is an instruction file or MCP config that instrscan can analyse. The orchestrator uses this to skip the scanner entirely on changesets that contain no relevant files.
+ContainsInstructionFile reports whether any path in files is an instruction file, MCP config, or dependency file that instrscan can analyse. The orchestrator uses this to skip the scanner entirely on changesets that contain no relevant files.
 
 <a name="Finding"></a>
-## type [Finding](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/instrscan/instrscan.go#L32-L41>)
+## type [Finding](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/instrscan/instrscan.go#L35-L44>)
 
 Finding is a single prompt injection signal detected in an instruction file.
 
@@ -52,25 +52,27 @@ type Finding struct {
 ```
 
 <a name="Scanner"></a>
-## type [Scanner](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/instrscan/instrscan.go#L44>)
+## type [Scanner](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/instrscan/instrscan.go#L47-L49>)
 
 Scanner walks an fs.FS and detects prompt injection signals in AI agent instruction files.
 
 ```go
-type Scanner struct{}
+type Scanner struct {
+    // contains filtered or unexported fields
+}
 ```
 
 <a name="New"></a>
-### func [New](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/instrscan/instrscan.go#L47>)
+### func [New](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/instrscan/instrscan.go#L53>)
 
 ```go
-func New() *Scanner
+func New(logger *slog.Logger) *Scanner
 ```
 
-New returns a Scanner ready to walk an fs.FS.
+New returns a Scanner ready to walk an fs.FS. If logger is nil, slog.Default\(\) is used.
 
 <a name="Scanner.Scan"></a>
-### func \(\*Scanner\) [Scan](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/instrscan/instrscan.go#L132>)
+### func \(\*Scanner\) [Scan](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/instrscan/instrscan.go#L293>)
 
 ```go
 func (s *Scanner) Scan(fsys fs.FS) ([]Finding, error)
@@ -79,7 +81,7 @@ func (s *Scanner) Scan(fsys fs.FS) ([]Finding, error)
 Scan walks fsys and returns all prompt injection findings across instruction files and MCP configs.
 
 <a name="SignalType"></a>
-## type [SignalType](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/instrscan/instrscan.go#L22>)
+## type [SignalType](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/instrscan/instrscan.go#L23>)
 
 SignalType classifies the kind of prompt injection signal detected in an instruction file.
 
@@ -91,9 +93,11 @@ type SignalType string
 
 ```go
 const (
-    SignalUnicodeObfuscation SignalType = "unicode_obfuscation"  // invisible/bidi Unicode characters
-    SignalKeywordMatch       SignalType = "keyword_match"        // suspicious keyword phrase match
-    SignalMCPSchemaViolation SignalType = "mcp_schema_violation" // over-broad MCP server permission
+    SignalUnicodeObfuscation     SignalType = "unicode_obfuscation"     // invisible/bidi Unicode characters
+    SignalKeywordMatch           SignalType = "keyword_match"           // suspicious keyword phrase match
+    SignalMCPSchemaViolation     SignalType = "mcp_schema_violation"    // over-broad MCP server permission
+    SignalHallucinatedDependency SignalType = "hallucinated_dependency" // non-existent/hallucinated package
+    SignalInstructionOverride    SignalType = "instruction_override"    // override/forget previous instructions
 )
 ```
 

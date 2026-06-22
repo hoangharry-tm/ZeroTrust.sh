@@ -20,6 +20,7 @@ Auto\-flagging: surfaces with an exact CVE match \(CVSS ≥ 7.0\) are promoted t
 
 ## Index
 
+- [Variables](<#variables>)
 - [func ApplyCVEMatches\(surfaces \[\]EnrichedSurface, cvesByPkg map\[string\]\[\]CVEMatch\)](<#ApplyCVEMatches>)
 - [func AutoFlagSeverity\(cvss float64\) finding.SeverityLabel](<#AutoFlagSeverity>)
 - [type CVEMatch](<#CVEMatch>)
@@ -32,8 +33,16 @@ Auto\-flagging: surfaces with an exact CVE match \(CVSS ≥ 7.0\) are promoted t
 - [type ResourceIDFlow](<#ResourceIDFlow>)
 
 
+## Variables
+
+<a name="ErrTrivyDBNotInitialized"></a>ErrTrivyDBNotInitialized is returned by RunTrivy when offline mode is requested but Trivy's vulnerability database has never been downloaded. Callers should either re\-run without offline mode to bootstrap the DB, or skip CVE enrichment and log a warning.
+
+```go
+var ErrTrivyDBNotInitialized = errors.New("trivy: vulnerability DB not initialised; run once without --offline-scan to bootstrap")
+```
+
 <a name="ApplyCVEMatches"></a>
-## func [ApplyCVEMatches](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/enrichment/trivy.go#L183>)
+## func [ApplyCVEMatches](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/enrichment/trivy.go#L184>)
 
 ```go
 func ApplyCVEMatches(surfaces []EnrichedSurface, cvesByPkg map[string][]CVEMatch)
@@ -49,7 +58,7 @@ Parameters:
 - cvesByPkg: the map returned by RunTrivy.
 
 <a name="AutoFlagSeverity"></a>
-## func [AutoFlagSeverity](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/enrichment/trivy.go#L159>)
+## func [AutoFlagSeverity](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/enrichment/trivy.go#L160>)
 
 ```go
 func AutoFlagSeverity(cvss float64) finding.SeverityLabel
@@ -188,7 +197,7 @@ Returns:
 - error: non\-nil if Trivy fails to start or CPG queries fail.
 
 <a name="Enricher.RunTrivy"></a>
-### func \(\*Enricher\) [RunTrivy](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/enrichment/trivy.go#L82>)
+### func \(\*Enricher\) [RunTrivy](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/enrichment/trivy.go#L86>)
 
 ```go
 func (e *Enricher) RunTrivy(ctx context.Context, projectRoot string) (map[string][]CVEMatch, error)
@@ -196,15 +205,7 @@ func (e *Enricher) RunTrivy(ctx context.Context, projectRoot string) (map[string
 
 RunTrivy executes the Trivy binary against projectRoot and returns all CVE matches keyed by lowercase package name.
 
-Parameters:
-
-- ctx: cancellation context; Trivy is killed if ctx is cancelled.
-- projectRoot: absolute path to the directory containing dependency manifests.
-
-Returns:
-
-- map\[string\]\[\]CVEMatch: CVE matches keyed by lowercase package name. The map is always non\-nil on a clean return even if no CVEs are found.
-- error: non\-nil if the Trivy binary cannot be found, exits non\-zero with no output, or its JSON output is malformed. A non\-zero exit with valid JSON \(Trivy returns exit code 1 when vulnerabilities are found\) is treated as success.
+Returns ErrTrivyDBNotInitialized when offlineMode is true but the local vulnerability database has not been bootstrapped yet. The caller should re\-run without offline mode once to initialise the DB.
 
 <a name="ResourceIDFlow"></a>
 ## type [ResourceIDFlow](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/enrichment/enrichment.go#L48-L56>)

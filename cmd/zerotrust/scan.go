@@ -21,11 +21,14 @@ package main
 // the CPG build in Path A reports ready; it does not wait for LLM Verifier output.
 
 import (
+	"bytes"
 	"context"
+	"crypto/rand"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -64,6 +67,7 @@ type pipeline struct {
 	cfg     ScanConfig
 	logger  *slog.Logger
 	logFile *os.File
+	runID   string // unique ID for this scan run; persisted to scan_runs
 
 	// ingestion
 	db       *sqlite.DB
@@ -138,6 +142,22 @@ func newPipeline(ctx context.Context, cfg ScanConfig) (*pipeline, error) {
 		return nil, fmt.Errorf("open state db: %w", err)
 	}
 
+	// Register project and open a scan run so findings can be persisted.
+	runID := newRunID()
+	if upsertErr := db.UpsertProject(ctx, sqlite.ProjectRow{
+		ProjectID: cfg.ProjectID,
+		RootPath:  cfg.Target,
+	}); upsertErr != nil {
+		logger.Warn("failed to upsert project record", "component", "scan", "err", upsertErr)
+	}
+	if createErr := db.CreateScanRun(ctx, sqlite.ScanRunRow{
+		RunID:     runID,
+		ProjectID: cfg.ProjectID,
+		ScanMode:  strings.ToLower(cfg.ScanMode),
+	}); createErr != nil {
+		logger.Warn("failed to create scan_run record", "component", "scan", "err", createErr)
+	}
+
 	// Python worker — started once, shared by verifier, classifier, summarizer, llmscan.
 	wm, err := worker.Start(ctx, "worker/main.py", logger)
 	if err != nil {
@@ -187,6 +207,7 @@ func newPipeline(ctx context.Context, cfg ScanConfig) (*pipeline, error) {
 		cfg:      cfg,
 		logger:   logger,
 		logFile:  logFile,
+		runID:    runID,
 		db:       db,
 		ingester: ingester,
 		llm:      llmClient,
@@ -276,6 +297,21 @@ func (p *pipeline) run(ctx context.Context, events chan<- output.Event) error {
 		modules := joern.DetectWorkingModules(changed)
 		if p.joern != nil {
 			graph := p.joern.GraphWithContext(ctx)
+
+			// Pre-flag dangerous sinks in the changed files so they are always
+			// in scope regardless of module segmentation mode. Best-effort:
+			// failures just mean no pre-flagged sinks for this scan.
+			if preFlagErr := p.joern.PreFlagSinks(ctx, changed); preFlagErr != nil {
+				p.logger.Warn("sink pre-flagging failed, continuing without pre-flagged sinks",
+					"component", "scan",
+					"err", preFlagErr,
+				)
+			} else {
+				p.logger.Info("sink pre-flagging complete",
+					"component", "scan",
+					"sinks", len(p.joern.PreFlaggedSinks()),
+				)
+			}
 
 			// Attempt CPG build or load + incremental patch.
 			cpgPath := cpgSnapshotPath(p.cfg.ProjectID)
@@ -367,6 +403,39 @@ func (p *pipeline) run(ctx context.Context, events chan<- output.Event) error {
 		},
 	})
 
+	// ── 4a. PERSIST FINDINGS ─────────────────────────────────────────────────
+	if p.db != nil && p.runID != "" {
+		now := time.Now().Unix()
+		for i := range scored {
+			f := &scored[i]
+			row := sqlite.FindingRow{
+				FindingID:      f.ID,
+				ProjectID:      ingResult.ProjectID,
+				RunID:          p.runID,
+				FilePath:       f.Path,
+				LineStart:      f.LineRange.Start,
+				LineEnd:        f.LineRange.End,
+				CWE:            f.CWE,
+				Severity:       string(f.SeverityLabel),
+				Confidence:     f.Confidence,
+				SourcePath:     string(f.SourcePath),
+				RuleID:         f.RuleID,
+				MatchedCode:    f.MatchedCode,
+				Justification:  f.Justification,
+				SuppressReason: string(f.SuppressReason),
+				FirstSeenAt:    now,
+				LastSeenAt:     now,
+			}
+			if upsertErr := p.db.UpsertFinding(ctx, row); upsertErr != nil {
+				p.logger.Warn("failed to persist finding",
+					"component", "scan",
+					"finding_id", f.ID,
+					"err", upsertErr,
+				)
+			}
+		}
+	}
+
 	// ── 5. PATCH ──────────────────────────────────────────────────────────────
 	patches, err := p.gen.Generate(ctx, scored)
 	if err != nil {
@@ -415,6 +484,12 @@ func (p *pipeline) run(ctx context.Context, events chan<- output.Event) error {
 		"elapsed", elapsed,
 		"report", p.cfg.ReportPath,
 	)
+	if p.db != nil && p.runID != "" {
+		if finalErr := p.db.FinalizeScanRun(ctx, p.runID, time.Now().Unix(), changedCount, len(scored)); finalErr != nil {
+			p.logger.Warn("failed to finalize scan_run", "component", "scan", "err", finalErr)
+		}
+	}
+
 	output.Emit(events, output.Event{
 		Kind: output.EventDone,
 		Done: &output.ScanSummary{
@@ -669,6 +744,26 @@ func stateDBPath() (string, error) {
 
 // ── CPG build helpers ─────────────────────────────────────────────────────────
 
+// maxScopeLOC is the maximum total lines-of-code allowed in the CPG build scope
+// before the build is skipped. This keeps build times under the 60 s target.
+// If the scope exceeds this limit, a warning is logged and taint analysis is
+// skipped for this scan (OpenGrep / ast-grep / instrscan continue unaffected).
+const maxScopeLOC = 5_000
+
+// countLOC returns the total line count across all given files.
+// Files that cannot be read or opened are silently skipped.
+func countLOC(files []string) (int, error) {
+	var total int
+	for _, f := range files {
+		content, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		total += bytes.Count(content, []byte{'\n'})
+	}
+	return total, nil
+}
+
 // buildOrLoadCPG builds a fresh CPG or loads an existing snapshot and applies
 // incremental patches. Returns nil on success or an error if the CPG cannot be
 // prepared (non-fatal — callers proceed without taint analysis).
@@ -677,10 +772,40 @@ func (p *pipeline) buildOrLoadCPG(ctx context.Context, cpgPath string, changedFi
 		return fmt.Errorf("joern client not initialized")
 	}
 
+	// Query the current Joern version for snapshot invalidation.
+	currentVersion, verErr := p.joern.Version(ctx)
+	if verErr != nil {
+		p.logger.Warn("could not determine Joern version, proceeding without version check",
+			"component", "cpg",
+			"err", verErr,
+		)
+		currentVersion = "unknown"
+	}
+
 	// Check if a prior CPG snapshot exists.
+	versionPath := joern.VersionSnapshotPath(p.cfg.ProjectID)
 	snapshotExists := false
 	if _, err := os.Stat(cpgPath); err == nil {
-		snapshotExists = true
+		// Version mismatch check: if the stored version differs from the current
+		// Joern version, invalidate the snapshot and force a full rebuild.
+		if storedVersion, readErr := os.ReadFile(versionPath); readErr == nil {
+			stored := strings.TrimSpace(string(storedVersion))
+			if stored != "" && stored != currentVersion {
+				output.Emit(events, output.Event{
+					Kind:  output.EventLog,
+					Stage: "cpg",
+					Log:   fmt.Sprintf("Joern version changed from %s to %s — invalidating CPG snapshot", stored, currentVersion),
+				})
+				_ = os.Remove(cpgPath)
+				_ = os.Remove(versionPath)
+				snapshotExists = false
+			} else {
+				snapshotExists = true
+			}
+		} else {
+			// No version file — treat as fresh snapshot.
+			snapshotExists = true
+		}
 	}
 
 	if snapshotExists {
@@ -746,17 +871,63 @@ func (p *pipeline) buildOrLoadCPG(ctx context.Context, cpgPath string, changedFi
 }
 
 // buildFullCPG builds a complete CPG from the given files and saves the snapshot.
+// Returns nil on success or an error the caller should handle as non-fatal.
 func (p *pipeline) buildFullCPG(ctx context.Context, cpgPath string, scopeFiles []string) error {
 	if len(scopeFiles) == 0 {
 		return fmt.Errorf("no files in scope for CPG build")
 	}
-	err := p.joern.BuildCPG(ctx, joern.BuildConfig{
+
+	// Enforce the ≤5K LOC gate to keep build times under the 60 s target.
+	loc, err := countLOC(scopeFiles)
+	if err != nil {
+		return fmt.Errorf("count loc: %w", err)
+	}
+	if loc > maxScopeLOC {
+		return fmt.Errorf("scope exceeds %d LOC (%d) — CPG build skipped; taint analysis disabled",
+			maxScopeLOC, loc)
+	}
+
+	p.logger.Info("building CPG",
+		"component", "cpg",
+		"files", len(scopeFiles),
+		"loc", loc,
+		"target_build_time_seconds", 60,
+	)
+
+	buildStart := time.Now()
+	err = p.joern.BuildCPG(ctx, joern.BuildConfig{
 		Paths:             scopeFiles,
 		Language:          "", // auto-detect
 		SerializedCPGPath: cpgPath,
 	})
+	buildElapsed := time.Since(buildStart)
 	if err != nil {
+		p.logger.Error("CPG build failed",
+			"component", "cpg",
+			"elapsed", buildElapsed,
+			"err", err,
+		)
 		return fmt.Errorf("build cpg: %w", err)
+	}
+
+	p.logger.Info("CPG build complete",
+		"component", "cpg",
+		"elapsed", buildElapsed,
+		"files", len(scopeFiles),
+		"loc", loc,
+	)
+
+	// Persist the Joern version alongside the snapshot for invalidation on
+	// repeat scans. Non-fatal: a write failure just means the next scan may
+	// rebuild unnecessarily.
+	versionPath := joern.VersionSnapshotPath(p.cfg.ProjectID)
+	if version, verErr := p.joern.Version(ctx); verErr == nil {
+		if writeErr := os.WriteFile(versionPath, []byte(version+"\n"), 0o644); writeErr != nil {
+			p.logger.Warn("failed to persist Joern version snapshot",
+				"component", "cpg",
+				"err", writeErr,
+			)
+		}
 	}
 	return nil
 }
@@ -811,20 +982,20 @@ func runJoernTaint(ctx context.Context, graph cpg.Graph, scopeFiles []string) ([
 			continue
 		}
 		for _, c := range calls {
-			// Match against source definitions.
-			if _, ok := joern.SourceDefForCall(lang, c.Name); ok {
+			// Match against source definitions — use the taxonomy Kind.
+			if sd, ok := joern.SourceDefForCall(lang, c.Name); ok {
 				sources = append(sources, cpg.TaintSource{
 					NodeID: c.ID,
-					Kind:   "http_param",
+					Kind:   sd.Kind,
 					File:   c.File,
 					Line:   c.Line,
 				})
 			}
-			// Match against sink definitions.
-			if _, ok := joern.SinkDefForCall(lang, c.Name); ok {
+			// Match against sink definitions — use the taxonomy Kind.
+			if sd, ok := joern.SinkDefForCall(lang, c.Name); ok {
 				sinks = append(sinks, cpg.TaintSink{
 					NodeID: c.ID,
-					Kind:   cpg.SinkSQL, // refined by TaintPaths via classifySinkKind
+					Kind:   sd.Kind,
 					File:   c.File,
 					Line:   c.Line,
 				})
@@ -844,4 +1015,12 @@ func runJoernTaint(ctx context.Context, graph cpg.Graph, scopeFiles []string) ([
 
 	// Normalise to Finding structs.
 	return joern.TaintPathsToFindings(paths, lang), nil
+}
+
+// newRunID generates a random 16-character hex string to uniquely identify a scan run.
+// crypto/rand.Read never returns an error on supported platforms.
+func newRunID() string {
+	var b [8]byte
+	_, _ = rand.Read(b[:]) //nolint:errcheck
+	return fmt.Sprintf("%x", b)
 }

@@ -24,7 +24,7 @@ Package cpg defines the shared Code Property Graph interface consumed by both th
 
 
 <a name="CallGraph"></a>
-## type [CallGraph](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/cpg/cpg.go#L78>)
+## type [CallGraph](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/cpg/cpg.go#L79>)
 
 CallGraph maps each function identifier to the identifiers of functions it calls.
 
@@ -33,7 +33,7 @@ type CallGraph map[string][]string
 ```
 
 <a name="Edge"></a>
-## type [Edge](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/cpg/cpg.go#L68-L75>)
+## type [Edge](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/cpg/cpg.go#L69-L76>)
 
 Edge is a directed relationship between two CPG nodes.
 
@@ -70,7 +70,7 @@ const (
 ```
 
 <a name="Graph"></a>
-## type [Graph](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/cpg/cpg.go#L135-L170>)
+## type [Graph](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/cpg/cpg.go#L136-L171>)
 
 Graph is the read interface shared by both detection paths. The Joern HTTP client \(internal/pattern/joern\) is the only implementation.
 
@@ -116,7 +116,7 @@ type Graph interface {
 ```
 
 <a name="IncrementalPatchConfig"></a>
-## type [IncrementalPatchConfig](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/cpg/cpg.go#L119-L128>)
+## type [IncrementalPatchConfig](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/cpg/cpg.go#L120-L129>)
 
 IncrementalPatchConfig controls the depth\-5 BFS CPG patch for repeat scans. Depth 5 is the taint\-correctness bound from Li et al. \(ICSE 2024\) and Effendi et al. \(SOAP/PLDI 2025\). Hub\-module fallback triggers when any changed function has ≥50 callers.
 
@@ -134,7 +134,7 @@ type IncrementalPatchConfig struct {
 ```
 
 <a name="Node"></a>
-## type [Node](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/cpg/cpg.go#L50-L65>)
+## type [Node](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/cpg/cpg.go#L51-L66>)
 
 Node is a single vertex in the Code Property Graph.
 
@@ -202,11 +202,12 @@ const (
     SinkTemplate        SinkKind = "template"        // server-side template injection
     SinkRedirect        SinkKind = "redirect"        // open redirect
     SinkEval            SinkKind = "eval"            // dynamic code evaluation
+    SinkUnknown         SinkKind = "unknown"         // unclassified sink; callers should not score these as SQL
 )
 ```
 
 <a name="TaintPath"></a>
-## type [TaintPath](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/cpg/cpg.go#L103-L113>)
+## type [TaintPath](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/cpg/cpg.go#L104-L114>)
 
 TaintPath is a single source\-to\-sink data\-flow path returned by taint analysis.
 
@@ -225,7 +226,7 @@ type TaintPath struct {
 ```
 
 <a name="TaintSink"></a>
-## type [TaintSink](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/cpg/cpg.go#L92-L100>)
+## type [TaintSink](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/cpg/cpg.go#L93-L101>)
 
 TaintSink describes a dangerous data\-consumption point.
 
@@ -242,7 +243,7 @@ type TaintSink struct {
 ```
 
 <a name="TaintSource"></a>
-## type [TaintSource](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/cpg/cpg.go#L81-L89>)
+## type [TaintSource](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/cpg/cpg.go#L82-L90>)
 
 TaintSource describes an untrusted data entry point.
 

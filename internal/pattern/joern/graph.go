@@ -277,10 +277,16 @@ func (g *joernGraph) TaintPaths(sources []cpg.TaintSource, sinks []cpg.TaintSink
 		// Classify the sink kind using the language-specific taint taxonomy.
 		sinkKind := classifySinkKind(f.Sink.Name, f.Sink.File)
 
+		// Classify source kind using the language-specific taint taxonomy.
+		sourceKind := classifySourceKind(f.Source.Name, f.Source.File)
+		if sourceKind == "" {
+			sourceKind = f.Source.Type
+		}
+
 		path := cpg.TaintPath{
 			Source: cpg.TaintSource{
 				NodeID: f.Source.ID,
-				Kind:   f.Source.Type,
+				Kind:   sourceKind,
 				File:   f.Source.File,
 				Line:   f.Source.Line,
 			},
@@ -306,13 +312,11 @@ func (g *joernGraph) TaintPaths(sources []cpg.TaintSource, sinks []cpg.TaintSink
 	return paths, nil
 }
 
-// PreFlaggedSinks returns dangerous sink nodes pre-flagged by Tree-sitter.
-// Stub in L1 — Tree-sitter integration is implemented in L2 (ML2.1.T4).
+// PreFlaggedSinks returns dangerous sink nodes pre-flagged by PreFlagSinks.
+// These are always in scope regardless of module segmentation mode.
+// Returns the cached list populated before the CPG build.
 func (g *joernGraph) PreFlaggedSinks() ([]cpg.TaintSink, error) {
-	// L2 note: Tree-sitter pre-flags sinks before CPG build; their IDs are
-	// stored in SQLite and loaded here to ensure they are always in scope
-	// regardless of module segmentation mode.
-	return nil, nil
+	return g.client.PreFlaggedSinks(), nil
 }
 
 // ─── parsing helpers ──────────────────────────────────────────────────────────
@@ -378,6 +382,21 @@ func escapeScalaString(s string) string {
 	s = strings.ReplaceAll(s, `\`, `\\`)
 	s = strings.ReplaceAll(s, `"`, `\"`)
 	return s
+}
+
+// classifySourceKind uses the language-specific taint taxonomy to determine the
+// correct source kind for a Joern finding node. Falls back to the raw node type
+// when the language or name is not in the taxonomy.
+func classifySourceKind(name, filePath string) string {
+	lang, ok := DetectLanguage(filePath)
+	if !ok {
+		return name
+	}
+	def, found := SourceDefForCall(lang, name)
+	if !found {
+		return name
+	}
+	return def.Kind
 }
 
 // classifySinkKind uses the language-specific taint taxonomy to determine the

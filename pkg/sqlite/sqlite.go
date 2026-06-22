@@ -1,84 +1,89 @@
 // Package sqlite wraps a SQLite database connection for the ZeroTrust.sh state cache.
 // Uses modernc.org/sqlite (pure-Go, no CGo dependency).
 //
-// Two tables are managed:
-//   - scan_state: one row per (project, file), keyed on content hash for diff detection.
-//   - suppressions: user-acknowledged suppression decisions persisted across scans.
+// Eight tables across two versioned migrations:
+//
+//	Migration 1: scan_state, suppressions
+//	Migration 2: projects, scan_runs, findings, ssvc_scores, poe_results, cpg_cache
+//
+// The database file is created with mode 0600. WAL journal mode and foreign-key
+// enforcement are applied on every Open so callers never need to set them manually.
 package sqlite
 
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	_ "modernc.org/sqlite" // register "sqlite" driver
 )
 
-// DB wraps a SQLite connection and owns the schema migration.
+const currentSchemaVersion = 2
+
+// DB wraps a SQLite connection and owns schema migrations.
 type DB struct {
 	conn *sql.DB
 }
 
 // ScanStateRow is one row from the scan_state table.
 type ScanStateRow struct {
-	// ProjectID identifies the scanned project (derived from project root path).
-	ProjectID string
-	// FilePath is the file path relative to the project root.
-	FilePath string
-	// ContentHash is the SHA-256 hex digest of the file's contents.
-	ContentHash string
-	// LastScannedAt is a Unix timestamp (seconds) of the scan that last touched this row.
+	ProjectID     string
+	FilePath      string
+	ContentHash   string
 	LastScannedAt int64
 }
 
 // SuppressionRow is one row from the suppressions table.
 type SuppressionRow struct {
-	// ProjectID identifies the scanned project.
-	ProjectID string
-	// FindingID is the stable dedup hash of the suppressed finding.
-	FindingID string
-	// Reason is a human-readable justification supplied at suppression time.
-	Reason string
-	// SuppressedAt is a Unix timestamp of when the suppression was recorded.
+	ProjectID    string
+	FindingID    string
+	Reason       string
 	SuppressedAt int64
 }
 
-// Open opens or creates the SQLite database at path, running schema migrations if needed.
-//
-// Parameters:
-//   - path: absolute path to the .db file; created if it does not exist.
-//
-// Returns a ready-to-use *DB, or an error if the file cannot be opened or migration fails.
+// Open opens or creates the SQLite database at path, enforces 0600 permissions,
+// applies connection-level PRAGMAs for safety and performance, and runs any
+// pending schema migrations.
 func Open(path string) (*DB, error) {
+	if err := ensureFile(path); err != nil {
+		return nil, err
+	}
+
 	conn, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite open %s: %w", path, err)
 	}
+
+	// Single writer; multiple readers via WAL — set max open connections to 1
+	// for the write connection so we never get SQLITE_BUSY on WAL checkpoint.
+	conn.SetMaxOpenConns(1)
+
 	db := &DB{conn: conn}
+	if err := db.applyPragmas(); err != nil {
+		conn.Close() //nolint:errcheck
+		return nil, err
+	}
 	if err := db.migrate(); err != nil {
-		conn.Close()
+		conn.Close() //nolint:errcheck
 		return nil, fmt.Errorf("sqlite migrate: %w", err)
 	}
 	return db, nil
 }
 
 // Conn exposes the underlying *sql.DB for callers that need raw query access.
-// Prefer the typed helpers (GetScanState, UpsertScanState, etc.) where possible.
+// Prefer the typed helpers where possible.
 func (db *DB) Conn() *sql.DB { return db.conn }
 
-// Close releases the database connection.
+// Close releases the database connection. WAL checkpoint runs on close.
 func (db *DB) Close() error { return db.conn.Close() }
 
 // ─── scan_state helpers ──────────────────────────────────────────────────────
 
 // GetScanState returns the cached state row for (projectID, filePath).
 // Returns sql.ErrNoRows if no prior scan entry exists for the file.
-//
-// Parameters:
-//   - ctx: cancellation context.
-//   - projectID: project identifier.
-//   - filePath: file path relative to project root.
 func (db *DB) GetScanState(ctx context.Context, projectID, filePath string) (*ScanStateRow, error) {
 	row := &ScanStateRow{}
 	err := db.conn.QueryRowContext(ctx,
@@ -93,11 +98,6 @@ func (db *DB) GetScanState(ctx context.Context, projectID, filePath string) (*Sc
 }
 
 // UpsertScanState inserts or replaces the scan state row for one file.
-// Called by diffindex.Indexer.Commit after a successful scan.
-//
-// Parameters:
-//   - ctx: cancellation context.
-//   - row: the state row to persist.
 func (db *DB) UpsertScanState(ctx context.Context, row ScanStateRow) error {
 	_, err := db.conn.ExecContext(ctx,
 		`INSERT OR REPLACE INTO scan_state (project_id, file_path, content_hash, last_scanned_at)
@@ -108,11 +108,6 @@ func (db *DB) UpsertScanState(ctx context.Context, row ScanStateRow) error {
 }
 
 // ListScanState returns all cached state rows for the given projectID.
-// Used by diffindex.Indexer.Diff to build the prior-state map.
-//
-// Parameters:
-//   - ctx: cancellation context.
-//   - projectID: project identifier.
 func (db *DB) ListScanState(ctx context.Context, projectID string) ([]ScanStateRow, error) {
 	rows, err := db.conn.QueryContext(ctx,
 		`SELECT project_id, file_path, content_hash, last_scanned_at
@@ -136,12 +131,6 @@ func (db *DB) ListScanState(ctx context.Context, projectID string) ([]ScanStateR
 }
 
 // DeleteScanState removes the state row for (projectID, filePath).
-// Called when a file is detected as removed from the project.
-//
-// Parameters:
-//   - ctx: cancellation context.
-//   - projectID: project identifier.
-//   - filePath: file path to remove.
 func (db *DB) DeleteScanState(ctx context.Context, projectID, filePath string) error {
 	_, err := db.conn.ExecContext(ctx,
 		`DELETE FROM scan_state WHERE project_id = ? AND file_path = ?`,
@@ -153,11 +142,6 @@ func (db *DB) DeleteScanState(ctx context.Context, projectID, filePath string) e
 // ─── suppressions helpers ────────────────────────────────────────────────────
 
 // IsSuppressed reports whether findingID is in the suppressions table for projectID.
-//
-// Parameters:
-//   - ctx: cancellation context.
-//   - projectID: project identifier.
-//   - findingID: the stable dedup hash of the finding.
 func (db *DB) IsSuppressed(ctx context.Context, projectID, findingID string) (bool, error) {
 	var count int
 	err := db.conn.QueryRowContext(ctx,
@@ -170,12 +154,7 @@ func (db *DB) IsSuppressed(ctx context.Context, projectID, findingID string) (bo
 	return count > 0, nil
 }
 
-// AddSuppression records a new suppression decision.
-// Idempotent: re-inserting the same (projectID, findingID) updates the reason.
-//
-// Parameters:
-//   - ctx: cancellation context.
-//   - row: the suppression to persist.
+// AddSuppression records a new suppression decision. Idempotent.
 func (db *DB) AddSuppression(ctx context.Context, row SuppressionRow) error {
 	if row.SuppressedAt == 0 {
 		row.SuppressedAt = time.Now().Unix()
@@ -192,11 +171,6 @@ func (db *DB) AddSuppression(ctx context.Context, row SuppressionRow) error {
 }
 
 // ListSuppressions returns all suppression rows for the given projectID.
-// Used by the report generator to annotate suppressed findings.
-//
-// Parameters:
-//   - ctx: cancellation context.
-//   - projectID: project identifier.
 func (db *DB) ListSuppressions(ctx context.Context, projectID string) ([]SuppressionRow, error) {
 	rows, err := db.conn.QueryContext(ctx,
 		`SELECT project_id, finding_id, reason, suppressed_at
@@ -222,10 +196,91 @@ func (db *DB) ListSuppressions(ctx context.Context, projectID string) ([]Suppres
 	return result, nil
 }
 
-// ─── schema ──────────────────────────────────────────────────────────────────
+// ─── internal ────────────────────────────────────────────────────────────────
 
+// ensureFile creates the database file with mode 0600 if it does not exist,
+// then enforces 0600 on any existing file. This must be called before sql.Open
+// so the driver does not create the file with the process umask.
+func ensureFile(path string) error {
+	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0o600)
+		if err != nil {
+			return fmt.Errorf("sqlite: create db file: %w", err)
+		}
+		if err := f.Close(); err != nil {
+			return fmt.Errorf("sqlite: close db file: %w", err)
+		}
+	}
+	// Enforce 0600 on existing files too — catches files created by older versions.
+	if err := os.Chmod(path, 0o600); err != nil {
+		return fmt.Errorf("sqlite: chmod db file: %w", err)
+	}
+	return nil
+}
+
+// applyPragmas sets per-connection SQLite settings for performance and safety.
+func (db *DB) applyPragmas() error {
+	pragmas := []string{
+		"PRAGMA journal_mode=WAL",    // concurrent reads during writes
+		"PRAGMA foreign_keys=ON",     // referential integrity
+		"PRAGMA busy_timeout=5000",   // 5 s retry on lock instead of SQLITE_BUSY
+		"PRAGMA synchronous=NORMAL",  // safe with WAL; faster than FULL
+		"PRAGMA temp_store=MEMORY",   // temp tables in RAM
+	}
+	for _, p := range pragmas {
+		if _, err := db.conn.Exec(p); err != nil {
+			return fmt.Errorf("sqlite pragma %q: %w", p, err)
+		}
+	}
+	return nil
+}
+
+// migrate runs any schema migrations that have not yet been applied.
+// Each migration is wrapped in a transaction. The schema version is tracked
+// via SQLite's built-in user_version PRAGMA.
 func (db *DB) migrate() error {
-	_, err := db.conn.Exec(`
+	var ver int
+	if err := db.conn.QueryRow("PRAGMA user_version").Scan(&ver); err != nil {
+		return fmt.Errorf("read schema version: %w", err)
+	}
+	for ver < currentSchemaVersion {
+		ver++
+		if err := db.runMigration(ver); err != nil {
+			return fmt.Errorf("migration %d: %w", ver, err)
+		}
+	}
+	return nil
+}
+
+func (db *DB) runMigration(ver int) error {
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	switch ver {
+	case 1:
+		err = migration1(tx)
+	case 2:
+		err = migration2(tx)
+	default:
+		return fmt.Errorf("unknown migration version %d", ver)
+	}
+	if err != nil {
+		return err
+	}
+
+	// user_version must be set outside the transaction in some SQLite builds;
+	// set it inside and then commit — this is safe with modernc.org/sqlite.
+	if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version = %d", ver)); err != nil {
+		return fmt.Errorf("set user_version: %w", err)
+	}
+	return tx.Commit()
+}
+
+func migration1(tx *sql.Tx) error {
+	_, err := tx.Exec(`
 		CREATE TABLE IF NOT EXISTS scan_state (
 			project_id      TEXT    NOT NULL,
 			file_path       TEXT    NOT NULL,
@@ -242,6 +297,78 @@ func (db *DB) migrate() error {
 			reason        TEXT    NOT NULL,
 			suppressed_at INTEGER NOT NULL,
 			PRIMARY KEY (project_id, finding_id)
+		);
+	`)
+	return err
+}
+
+func migration2(tx *sql.Tx) error {
+	_, err := tx.Exec(`
+		CREATE TABLE IF NOT EXISTS projects (
+			project_id       TEXT    PRIMARY KEY,
+			root_path        TEXT    NOT NULL UNIQUE,
+			primary_language TEXT,
+			first_seen_at    INTEGER NOT NULL,
+			last_scanned_at  INTEGER NOT NULL
+		);
+
+		CREATE TABLE IF NOT EXISTS scan_runs (
+			run_id          TEXT    PRIMARY KEY,
+			project_id      TEXT    NOT NULL REFERENCES projects(project_id),
+			started_at      INTEGER NOT NULL,
+			finished_at     INTEGER,
+			scan_mode       TEXT    NOT NULL DEFAULT 'default',
+			files_scanned   INTEGER NOT NULL DEFAULT 0,
+			findings_total  INTEGER NOT NULL DEFAULT 0,
+			status          TEXT    NOT NULL DEFAULT 'running'
+		);
+		CREATE INDEX IF NOT EXISTS idx_scan_runs_project
+			ON scan_runs (project_id, started_at DESC);
+
+		CREATE TABLE IF NOT EXISTS findings (
+			finding_id      TEXT    PRIMARY KEY,
+			project_id      TEXT    NOT NULL REFERENCES projects(project_id),
+			run_id          TEXT    NOT NULL REFERENCES scan_runs(run_id),
+			file_path       TEXT    NOT NULL,
+			line_start      INTEGER NOT NULL,
+			line_end        INTEGER NOT NULL,
+			cwe             TEXT,
+			severity        TEXT    NOT NULL,
+			confidence      REAL    NOT NULL,
+			source_path     TEXT    NOT NULL,
+			rule_id         TEXT,
+			matched_code    TEXT,
+			justification   TEXT,
+			suppress_reason TEXT,
+			first_seen_at   INTEGER NOT NULL,
+			last_seen_at    INTEGER NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_findings_project_sev
+			ON findings (project_id, severity);
+		CREATE INDEX IF NOT EXISTS idx_findings_first_seen
+			ON findings (project_id, first_seen_at DESC);
+
+		CREATE TABLE IF NOT EXISTS ssvc_scores (
+			finding_id       TEXT PRIMARY KEY REFERENCES findings(finding_id),
+			exploitation     TEXT,
+			automatable      TEXT,
+			technical_impact TEXT
+		);
+
+		CREATE TABLE IF NOT EXISTS poe_results (
+			finding_id           TEXT PRIMARY KEY REFERENCES findings(finding_id),
+			status               TEXT,
+			confidence           REAL,
+			business_impact_tier TEXT,
+			exec_summary         TEXT
+		);
+
+		CREATE TABLE IF NOT EXISTS cpg_cache (
+			project_id        TEXT    PRIMARY KEY REFERENCES projects(project_id),
+			cpg_path          TEXT    NOT NULL,
+			scope_mode        TEXT    NOT NULL,
+			built_at          INTEGER NOT NULL,
+			changed_functions INTEGER NOT NULL DEFAULT 0
 		);
 	`)
 	return err

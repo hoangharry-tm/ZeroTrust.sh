@@ -23,6 +23,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
 	"path/filepath"
@@ -65,30 +66,28 @@ type trivyCVSSEntry struct {
 	V3Score float64 `json:"V3Score"`
 }
 
+// ErrTrivyDBNotInitialized is returned by RunTrivy when offline mode is
+// requested but Trivy's vulnerability database has never been downloaded.
+// Callers should either re-run without offline mode to bootstrap the DB, or
+// skip CVE enrichment and log a warning.
+var ErrTrivyDBNotInitialized = errors.New("trivy: vulnerability DB not initialised; run once without --offline-scan to bootstrap")
+
+// trivyDBNotInitMsg is the exact substring Trivy emits to stderr on first-run
+// with --skip-db-update. String inspection is confined to this constant and
+// the single call site in runTrivy that converts it to ErrTrivyDBNotInitialized.
+const trivyDBNotInitMsg = "--skip-db-update cannot be specified on the first run"
+
 // RunTrivy executes the Trivy binary against projectRoot and returns all CVE
 // matches keyed by lowercase package name.
 //
-// Parameters:
-//   - ctx: cancellation context; Trivy is killed if ctx is cancelled.
-//   - projectRoot: absolute path to the directory containing dependency manifests.
-//
-// Returns:
-//   - map[string][]CVEMatch: CVE matches keyed by lowercase package name. The map
-//     is always non-nil on a clean return even if no CVEs are found.
-//   - error: non-nil if the Trivy binary cannot be found, exits non-zero with no
-//     output, or its JSON output is malformed. A non-zero exit with valid JSON
-//     (Trivy returns exit code 1 when vulnerabilities are found) is treated as
-//     success.
+// Returns ErrTrivyDBNotInitialized when offlineMode is true but the local
+// vulnerability database has not been bootstrapped yet. The caller should
+// re-run without offline mode once to initialise the DB.
 func (e *Enricher) RunTrivy(ctx context.Context, projectRoot string) (map[string][]CVEMatch, error) {
-	args := []string{
-		"fs",
-		"--format", "json",
-		"--quiet",
-	}
+	args := []string{"fs", "--format", "json", "--quiet"}
 	if e.offlineMode {
 		args = append(args, "--offline-scan", "--skip-db-update")
 	}
-	// Scan only manifests — never source code.
 	args = append(args, projectRoot)
 
 	cmd := exec.CommandContext(ctx, e.trivyPath, args...) //nolint:gosec // binary path from config
@@ -97,12 +96,14 @@ func (e *Enricher) RunTrivy(ctx context.Context, projectRoot string) (map[string
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
-		// Trivy exits 1 when vulnerabilities are found — treat as success if stdout
-		// contains valid JSON. A truly broken run produces no JSON output.
 		if stdout.Len() == 0 {
+			if strings.Contains(stderr.String(), trivyDBNotInitMsg) {
+				return nil, ErrTrivyDBNotInitialized
+			}
 			return nil, fmt.Errorf("trivy: run failed: %w\nstderr: %s", err, stderr.String())
 		}
-		// Fall through to parse — non-zero exit with JSON output is the CVE-found case.
+		// Trivy exits 1 when vulnerabilities are found — non-zero with JSON output
+		// is the CVE-found case; fall through to parse.
 	}
 
 	return parseTrivyOutput(stdout.Bytes())

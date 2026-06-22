@@ -8,32 +8,64 @@ import "github.com/hoangharry-tm/zerotrust/pkg/sqlite"
 
 Package sqlite wraps a SQLite database connection for the ZeroTrust.sh state cache. Uses modernc.org/sqlite \(pure\-Go, no CGo dependency\).
 
-Two tables are managed:
+Eight tables across two versioned migrations:
 
-- scan\_state: one row per \(project, file\), keyed on content hash for diff detection.
-- suppressions: user\-acknowledged suppression decisions persisted across scans.
+```
+Migration 1: scan_state, suppressions
+Migration 2: projects, scan_runs, findings, ssvc_scores, poe_results, cpg_cache
+```
+
+The database file is created with mode 0600. WAL journal mode and foreign\-key enforcement are applied on every Open so callers never need to set them manually.
 
 ## Index
 
+- [type CPGCacheRow](<#CPGCacheRow>)
 - [type DB](<#DB>)
   - [func Open\(path string\) \(\*DB, error\)](<#Open>)
   - [func \(db \*DB\) AddSuppression\(ctx context.Context, row SuppressionRow\) error](<#DB.AddSuppression>)
   - [func \(db \*DB\) Close\(\) error](<#DB.Close>)
   - [func \(db \*DB\) Conn\(\) \*sql.DB](<#DB.Conn>)
+  - [func \(db \*DB\) CountFindingsByRun\(ctx context.Context, runID string\) \(map\[string\]int, error\)](<#DB.CountFindingsByRun>)
+  - [func \(db \*DB\) CreateScanRun\(ctx context.Context, row ScanRunRow\) error](<#DB.CreateScanRun>)
   - [func \(db \*DB\) DeleteScanState\(ctx context.Context, projectID, filePath string\) error](<#DB.DeleteScanState>)
+  - [func \(db \*DB\) FinalizeScanRun\(ctx context.Context, runID string, finishedAt int64, filesScanned, findingsTotal int\) error](<#DB.FinalizeScanRun>)
+  - [func \(db \*DB\) GetCPGCache\(ctx context.Context, projectID string\) \(\*CPGCacheRow, error\)](<#DB.GetCPGCache>)
+  - [func \(db \*DB\) GetProject\(ctx context.Context, projectID string\) \(\*ProjectRow, error\)](<#DB.GetProject>)
   - [func \(db \*DB\) GetScanState\(ctx context.Context, projectID, filePath string\) \(\*ScanStateRow, error\)](<#DB.GetScanState>)
   - [func \(db \*DB\) IsSuppressed\(ctx context.Context, projectID, findingID string\) \(bool, error\)](<#DB.IsSuppressed>)
+  - [func \(db \*DB\) ListFindings\(ctx context.Context, projectID string\) \(\[\]FindingRow, error\)](<#DB.ListFindings>)
   - [func \(db \*DB\) ListScanState\(ctx context.Context, projectID string\) \(\[\]ScanStateRow, error\)](<#DB.ListScanState>)
   - [func \(db \*DB\) ListSuppressions\(ctx context.Context, projectID string\) \(\[\]SuppressionRow, error\)](<#DB.ListSuppressions>)
+  - [func \(db \*DB\) UpsertCPGCache\(ctx context.Context, row CPGCacheRow\) error](<#DB.UpsertCPGCache>)
+  - [func \(db \*DB\) UpsertFinding\(ctx context.Context, row FindingRow\) error](<#DB.UpsertFinding>)
+  - [func \(db \*DB\) UpsertProject\(ctx context.Context, row ProjectRow\) error](<#DB.UpsertProject>)
   - [func \(db \*DB\) UpsertScanState\(ctx context.Context, row ScanStateRow\) error](<#DB.UpsertScanState>)
+- [type FindingRow](<#FindingRow>)
+- [type ProjectRow](<#ProjectRow>)
+- [type ScanRunRow](<#ScanRunRow>)
 - [type ScanStateRow](<#ScanStateRow>)
 - [type SuppressionRow](<#SuppressionRow>)
 
 
-<a name="DB"></a>
-## type [DB](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite.go#L18-L20>)
+<a name="CPGCacheRow"></a>
+## type [CPGCacheRow](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite_findings.go#L53-L59>)
 
-DB wraps a SQLite connection and owns the schema migration.
+CPGCacheRow is one row from the cpg\_cache table.
+
+```go
+type CPGCacheRow struct {
+    ProjectID        string
+    CPGPath          string
+    ScopeMode        string
+    BuiltAt          int64
+    ChangedFunctions int
+}
+```
+
+<a name="DB"></a>
+## type [DB](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite.go#L27-L29>)
+
+DB wraps a SQLite connection and owns schema migrations.
 
 ```go
 type DB struct {
@@ -42,69 +74,97 @@ type DB struct {
 ```
 
 <a name="Open"></a>
-### func [Open](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite.go#L52>)
+### func [Open](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite.go#L50>)
 
 ```go
 func Open(path string) (*DB, error)
 ```
 
-Open opens or creates the SQLite database at path, running schema migrations if needed.
-
-Parameters:
-
-- path: absolute path to the .db file; created if it does not exist.
-
-Returns a ready\-to\-use \*DB, or an error if the file cannot be opened or migration fails.
+Open opens or creates the SQLite database at path, enforces 0600 permissions, applies connection\-level PRAGMAs for safety and performance, and runs any pending schema migrations.
 
 <a name="DB.AddSuppression"></a>
-### func \(\*DB\) [AddSuppression](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite.go#L171>)
+### func \(\*DB\) [AddSuppression](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite.go#L158>)
 
 ```go
 func (db *DB) AddSuppression(ctx context.Context, row SuppressionRow) error
 ```
 
-AddSuppression records a new suppression decision. Idempotent: re\-inserting the same \(projectID, findingID\) updates the reason.
-
-Parameters:
-
-- ctx: cancellation context.
-- row: the suppression to persist.
+AddSuppression records a new suppression decision. Idempotent.
 
 <a name="DB.Close"></a>
-### func \(\*DB\) [Close](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite.go#L70>)
+### func \(\*DB\) [Close](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite.go#L81>)
 
 ```go
 func (db *DB) Close() error
 ```
 
-Close releases the database connection.
+Close releases the database connection. WAL checkpoint runs on close.
 
 <a name="DB.Conn"></a>
-### func \(\*DB\) [Conn](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite.go#L67>)
+### func \(\*DB\) [Conn](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite.go#L78>)
 
 ```go
 func (db *DB) Conn() *sql.DB
 ```
 
-Conn exposes the underlying \*sql.DB for callers that need raw query access. Prefer the typed helpers \(GetScanState, UpsertScanState, etc.\) where possible.
+Conn exposes the underlying \*sql.DB for callers that need raw query access. Prefer the typed helpers where possible.
+
+<a name="DB.CountFindingsByRun"></a>
+### func \(\*DB\) [CountFindingsByRun](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite_findings.go#L222>)
+
+```go
+func (db *DB) CountFindingsByRun(ctx context.Context, runID string) (map[string]int, error)
+```
+
+CountFindingsByRun returns a severity → count map for all findings in runID.
+
+<a name="DB.CreateScanRun"></a>
+### func \(\*DB\) [CreateScanRun](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite_findings.go#L103>)
+
+```go
+func (db *DB) CreateScanRun(ctx context.Context, row ScanRunRow) error
+```
+
+CreateScanRun inserts a new scan\_run row with status="running".
 
 <a name="DB.DeleteScanState"></a>
-### func \(\*DB\) [DeleteScanState](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite.go#L144>)
+### func \(\*DB\) [DeleteScanState](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite.go#L134>)
 
 ```go
 func (db *DB) DeleteScanState(ctx context.Context, projectID, filePath string) error
 ```
 
-DeleteScanState removes the state row for \(projectID, filePath\). Called when a file is detected as removed from the project.
+DeleteScanState removes the state row for \(projectID, filePath\).
 
-Parameters:
+<a name="DB.FinalizeScanRun"></a>
+### func \(\*DB\) [FinalizeScanRun](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite_findings.go#L126>)
 
-- ctx: cancellation context.
-- projectID: project identifier.
-- filePath: file path to remove.
+```go
+func (db *DB) FinalizeScanRun(ctx context.Context, runID string, finishedAt int64, filesScanned, findingsTotal int) error
+```
+
+FinalizeScanRun marks a scan run complete and records the final counts.
+
+<a name="DB.GetCPGCache"></a>
+### func \(\*DB\) [GetCPGCache](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite_findings.go#L271>)
+
+```go
+func (db *DB) GetCPGCache(ctx context.Context, projectID string) (*CPGCacheRow, error)
+```
+
+GetCPGCache returns the CPG cache row for projectID, or sql.ErrNoRows if absent.
+
+<a name="DB.GetProject"></a>
+### func \(\*DB\) [GetProject](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite_findings.go#L88>)
+
+```go
+func (db *DB) GetProject(ctx context.Context, projectID string) (*ProjectRow, error)
+```
+
+GetProject returns the project row for projectID, or sql.ErrNoRows if absent.
 
 <a name="DB.GetScanState"></a>
-### func \(\*DB\) [GetScanState](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite.go#L81>)
+### func \(\*DB\) [GetScanState](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite.go#L87>)
 
 ```go
 func (db *DB) GetScanState(ctx context.Context, projectID, filePath string) (*ScanStateRow, error)
@@ -112,14 +172,8 @@ func (db *DB) GetScanState(ctx context.Context, projectID, filePath string) (*Sc
 
 GetScanState returns the cached state row for \(projectID, filePath\). Returns sql.ErrNoRows if no prior scan entry exists for the file.
 
-Parameters:
-
-- ctx: cancellation context.
-- projectID: project identifier.
-- filePath: file path relative to project root.
-
 <a name="DB.IsSuppressed"></a>
-### func \(\*DB\) [IsSuppressed](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite.go#L160>)
+### func \(\*DB\) [IsSuppressed](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite.go#L145>)
 
 ```go
 func (db *DB) IsSuppressed(ctx context.Context, projectID, findingID string) (bool, error)
@@ -127,86 +181,152 @@ func (db *DB) IsSuppressed(ctx context.Context, projectID, findingID string) (bo
 
 IsSuppressed reports whether findingID is in the suppressions table for projectID.
 
-Parameters:
+<a name="DB.ListFindings"></a>
+### func \(\*DB\) [ListFindings](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite_findings.go#L186>)
 
-- ctx: cancellation context.
-- projectID: project identifier.
-- findingID: the stable dedup hash of the finding.
+```go
+func (db *DB) ListFindings(ctx context.Context, projectID string) ([]FindingRow, error)
+```
+
+ListFindings returns all findings for projectID, newest first.
 
 <a name="DB.ListScanState"></a>
-### func \(\*DB\) [ListScanState](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite.go#L115>)
+### func \(\*DB\) [ListScanState](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite.go#L111>)
 
 ```go
 func (db *DB) ListScanState(ctx context.Context, projectID string) ([]ScanStateRow, error)
 ```
 
-ListScanState returns all cached state rows for the given projectID. Used by diffindex.Indexer.Diff to build the prior\-state map.
-
-Parameters:
-
-- ctx: cancellation context.
-- projectID: project identifier.
+ListScanState returns all cached state rows for the given projectID.
 
 <a name="DB.ListSuppressions"></a>
-### func \(\*DB\) [ListSuppressions](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite.go#L182>)
+### func \(\*DB\) [ListSuppressions](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite.go#L174>)
 
 ```go
 func (db *DB) ListSuppressions(ctx context.Context, projectID string) ([]SuppressionRow, error)
 ```
 
-ListSuppressions returns all suppression rows for the given projectID. Used by the report generator to annotate suppressed findings.
+ListSuppressions returns all suppression rows for the given projectID.
 
-Parameters:
+<a name="DB.UpsertCPGCache"></a>
+### func \(\*DB\) [UpsertCPGCache](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite_findings.go#L250>)
 
-- ctx: cancellation context.
-- projectID: project identifier.
+```go
+func (db *DB) UpsertCPGCache(ctx context.Context, row CPGCacheRow) error
+```
+
+UpsertCPGCache inserts or replaces the CPG cache row for a project.
+
+<a name="DB.UpsertFinding"></a>
+### func \(\*DB\) [UpsertFinding](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite_findings.go#L151>)
+
+```go
+func (db *DB) UpsertFinding(ctx context.Context, row FindingRow) error
+```
+
+UpsertFinding inserts a new finding or updates an existing one. On conflict \(same finding\_id\), run\_id, severity, confidence, justification, suppress\_reason, and last\_seen\_at are updated; first\_seen\_at is preserved.
+
+<a name="DB.UpsertProject"></a>
+### func \(\*DB\) [UpsertProject](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite_findings.go#L65>)
+
+```go
+func (db *DB) UpsertProject(ctx context.Context, row ProjectRow) error
+```
+
+UpsertProject inserts or updates a project row. If the project already exists, only last\_scanned\_at and primary\_language are updated.
 
 <a name="DB.UpsertScanState"></a>
-### func \(\*DB\) [UpsertScanState](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite.go#L100>)
+### func \(\*DB\) [UpsertScanState](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite.go#L101>)
 
 ```go
 func (db *DB) UpsertScanState(ctx context.Context, row ScanStateRow) error
 ```
 
-UpsertScanState inserts or replaces the scan state row for one file. Called by diffindex.Indexer.Commit after a successful scan.
+UpsertScanState inserts or replaces the scan state row for one file.
 
-Parameters:
+<a name="FindingRow"></a>
+## type [FindingRow](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite_findings.go#L33-L50>)
 
-- ctx: cancellation context.
-- row: the state row to persist.
+FindingRow is one row from the findings table.
+
+```go
+type FindingRow struct {
+    FindingID      string
+    ProjectID      string
+    RunID          string
+    FilePath       string
+    LineStart      int
+    LineEnd        int
+    CWE            string
+    Severity       string
+    Confidence     float64
+    SourcePath     string
+    RuleID         string
+    MatchedCode    string
+    Justification  string
+    SuppressReason string
+    FirstSeenAt    int64
+    LastSeenAt     int64
+}
+```
+
+<a name="ProjectRow"></a>
+## type [ProjectRow](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite_findings.go#L12-L18>)
+
+ProjectRow is one row from the projects table.
+
+```go
+type ProjectRow struct {
+    ProjectID       string
+    RootPath        string
+    PrimaryLanguage string
+    FirstSeenAt     int64
+    LastScannedAt   int64
+}
+```
+
+<a name="ScanRunRow"></a>
+## type [ScanRunRow](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite_findings.go#L21-L30>)
+
+ScanRunRow is one row from the scan\_runs table.
+
+```go
+type ScanRunRow struct {
+    RunID         string
+    ProjectID     string
+    StartedAt     int64
+    FinishedAt    int64 // 0 = still running
+    ScanMode      string
+    FilesScanned  int
+    FindingsTotal int
+    Status        string // "running" | "complete" | "error"
+}
+```
 
 <a name="ScanStateRow"></a>
-## type [ScanStateRow](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite.go#L23-L32>)
+## type [ScanStateRow](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite.go#L32-L37>)
 
 ScanStateRow is one row from the scan\_state table.
 
 ```go
 type ScanStateRow struct {
-    // ProjectID identifies the scanned project (derived from project root path).
-    ProjectID string
-    // FilePath is the file path relative to the project root.
-    FilePath string
-    // ContentHash is the SHA-256 hex digest of the file's contents.
-    ContentHash string
-    // LastScannedAt is a Unix timestamp (seconds) of the scan that last touched this row.
+    ProjectID     string
+    FilePath      string
+    ContentHash   string
     LastScannedAt int64
 }
 ```
 
 <a name="SuppressionRow"></a>
-## type [SuppressionRow](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite.go#L35-L44>)
+## type [SuppressionRow](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite.go#L40-L45>)
 
 SuppressionRow is one row from the suppressions table.
 
 ```go
 type SuppressionRow struct {
-    // ProjectID identifies the scanned project.
-    ProjectID string
-    // FindingID is the stable dedup hash of the suppressed finding.
-    FindingID string
-    // Reason is a human-readable justification supplied at suppression time.
-    Reason string
-    // SuppressedAt is a Unix timestamp of when the suppression was recorded.
+    ProjectID    string
+    FindingID    string
+    Reason       string
     SuppressedAt int64
 }
 ```
