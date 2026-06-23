@@ -49,7 +49,7 @@ export default function Nav() {
         <div class="max-w-6xl mx-auto px-4 h-14 flex items-center justify-between">
           <a
             href="#hero"
-            class="font-mono text-sm text-[#e6edf3] font-medium hover:text-[#3fb950] transition-colors"
+            class="font-mono text-sm font-medium bg-linear-to-r from-[#58a6ff] via-[#818cf8] to-[#8b5cf6] bg-clip-text text-transparent animate-gradient-shift hover:brightness-125 transition-all duration-300"
           >
             ZeroTrust.sh
           </a>

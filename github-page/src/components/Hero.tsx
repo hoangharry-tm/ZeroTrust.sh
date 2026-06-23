@@ -5,8 +5,7 @@ export default function Hero() {
       class="relative flex flex-col items-center justify-center min-h-screen px-4 text-center py-20 overflow-hidden"
     >
       <h1 class="font-mono text-5xl md:text-7xl font-bold mb-4">
-        <span class="text-[#C2410C]">Zero</span>
-        <span class="bg-linear-to-r from-[#3fb950] via-[#4ade80] to-[#58a6ff] bg-clip-text text-transparent animate-gradient-shift">Trust.sh</span>
+        <span class="bg-linear-to-r from-[#58a6ff] via-[#818cf8] to-[#8b5cf6] bg-clip-text text-transparent animate-gradient-shift">ZeroTrust.sh</span>
       </h1>
       <p class="text-xl md:text-2xl text-[#e6edf3] mb-2 max-w-2xl">
         Local, offline SAST for code written by AI coding agents.
