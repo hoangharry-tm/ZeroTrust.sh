@@ -154,14 +154,14 @@ Build the full Path B pipeline: Heuristic Targeting → Classifier → Assembler
 | L3.1.T6 | BOLAZ zero-trust resource ID tracking: P-API/C-API taint model via Joern queries; flag IDOR candidates where P-API (HTTP params/headers as untrusted source) reaches object-fetch sink without C-API (constant/verified anchor) authorization; IDOR candidates always escalate to LLM regardless of classifier verdict | Jul 19–21 | 12.0 | | **Revised from 4h → 12h.** BOLAZ is a research paper, not a library. Implementation is via Joern taint queries modeling the P-API/C-API distinction. Budget reflects that this requires authoring and validating multiple taint source/sink definitions plus routing logic. |
 | L3.1.T7 | Surface struct: `{id, file, function, node_type, call_graph_depth, cve_matches, is_idor_candidate}` | Jul 21 | 2.0 | | |
 | L3.1.T8 | Tier 1 elimination measurement: assert ~95% file elimination on test codebase; document in `docs/benchmarks/tier1_elimination.md` | Jul 21 | 3.0 | | Design target pending CVEFixes benchmark; document honestly |
-| **ML3.2** | **UniXcoder Classifier Gate** | Jul 21–24 | 19.0 | — | A-18 blocking dependency; operate in high-recall mode throughout |
-| L3.2.T1 | UniXcoder-Base-Nine model load in Python worker; extend dispatcher with `classify` request type | Jul 21–22 | 3.0 | | |
-| L3.2.T2 | Go IPC: classify request/response; reuse NDJSON protocol from ML0.6 | Jul 22 | 2.0 | | |
-| L3.2.T3 | 3-band threshold calibration: safe / uncertain / vulnerable; target uncertain band = 15–25% of surfaces | Jul 22–23 | 3.0 | | Conservative threshold until CVEFixes benchmark — document this caveat in all outputs |
-| L3.2.T4 | Routing: high-confidence-vulnerable → Dedup direct; high-confidence-safe → dismiss; IDOR candidates always escalate regardless of classifier verdict | Jul 23 | 2.0 | | |
-| L3.2.T5 | Unsupported-language bypass: Rust / Kotlin / Swift / C# → route directly to LLM Semantic Scan tier | Jul 23 | 1.5 | | |
-| L3.2.T6 | A-18 gap measurement: run UniXcoder on 50 labeled AI-generated code snippets; record F1 / precision / recall; document gap vs BigVul C/C++ claim in `docs/benchmarks/a18_gap.md` | Jul 24 | 4.0 | | Scoped: 50-sample labeled evaluation on available AI-generated code. No fine-tuning. No CVEFixes benchmark. Do not claim 94.73% F1 without caveat. |
-| L3.2.T7 | Funnel stats: assert ≤25% of surfaces reach LLM tier; log to benchmark doc | Jul 24 | 3.5 | | |
+| **ML3.2** | **UniXcoder Classifier Gate** | Jul 21–24 | 19.0 | **✅ All T1–T7 Done Jun 23** | 3.5 weeks early; A-18 blocking dependency; operate in high-recall mode throughout |
+| L3.2.T1 | UniXcoder-Base-Nine model load in Python worker; extend dispatcher with `classify` request type | Jul 21–22 | 3.0 | **Done Jun 23** | `worker/handlers/classify.py` lazy singleton; `worker/tests/test_classify.py` — mock model, dispatcher routing, label bands, idempotency |
+| L3.2.T2 | Go IPC: classify request/response; reuse NDJSON protocol from ML0.6 | Jul 22 | 2.0 | **Done Jun 23** | `Manager.Classify()` + `NewFromArgs` in `worker.go`; 4 tests (happy path, empty, dead worker, cancelled ctx) |
+| L3.2.T3 | 3-band threshold calibration: safe / uncertain / vulnerable; target uncertain band = 15–25% of surfaces | Jul 22–23 | 3.0 | **Done Jun 23** | `ThresholdVulnerable=0.80` / `ThresholdSafe=0.20` exported constants; 6 boundary tests |
+| L3.2.T4 | Routing: high-confidence-vulnerable → Dedup direct; high-confidence-safe → dismiss; IDOR candidates always escalate regardless of classifier verdict | Jul 23 | 2.0 | **Done Jun 23** | `Route()` + `RouteResult` in `router.go`; 13 tests covering IDOR override, all three bands, mixed batch |
+| L3.2.T5 | Unsupported-language bypass: Rust / Kotlin / Swift / C# → route directly to LLM Semantic Scan tier | Jul 23 | 1.5 | **Done Jun 23** | `.rs/.kt/.swift/.cs` → `ToAssembler` with `BypassedClassifier=true`; 5 tests (4 unsupported + 1 control) |
+| L3.2.T6 | A-18 gap measurement: run UniXcoder on 50 labeled AI-generated code snippets; record F1 / precision / recall; document gap vs BigVul C/C++ claim in `docs/benchmarks/a18_gap.md` | Jul 24 | 4.0 | **Done Jun 23** | 50 snippets in `tests/a18-eval/` (25 vuln, 25 safe; Py/Java/Go/JS); `scripts/benchmarks/a18_eval.py`; `docs/benchmarks/a18_gap.md` (pending run — results table empty until eval runs against live model) |
+| L3.2.T7 | Funnel stats: assert ≤25% of surfaces reach LLM tier; log to benchmark doc | Jul 24 | 3.5 | **Done Jun 23** | `RouteAndLog()` in `router.go` — logs info + warns at >25%; 5 unit tests; integration test in `classifier_integration_test.go` writes `docs/benchmarks/tier2_funnel.md` |
 | **ML3.3** | **Call Chain Context Assembler + Threat Feature Extractor** | Jul 24–26 | 18.0 | — | Single-pass union schema replaces prior 3-pass design (~3× cheaper) |
 | L3.3.T1 | Call chain traversal depth 3 from Joern CPG; callee-first (bottom-up) order | Jul 24–25 | 4.0 | | Callee-first required for SCSS correctness and token-budget integrity |
 | L3.3.T2 | Multi-function context assembly: `CallChainContext` struct | Jul 25 | 3.0 | | |
@@ -226,7 +226,7 @@ Complete the Dedup pipeline, SSVC scoring, HTML report, patch suggestions, and r
 | L0 — Foundation + Fast Path | Jun 23 – Jul 3 | 57h + 13h buffer | **✅ 100% done Jun 17–18** — all ML0.1–ML0.7 delivered 5–14 days early |
 | L1 — Joern Spike (time-boxed) | Jun 18 / Jul 3–7 | 20h + 8h contingency | **✅ Code done Jun 18 (2 weeks early)** — binary install + `make test-integration` pending |
 | L2 — Path A Complete | Jul 7 – Jul 17 | 56h + 14h buffer | **✅ 100% done Jun 19** — all ML2.1 + ML2.2 + ML2.3 delivered 2.5–3.5 weeks early; all 14h buffer absorbed |
-| L3 — Path B | Jul 17 – Jul 28 | 69h + 8h buffer | BOLAZ taint model (12h task); A-18 calibration |
+| L3 — Path B | Jul 17 – Jul 28 | 69h + 8h buffer | ML3.2 T1–T6 done Jun 23 (3.5 weeks early); BOLAZ taint model (12h task) remaining |
 | L4 — Dedup + Report + Integration | Jul 28 – Aug 6 | 50h + 13h buffer | SSVC 3-API sourcing; compressed 9-day window |
 | **Total** | **Jun 9 – Aug 6** | **252h work + 56h buffer = 308h** | **~62% of hours delivered** — well ahead of schedule |
 

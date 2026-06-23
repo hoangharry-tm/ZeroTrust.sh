@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
     paths:
-      - 'github-page/**'
+      - 'site/**'
   workflow_dispatch:
 
 permissions:
@@ -25,14 +25,14 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: github-page/package-lock.json
+          cache-dependency-path: site/package-lock.json
       - run: npm ci
-        working-directory: github-page
+        working-directory: site
       - run: npm run build
-        working-directory: github-page
+        working-directory: site
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: github-page/dist
+          path: site/dist
 
   deploy:
     needs: build

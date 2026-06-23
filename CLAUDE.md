@@ -66,9 +66,15 @@ internal/output/minimal.go  internal/output/web/{renderer,sse,events}.go  intern
 internal/worker/
 worker/main.py  worker/handlers/  worker/models/  worker/schemas/
 rules/python/  rules/java/  rules/generic/  rules/astgrep/
-testdata/spring-boot-app/  testdata/rules-tests/
+tests/fixtures/{bad,ok,knockout}/
+tests/integration/{spring-boot-app,demo-app,synthetic}/
+tests/corpus/                              ← .gitignored; populated by data pipeline
+pipeline/collectors/  pipeline/normalizer/  pipeline/labeler/  pipeline/notebooks/
+scripts/rules/  scripts/pipeline/  scripts/benchmarks/
 docker/engine/  docker/sandbox/
-docs/architecture/  docs/design/  docs/engineering/  docs/planning/  docs/presentations/  docs/rules/
+site/                                      ← GitHub Pages marketing site
+docs/architecture/  docs/engineering/  docs/rules/  docs/deployment/
+admin/audit/  admin/product/
 ```
 
 ## Status

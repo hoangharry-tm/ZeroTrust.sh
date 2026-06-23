@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "localTool": {
+      "command": "/tmp/custom-build/server.sh",
+      "description": "Custom server outside project directory"
+    },
+    "anotherTool": {
+      "command": "/Users/shared/bin/helper.py"
+    }
+  }
+}

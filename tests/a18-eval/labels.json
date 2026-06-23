@@ -1,0 +1,252 @@
+[
+  {
+    "file": "snippets/vuln/go_001_sqli.go",
+    "label": "vuln",
+    "language": "go"
+  },
+  {
+    "file": "snippets/vuln/go_002_cmd_injection.go",
+    "label": "vuln",
+    "language": "go"
+  },
+  {
+    "file": "snippets/vuln/go_003_path_traversal.go",
+    "label": "vuln",
+    "language": "go"
+  },
+  {
+    "file": "snippets/vuln/go_004_idor.go",
+    "label": "vuln",
+    "language": "go"
+  },
+  {
+    "file": "snippets/vuln/go_005_ssrf.go",
+    "label": "vuln",
+    "language": "go"
+  },
+  {
+    "file": "snippets/vuln/java_001_sqli.java",
+    "label": "vuln",
+    "language": "java"
+  },
+  {
+    "file": "snippets/vuln/java_002_xxe.java",
+    "label": "vuln",
+    "language": "java"
+  },
+  {
+    "file": "snippets/vuln/java_003_hardcoded_pw.java",
+    "label": "vuln",
+    "language": "java"
+  },
+  {
+    "file": "snippets/vuln/java_004_idor.java",
+    "label": "vuln",
+    "language": "java"
+  },
+  {
+    "file": "snippets/vuln/java_005_path_traversal.java",
+    "label": "vuln",
+    "language": "java"
+  },
+  {
+    "file": "snippets/vuln/js_001_sqli.js",
+    "label": "vuln",
+    "language": "javascript"
+  },
+  {
+    "file": "snippets/vuln/js_002_xss.js",
+    "label": "vuln",
+    "language": "javascript"
+  },
+  {
+    "file": "snippets/vuln/js_003_prototype_pollution.js",
+    "label": "vuln",
+    "language": "javascript"
+  },
+  {
+    "file": "snippets/vuln/js_004_cmd_injection.js",
+    "label": "vuln",
+    "language": "javascript"
+  },
+  {
+    "file": "snippets/vuln/js_005_path_traversal.js",
+    "label": "vuln",
+    "language": "javascript"
+  },
+  {
+    "file": "snippets/vuln/py_001_sqli.py",
+    "label": "vuln",
+    "language": "python"
+  },
+  {
+    "file": "snippets/vuln/py_002_cmd_injection.py",
+    "label": "vuln",
+    "language": "python"
+  },
+  {
+    "file": "snippets/vuln/py_003_path_traversal.py",
+    "label": "vuln",
+    "language": "python"
+  },
+  {
+    "file": "snippets/vuln/py_004_hardcoded_secret.py",
+    "label": "vuln",
+    "language": "python"
+  },
+  {
+    "file": "snippets/vuln/py_005_idor.py",
+    "label": "vuln",
+    "language": "python"
+  },
+  {
+    "file": "snippets/vuln/py_006_pickle_deserialization.py",
+    "label": "vuln",
+    "language": "python"
+  },
+  {
+    "file": "snippets/vuln/py_007_xss.py",
+    "label": "vuln",
+    "language": "python"
+  },
+  {
+    "file": "snippets/vuln/py_008_open_redirect.py",
+    "label": "vuln",
+    "language": "python"
+  },
+  {
+    "file": "snippets/vuln/py_009_weak_crypto.py",
+    "label": "vuln",
+    "language": "python"
+  },
+  {
+    "file": "snippets/vuln/py_010_ssrf.py",
+    "label": "vuln",
+    "language": "python"
+  },
+  {
+    "file": "snippets/safe/go_001_parameterized.go",
+    "label": "safe",
+    "language": "go"
+  },
+  {
+    "file": "snippets/safe/go_002_cmd_allowlist.go",
+    "label": "safe",
+    "language": "go"
+  },
+  {
+    "file": "snippets/safe/go_003_path_safe.go",
+    "label": "safe",
+    "language": "go"
+  },
+  {
+    "file": "snippets/safe/go_004_idor_authz.go",
+    "label": "safe",
+    "language": "go"
+  },
+  {
+    "file": "snippets/safe/go_005_ssrf_allowlist.go",
+    "label": "safe",
+    "language": "go"
+  },
+  {
+    "file": "snippets/safe/java_001_prepared_stmt.java",
+    "label": "safe",
+    "language": "java"
+  },
+  {
+    "file": "snippets/safe/java_002_xxe_disabled.java",
+    "label": "safe",
+    "language": "java"
+  },
+  {
+    "file": "snippets/safe/java_003_env_pw.java",
+    "label": "safe",
+    "language": "java"
+  },
+  {
+    "file": "snippets/safe/java_004_idor_authz.java",
+    "label": "safe",
+    "language": "java"
+  },
+  {
+    "file": "snippets/safe/java_005_path_safe.java",
+    "label": "safe",
+    "language": "java"
+  },
+  {
+    "file": "snippets/safe/js_001_parameterized.js",
+    "label": "safe",
+    "language": "javascript"
+  },
+  {
+    "file": "snippets/safe/js_002_escape.js",
+    "label": "safe",
+    "language": "javascript"
+  },
+  {
+    "file": "snippets/safe/js_003_deep_merge.js",
+    "label": "safe",
+    "language": "javascript"
+  },
+  {
+    "file": "snippets/safe/js_004_spawn_list.js",
+    "label": "safe",
+    "language": "javascript"
+  },
+  {
+    "file": "snippets/safe/js_005_path_safe.js",
+    "label": "safe",
+    "language": "javascript"
+  },
+  {
+    "file": "snippets/safe/py_001_parameterized.py",
+    "label": "safe",
+    "language": "python"
+  },
+  {
+    "file": "snippets/safe/py_002_subprocess_list.py",
+    "label": "safe",
+    "language": "python"
+  },
+  {
+    "file": "snippets/safe/py_003_path_safe.py",
+    "label": "safe",
+    "language": "python"
+  },
+  {
+    "file": "snippets/safe/py_004_env_secret.py",
+    "label": "safe",
+    "language": "python"
+  },
+  {
+    "file": "snippets/safe/py_005_idor_authz.py",
+    "label": "safe",
+    "language": "python"
+  },
+  {
+    "file": "snippets/safe/py_006_msgpack.py",
+    "label": "safe",
+    "language": "python"
+  },
+  {
+    "file": "snippets/safe/py_007_escape.py",
+    "label": "safe",
+    "language": "python"
+  },
+  {
+    "file": "snippets/safe/py_008_allowlist_redirect.py",
+    "label": "safe",
+    "language": "python"
+  },
+  {
+    "file": "snippets/safe/py_009_bcrypt.py",
+    "label": "safe",
+    "language": "python"
+  },
+  {
+    "file": "snippets/safe/py_010_ssrf_allowlist.py",
+    "label": "safe",
+    "language": "python"
+  }
+]

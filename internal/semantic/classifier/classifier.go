@@ -1,3 +1,17 @@
+// Copyright 2026 hoangharry-tm
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // Package classifier wraps the UniXcoder-Base-Nine vulnerability classifier
 // (Path B Tier 2) via the Python worker IPC boundary.
 //
@@ -75,6 +89,17 @@ const (
 	EscalateVulnerable EscalateReason = "vulnerable"
 )
 
+// ThresholdVulnerable is the minimum confidence at which a classifier verdict
+// of "vulnerable" is accepted without down-grading to "uncertain".
+// A-18: conservative until CVEFixes multi-language benchmark is complete.
+const ThresholdVulnerable = 0.80
+
+// ThresholdSafe is the minimum confidence required for a "safe" verdict to
+// dismiss a surface without LLM escalation. Below this the verdict is treated
+// as "uncertain" and escalates to the LLM tier (high-recall guarantee).
+// A-18: conservative until CVEFixes multi-language benchmark is complete.
+const ThresholdSafe = 0.20
+
 // supportedLanguages is the set of language identifiers that UniXcoder handles.
 // Keys are normalised lowercase strings (e.g. "js" is not in the set; callers
 // should normalise before calling IsSupported).
@@ -125,7 +150,7 @@ func New(w *worker.Manager, logger *slog.Logger) *Gate {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Gate{w: w, escalationThreshold: 0.80, logger: logger}
+	return &Gate{w: w, escalationThreshold: ThresholdVulnerable, logger: logger}
 }
 
 // NewWithThreshold returns a Gate with a custom escalation threshold.

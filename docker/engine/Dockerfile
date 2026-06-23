@@ -24,12 +24,13 @@ RUN apk add --no-cache curl unzip ca-certificates && \
 # Stage 1: Python worker
 FROM python:3.13-alpine AS python-base
 
-RUN apk add --no-cache gcc musl-dev && \
-    pip install --no-cache-dir --upgrade pip
+RUN apk add --no-cache gcc musl-dev curl && \
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.local/bin:$PATH"
 
 COPY worker/ /tmp/worker/
 WORKDIR /tmp/worker
-RUN pip install --no-cache-dir ".[dev]" && \
+RUN uv sync --no-dev && \
     rm -rf /tmp/worker
 
 WORKDIR /

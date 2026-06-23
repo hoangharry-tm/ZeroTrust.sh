@@ -1,3 +1,17 @@
+// Copyright 2026 hoangharry-tm
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // Package worker manages the long-lived Python ML worker subprocess.
 //
 // All Python-side operations communicate through this single process boundary:
@@ -40,6 +54,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -191,6 +206,19 @@ type Manager struct {
 	restarted bool
 }
 
+// NewFromArgs spawns a Manager using an explicit command and argument list.
+// Intended for tests that need a Manager backed by a custom subprocess (e.g. an
+// inline Python echo script) without going through Start's file-path resolution.
+// If logger is nil, slog.Default() is used.
+// Returns an error if the subprocess fails to start.
+func NewFromArgs(args []string, logger *slog.Logger) (*Manager, error) {
+	m := newManager(args, logger)
+	if err := m.spawn(); err != nil {
+		return nil, fmt.Errorf("worker: spawn: %w", err)
+	}
+	return m, nil
+}
+
 // newManager returns an uninitialised Manager with the given spawn arguments.
 // Used by Start (production) and tests (inject a custom command).
 // If logger is nil, slog.Default() is used.
@@ -215,9 +243,13 @@ func newManager(args []string, logger *slog.Logger) *Manager {
 func Start(ctx context.Context, workerPath string, logger *slog.Logger) (*Manager, error) {
 	py := os.Getenv("ZEROTRUST_PYTHON")
 	if py == "" {
-		py = "python3"
+		py = "uv"
 	}
-	m := newManager([]string{py, workerPath}, logger)
+	args := []string{py, "run", "--project", filepath.Dir(workerPath), "python", workerPath}
+	if py != "uv" {
+		args = []string{py, workerPath}
+	}
+	m := newManager(args, logger)
 	if err := m.spawn(); err != nil {
 		return nil, fmt.Errorf("worker: spawn: %w", err)
 	}
@@ -458,6 +490,31 @@ func (m *Manager) Stop() error {
 	m.dead = true
 	m.mu.Unlock()
 	return nil
+}
+
+// Classify sends one classify request to the Python worker and returns the
+// parsed result. It is a thin convenience wrapper around Call that handles
+// payload construction and response unmarshalling.
+//
+// Parameters:
+//   - ctx: cancellation context.
+//   - surfaces: one or more surfaces to classify; must be non-empty.
+func (m *Manager) Classify(ctx context.Context, surfaces []ClassifySurface) (ClassifyResult, error) {
+	if len(surfaces) == 0 {
+		return ClassifyResult{}, nil
+	}
+	resp, err := m.Call(ctx, MsgClassify, ClassifyPayload{Surfaces: surfaces})
+	if err != nil {
+		return ClassifyResult{}, fmt.Errorf("worker: classify: %w", err)
+	}
+	if resp.Status == ResponseError {
+		return ClassifyResult{}, fmt.Errorf("worker: classify: %s", resp.Error)
+	}
+	var cr ClassifyResult
+	if err := json.Unmarshal(resp.Result, &cr); err != nil {
+		return ClassifyResult{}, fmt.Errorf("worker: classify: unmarshal result: %w", err)
+	}
+	return cr, nil
 }
 
 func (m *Manager) newID() string {

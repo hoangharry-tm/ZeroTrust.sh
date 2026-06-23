@@ -23,7 +23,7 @@ test:
 
 test-rules:
 	@echo "Running OpenGrep rule tests..."
-	@./scripts/test_rules.sh
+	@./scripts/rules/test_rules.sh
 
 # Run integration tests — requires a live Joern binary (Homebrew: brew install joern).
 # Set JOERN_BIN to override the resolved joern path.
@@ -41,10 +41,10 @@ lint:
 	golangci-lint run ./...
 
 worker-install:
-	pip install -e "worker/[dev]"
+	cd worker && uv sync --extra dev
 
 demo:
-	@./scripts/run_demo.sh
+	@./scripts/pipeline/run_demo.sh
 
 docker-build:
 	@mkdir -p $(BUILD_DIR)

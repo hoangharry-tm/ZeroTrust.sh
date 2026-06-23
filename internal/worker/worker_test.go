@@ -1,3 +1,17 @@
+// Copyright 2026 hoangharry-tm
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package worker
 
 import (
@@ -167,6 +181,99 @@ func TestCallAfterStopReturnsError(t *testing.T) {
 	_, err := m.Call(ctx, MsgPing, nil)
 	if err == nil {
 		t.Error("expected error after Stop, got nil")
+	}
+}
+
+// ─── Classify ────────────────────────────────────────────────────────────────
+
+// classifyEchoWorker returns a Manager backed by a Python process that responds
+// to classify requests with a fixed "uncertain" result for each surface.
+func classifyEchoWorker(t *testing.T) *Manager {
+	t.Helper()
+	if !python3Available() {
+		t.Skip("python3 not in PATH")
+	}
+	script := `
+import sys, json
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    msg = json.loads(line)
+    if msg.get("type") == "shutdown":
+        print(json.dumps({"id": msg["id"], "status": "ok"}), flush=True)
+        break
+    if msg.get("type") == "classify":
+        surfaces = (msg.get("payload") or {}).get("surfaces", [])
+        results = [{"surface_id": s["surface_id"], "label": "uncertain", "confidence": 0.5} for s in surfaces]
+        print(json.dumps({"id": msg["id"], "status": "ok", "result": {"results": results}}), flush=True)
+    else:
+        print(json.dumps({"id": msg["id"], "status": "ok", "result": {}}), flush=True)
+`
+	m := newManager([]string{"python3", "-c", script}, nil)
+	if err := m.spawn(); err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	pingCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := m.Ping(pingCtx); err != nil {
+		t.Fatalf("initial ping: %v", err)
+	}
+	t.Cleanup(func() { _ = m.Stop() })
+	return m
+}
+
+func TestClassify_HappyPath(t *testing.T) {
+	m := classifyEchoWorker(t)
+	surfaces := []ClassifySurface{
+		{SurfaceID: "s1", Code: "eval(x)", Language: "python"},
+		{SurfaceID: "s2", Code: "safe()", Language: "go"},
+	}
+	cr, err := m.Classify(context.Background(), surfaces)
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if len(cr.Results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(cr.Results))
+	}
+	if cr.Results[0].SurfaceID != "s1" || cr.Results[1].SurfaceID != "s2" {
+		t.Errorf("unexpected surface IDs: %v", cr.Results)
+	}
+}
+
+func TestClassify_EmptySurfaces_ReturnsEmpty(t *testing.T) {
+	m := classifyEchoWorker(t)
+	cr, err := m.Classify(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("Classify empty: %v", err)
+	}
+	if len(cr.Results) != 0 {
+		t.Errorf("expected empty results, got %v", cr.Results)
+	}
+}
+
+func TestClassify_WorkerDead_ReturnsErrWorkerDead(t *testing.T) {
+	if !python3Available() {
+		t.Skip("python3 not in PATH")
+	}
+	m, _ := NewFromArgs([]string{"python3", "-c", ""}, nil)
+	time.Sleep(200 * time.Millisecond) // let process exit and restart attempt fail
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, err := m.Classify(ctx, []ClassifySurface{{SurfaceID: "s1", Code: "x", Language: "go"}})
+	if err == nil {
+		t.Error("expected error from dead worker, got nil")
+	}
+}
+
+func TestClassify_CancelledContext(t *testing.T) {
+	m := classifyEchoWorker(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := m.Classify(ctx, []ClassifySurface{{SurfaceID: "s1", Code: "x", Language: "go"}})
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("expected context.Canceled, got %v", err)
 	}
 }
 

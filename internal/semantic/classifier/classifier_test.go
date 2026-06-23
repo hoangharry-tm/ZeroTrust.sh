@@ -1,10 +1,27 @@
+// Copyright 2026 hoangharry-tm
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package classifier_test
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"os/exec"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -222,4 +239,136 @@ func TestApplyWorkerResponse_UncertainEscalates(t *testing.T) {
 func TestErrWorkerDeadSentinel(t *testing.T) {
 	// Verify ErrWorkerDead is a known exported sentinel from the worker package.
 	assert.True(t, errors.Is(worker.ErrWorkerDead, worker.ErrWorkerDead))
+}
+
+// ---------------------------------------------------------------------------
+// ThresholdVulnerable / ThresholdSafe constants
+// ---------------------------------------------------------------------------
+
+func TestThresholdConstants(t *testing.T) {
+	assert.InEpsilon(t, 0.80, classifier.ThresholdVulnerable, 1e-9)
+	assert.InEpsilon(t, 0.20, classifier.ThresholdSafe, 1e-9)
+}
+
+// ---------------------------------------------------------------------------
+// Threshold boundary tests — Gate.Classify() routing after worker response
+//
+// We wire Gate to a real worker.Manager backed by an inline Python echo script
+// that returns a controlled confidence value, then assert the Gate applies the
+// threshold logic correctly.
+// ---------------------------------------------------------------------------
+
+// python3Available checks whether python3 is accessible in PATH.
+func python3Available() bool {
+	_, err := exec.LookPath("python3")
+	return err == nil
+}
+
+// thresholdEchoManager creates a Manager whose classify handler always returns
+// the given label and confidence for every surface.
+func thresholdEchoManager(t *testing.T, label string, confidence float64) *worker.Manager {
+	t.Helper()
+	if !python3Available() {
+		t.Skip("python3 not in PATH")
+	}
+	// Inline Python: echoes a fixed label/confidence for all surfaces.
+	script := fmt.Sprintf(`
+import sys, json
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    msg = json.loads(line)
+    if msg.get("type") == "shutdown":
+        print(json.dumps({"id": msg["id"], "status": "ok"}), flush=True)
+        break
+    if msg.get("type") == "classify":
+        surfaces = (msg.get("payload") or {}).get("surfaces", [])
+        results = [{"surface_id": s["surface_id"], "label": %q, "confidence": %v} for s in surfaces]
+        print(json.dumps({"id": msg["id"], "status": "ok", "result": {"results": results}}), flush=True)
+    else:
+        print(json.dumps({"id": msg["id"], "status": "ok", "result": {}}), flush=True)
+`, label, confidence)
+
+	m, err := worker.NewFromArgs([]string{"python3", "-c", script}, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = m.Stop() })
+
+	pingCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	require.NoError(t, m.Ping(pingCtx))
+	return m
+}
+
+func TestClassify_BoundaryVulnerable_AtThreshold(t *testing.T) {
+	// confidence == ThresholdVulnerable → label "vulnerable" kept, surface escalates.
+	m := thresholdEchoManager(t, "vulnerable", classifier.ThresholdVulnerable)
+	g := classifier.New(m, nil)
+	surfaces := []enrichment.EnrichedSurface{surface("s1", "go", false)}
+
+	results, err := g.Classify(context.Background(), surfaces)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, classifier.LabelVulnerable, results[0].Label)
+	assert.True(t, results[0].Escalate)
+	assert.Equal(t, classifier.EscalateVulnerable, results[0].EscalateReason)
+}
+
+func TestClassify_BoundarySafe_AtThreshold(t *testing.T) {
+	// confidence == ThresholdVulnerable as "safe" → confidence >= threshold → not escalated.
+	m := thresholdEchoManager(t, "safe", classifier.ThresholdVulnerable)
+	g := classifier.New(m, nil)
+	surfaces := []enrichment.EnrichedSurface{surface("s1", "go", false)}
+
+	results, err := g.Classify(context.Background(), surfaces)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, classifier.LabelSafe, results[0].Label)
+	assert.False(t, results[0].Escalate)
+}
+
+func TestClassify_BoundarySafe_BelowThreshold_BecomesUncertain(t *testing.T) {
+	// confidence just below ThresholdVulnerable as "safe" → down-graded to uncertain.
+	belowThreshold := classifier.ThresholdVulnerable - 0.01
+	m := thresholdEchoManager(t, "safe", belowThreshold)
+	g := classifier.New(m, nil)
+	surfaces := []enrichment.EnrichedSurface{surface("s1", "go", false)}
+
+	results, err := g.Classify(context.Background(), surfaces)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, classifier.LabelUncertain, results[0].Label)
+	assert.True(t, results[0].Escalate)
+	assert.Equal(t, classifier.EscalateUncertain, results[0].EscalateReason)
+}
+
+func TestClassify_AllUncertainBatch(t *testing.T) {
+	m := thresholdEchoManager(t, "uncertain", 0.50)
+	g := classifier.New(m, nil)
+	surfaces := []enrichment.EnrichedSurface{
+		surface("s1", "python", false),
+		surface("s2", "java", false),
+		surface("s3", "go", false),
+	}
+
+	results, err := g.Classify(context.Background(), surfaces)
+	require.NoError(t, err)
+	require.Len(t, results, 3)
+	for _, r := range results {
+		assert.Equal(t, classifier.LabelUncertain, r.Label)
+		assert.True(t, r.Escalate)
+	}
+}
+
+func TestClassify_IDORCandidateAlwaysEscalates(t *testing.T) {
+	// IDOR candidate with "safe" label must still escalate.
+	m := thresholdEchoManager(t, "safe", 0.95)
+	g := classifier.New(m, nil)
+	surfaces := []enrichment.EnrichedSurface{surface("s1", "go", true /* isIDOR */)}
+
+	results, err := g.Classify(context.Background(), surfaces)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.True(t, results[0].Escalate)
+	assert.Equal(t, classifier.EscalateIDOR, results[0].EscalateReason)
 }

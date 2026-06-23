@@ -191,3 +191,42 @@
 - [ ] **T8.2** — Write `docs/benchmarks/tier1_elimination.md`: actual elimination rate, surface count, total file count, test codebase used, what the design target is (95%), and whether it was met. If not met, note the gap and hypothesize why (small codebase, many HTTP endpoints, etc.).
 
 **Done when**: `make test` passes (all new unit tests green), `Targeter.Run` compiles and returns a `[]Surface` on a mock CPG, integration test documents the actual elimination rate, `docs/benchmarks/tier1_elimination.md` exists.
+
+---
+
+## ML3.2 — UniXcoder Classifier Gate
+
+> **A-18 note**: operate in high-recall mode throughout; do not publish accuracy figures until T6 evaluation is complete.
+
+### T1 — UniXcoder model load in Python worker (3h) ✅ Done
+- [x] **T1.1** — `worker/handlers/classify.py` — lazy singleton load of `microsoft/unixcoder-base-nine`; accepts `{"surfaces": [{surface_id, code, language}]}`.
+- [x] **T1.2** — `worker/main.py` dispatcher routes `classify` to `classify.handle()`.
+- [x] **T1.3** — `worker/tests/test_classify.py` — mock model load; dispatcher routing; label bands; load idempotency. All tests pass.
+
+### T2 — Go IPC: classify request/response (2h) ✅ Done
+- [x] **T2.1** — `Classify(ctx, []ClassifySurface) (ClassifyResult, error)` on `*Manager` in `internal/worker/worker.go`. Also added `NewFromArgs` exported constructor.
+- [x] **T2.2** — 4 tests in `worker_test.go`: happy path, empty surfaces, dead worker, cancelled context.
+
+### T3 — 3-band threshold calibration (3h) ✅ Done
+- [x] **T3.1** — `ThresholdVulnerable = 0.80`, `ThresholdSafe = 0.20` exported constants in `internal/semantic/classifier/classifier.go`. `New()` references `ThresholdVulnerable`.
+- [x] **T3.2** — `Gate.Classify(ctx, []EnrichedSurface) ([]Result, error)` — fan-out via errgroup; attaches `Label` (safe/uncertain/vulnerable) and `Escalate` to each surface.
+- [x] **T3.3** — 6 boundary tests: vulnerable at threshold, safe at/below threshold, all-uncertain batch, IDOR always escalates, constant values.
+
+### T4 — Routing (2h) ✅ Done
+- [x] **T4.1** — `Route([]ClassifiedSurface) RouteResult` in `internal/semantic/classifier/router.go`. Priority order: IDOR → unsupported-ext → vulnerable (→Dedup) → safe+high-conf (→Dismissed) → default (→Assembler).
+- [x] **T4.2** — 13 tests in `router_test.go`: IDOR override (safe+IDOR → Assembler), IDOR+vulnerable → Assembler, all three bands, mixed batch, empty input.
+
+### T5 — Unsupported-language bypass (1.5h) ✅ Done
+- [x] **T5.1** — `.rs`, `.kt`, `.swift`, `.cs` → `ToAssembler` with `BypassedClassifier=true`. Implemented in `Route()` in `router.go`.
+- [x] **T5.2** — 4 tests (one per unsupported ext) + 1 supported-language control in `router_test.go`.
+
+### T6 — A-18 gap measurement (4h) ✅ Done
+- [x] **T6.1** — 50 labeled snippets in `tests/a18-eval/snippets/` (25 vuln, 25 safe; Python/Java/Go/JS); manifest at `tests/a18-eval/labels.json`.
+- [x] **T6.2** — `scripts/benchmarks/a18_eval.py`: loads labels, runs classifier, prints per-language F1/precision/recall. Run `uv run --project worker python scripts/benchmarks/a18_eval.py`.
+- [x] **T6.3** — `docs/benchmarks/a18_gap.md`: dataset description, pending results table, honest gap analysis, A-18 caveat, remediation path (QLoRA on CVEFixes).
+
+### T7 — Funnel stats (3.5h) ✅ Done
+- [x] **T7.1** — `RouteAndLog(surfaces []ClassifiedSurface, logger *slog.Logger) RouteResult` in `router.go` — calls `Route()`, logs `slog.Info("classifier funnel", ...)`, warns via `slog.Warn` if escalation rate > 25% (no hard-fail). 5 unit tests: logs stats, warns when exceeded, no warn when below cap, empty input, nil logger.
+- [x] **T7.2** — `classifier_integration_test.go` (`//go:build integration`): reads all demo-app source files, builds synthetic surfaces (code from disk, no CPG required), runs `Gate.Classify` + `RouteAndLog`, asserts bucket totals are exhaustive, writes `docs/benchmarks/tier2_funnel.md`. Run with `make test-integration`.
+
+**ML3.2 COMPLETE** — all T1–T7 done Jun 23 (3.5 weeks ahead of Jul 21–24 plan window). `make test` passes; `go vet` clean.

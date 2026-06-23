@@ -39,5 +39,10 @@ build/
 /*.cpg
 workspace/
 internal/pattern/joern/workspace/
+
+# Data pipeline corpus — downloaded/scraped, not committed
+tests/corpus/*
+!tests/corpus/.gitkeep
+pipeline/notebooks/*.ipynb
 *.log
 /zerotrust
