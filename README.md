@@ -95,7 +95,7 @@ The HTML report is self-contained — one file, no external deps, shareable offl
 git clone https://github.com/hoangharry-tm/ZeroTrust.sh
 cd ZeroTrust.sh
 go build -o build/zerotrust ./cmd/zerotrust
-./build/zerotrust scan testdata/demo-app/
+./build/zerotrust scan tests/integration/demo-app/
 ```
 
 Scans a 21-file multi-language codebase. Writes `zerotrust-report.html`.
@@ -105,8 +105,8 @@ Scans a 21-file multi-language codebase. Writes `zerotrust-report.html`.
 Two independent detection paths run in parallel. Neither gates the other. A finding confirmed by both receives a +15pp confidence boost.
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/diagrams/architecture-dark.svg">
-  <img src="docs/diagrams/architecture-light.svg" alt="ZeroTrust.sh architecture — two parallel detection paths">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/architecture/diagrams/architecture-dark.svg">
+  <img src="docs/architecture/diagrams/architecture-light.svg" alt="ZeroTrust.sh architecture — two parallel detection paths">
 </picture>
 
 <details>
@@ -267,9 +267,13 @@ internal/
   worker/               Python worker manager (NDJSON IPC)
 worker/                 Python ML worker
 rules/                  python/ · java/ · generic/ · astgrep/ — 42 rules total
-testdata/               demo-app/ · spring-boot-app/ · rules-tests/
+tests/
+  fixtures/             bad/ · ok/ · knockout/ — unit-level rule match fixtures
+  integration/          demo-app/ · spring-boot-app/ · synthetic/
+  corpus/               .gitignored — populated by data pipeline
+pipeline/               collectors/ · normalizer/ · labeler/ · notebooks/
 docs/                   architecture/ · planning/ · research-papers.md · report-example.html
-github-page/            SolidJS landing page — https://hoangharry-tm.github.io/ZeroTrust.sh/
+site/                   SolidJS landing page — https://hoangharry-tm.github.io/ZeroTrust.sh/
 ```
 
 </details>
@@ -288,7 +292,7 @@ github-page/            SolidJS landing page — https://hoangharry-tm.github.io
 
 ZeroTrust.sh is in active development toward the **August 6, 2026** public testing release. Highest-leverage contributions:
 
-- **Rules** — new OpenGrep or ast-grep rules for AI-specific patterns. See [`rules/`](rules/) and [`testdata/rules-tests/`](testdata/rules-tests/).
+- **Rules** — new OpenGrep or ast-grep rules for AI-specific patterns. See [`rules/`](rules/) and [`tests/fixtures/`](tests/fixtures/).
 - **Test codebases** — vulnerable-by-design samples in Kotlin, Dart, Swift.
 - **Bug reports** — open an issue with rule ID, input, and whether it was FP or FN.
 
