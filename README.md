@@ -1,6 +1,17 @@
 <div align="center">
 
-# **Zero**Trust.sh
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 380 50" width="380" height="50">
+  <defs>
+    <linearGradient id="zt-gradient" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#58a6ff"/>
+      <stop offset="50%" stop-color="#818cf8"/>
+      <stop offset="100%" stop-color="#8b5cf6"/>
+    </linearGradient>
+  </defs>
+  <text x="190" y="35" text-anchor="middle" font-family="'JetBrains Mono', 'Fira Code', 'SF Mono', 'Cascadia Code', 'DejaVu Sans Mono', 'Consolas', monospace" font-size="32" font-weight="600" fill="url(#zt-gradient)">
+    <tspan font-weight="900">Zero</tspan>Trust.sh
+  </text>
+</svg>
 
 <p align="center">
   <strong>Local, offline SAST for code written by AI coding agents.</strong><br>
