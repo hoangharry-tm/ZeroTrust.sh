@@ -69,6 +69,7 @@ import (
 	"github.com/hoangharry-tm/zerotrust/internal/semantic/scs"
 	"github.com/hoangharry-tm/zerotrust/internal/semantic/summarizer"
 	"github.com/hoangharry-tm/zerotrust/internal/semantic/targeting"
+	"github.com/hoangharry-tm/zerotrust/internal/tuning"
 	"github.com/hoangharry-tm/zerotrust/internal/worker"
 	"github.com/hoangharry-tm/zerotrust/pkg/cpg"
 	"github.com/hoangharry-tm/zerotrust/pkg/ollama"
@@ -211,9 +212,9 @@ func newPipeline(ctx context.Context, cfg ScanConfig) (*pipeline, error) {
 	tgt := targeting.New(graph)
 	enr := enrichment.New(graph, "trivy", cfg.Offline)
 	clf := classifier.New(wm, logger)
-	asm := assembler.New(graph, 3)
+	asm := assembler.New(graph, tuning.AssemblerMaxDepth)
 	sum := summarizer.New(wm)
-	bud := budget.New(cfg.TokenCap, 0.4, 0.4, 0.2)
+	bud := budget.New(cfg.TokenCap, tuning.BudgetWeightCVSS, tuning.BudgetWeightUncert, tuning.BudgetWeightDepth)
 	sc := llmscan.New(wm)
 	store := scs.New()
 
@@ -704,11 +705,11 @@ func instrFindingToFinding(f instrscan.Finding) finding.Finding {
 	var confidence float64
 	switch f.Signal {
 	case instrscan.SignalMCPSchemaViolation:
-		confidence = 0.90 // deterministic schema check — high confidence
+		confidence = tuning.ConfSchemaCheck
 	case instrscan.SignalKeywordMatch:
-		confidence = 0.65
+		confidence = tuning.ConfLowPattern
 	default: // SignalUnicodeObfuscation
-		confidence = 0.75
+		confidence = tuning.ConfMidPattern
 	}
 	return finding.Finding{
 		ID:            finding.ComputeID("CWE-1035", f.File, ""),
@@ -896,7 +897,7 @@ func (p *pipeline) close() error {
 	// Stop Joern subprocess if we spawned it. Use a fixed timeout — this runs
 	// after the scan; we don't want it to block indefinitely on cleanup.
 	if p.cfg.JoernBin != "" && p.joern != nil {
-		stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		stopCtx, cancel := context.WithTimeout(context.Background(), tuning.JoernScanStopTimeout)
 		defer cancel()
 		_ = p.joern.Stop(stopCtx) //nolint:errcheck // best-effort cleanup
 	}
@@ -934,7 +935,7 @@ func stateDBPath() (string, error) {
 // before the build is skipped. This keeps build times under the 60 s target.
 // If the scope exceeds this limit, a warning is logged and taint analysis is
 // skipped for this scan (OpenGrep / ast-grep / instrscan continue unaffected).
-const maxScopeLOC = 5_000
+const maxScopeLOC = tuning.CPGMaxScopeLOC
 
 // countLOC returns the total line count across all given files.
 // Files that cannot be read or opened are silently skipped.
@@ -1035,8 +1036,8 @@ func (p *pipeline) buildOrLoadCPG(ctx context.Context, cpgPath string, changedFi
 		err := p.joern.IncrementalPatch(ctx, joern.IncrementalPatchConfig{
 			ChangedFunctions: changedFunctions,
 			RemovedFiles:     nil, // removed not tracked here
-			MaxDepth:         5,
-			HubCallerThreshold: 50,
+			MaxDepth:         tuning.CPGDefaultMaxDepth,
+			HubCallerThreshold: tuning.CPGHubCallerThreshold,
 			SerializedCPGPath: cpgPath,
 		})
 		if err != nil {
@@ -1135,11 +1136,11 @@ func cpgSnapshotPath(projectID string) string {
 func moduleDepthForMode(mode string) int {
 	switch mode {
 	case "Thorough":
-		return 3
+		return tuning.ModuleDepthThorough
 	case "Full":
 		return 0 // 0 means no expansion needed — entire codebase is in scope
 	default: // Default
-		return 2
+		return tuning.ModuleDepthDefault
 	}
 }
 

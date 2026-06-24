@@ -49,6 +49,7 @@ import (
 	"strings"
 
 	"github.com/hoangharry-tm/zerotrust/internal/finding"
+	"github.com/hoangharry-tm/zerotrust/internal/tuning"
 	"github.com/hoangharry-tm/zerotrust/internal/worker"
 )
 
@@ -89,15 +90,15 @@ type Stats struct {
 
 // embeddingThreshold is the cosine similarity above which two findings are
 // considered duplicates by Gate 3 (MiniLM-L6-v2 embedding).
-const embeddingThreshold = 0.95
+const embeddingThreshold = tuning.DedupEmbeddingExact
 
 // astEditThreshold is the token-sequence similarity above which Gate 4
 // (AST edit distance) classifies two findings as duplicates.
-const astEditThreshold = 0.85
+const astEditThreshold = tuning.DedupASTEdit
 
 // embeddingNearMiss is the lower bound of the "near-miss" range that triggers
 // Gate 4 escalation when Gate 3 similarity is below embeddingThreshold.
-const embeddingNearMiss = 0.85
+const embeddingNearMiss = tuning.DedupEmbeddingNearMiss
 
 // Layer deduplicates and scores the merged finding set from both detection paths.
 type Layer struct {
@@ -415,8 +416,8 @@ func merge(a, b finding.Finding, strategy Strategy) (finding.Finding, MergeRecor
 //  5. Derive SeverityLabel from final confidence.
 func applyBoostAndScore(f finding.Finding) finding.Finding {
 	// 1. Cross-path boost (+15 pp, capped at 1.0; skipped when already BLOCK).
-	if f.SourcePath == finding.SourceBoth && f.Confidence < 0.92 {
-		f.Confidence = min(f.Confidence+0.15, 1.0)
+	if f.SourcePath == finding.SourceBoth && f.Confidence < tuning.ConfBlock {
+		f.Confidence = min(f.Confidence+tuning.BoostCrossPath, 1.0)
 	}
 
 	// 2. CVE CVSS floor.
@@ -429,15 +430,15 @@ func applyBoostAndScore(f finding.Finding) finding.Finding {
 
 	// 3. SSVC boost.
 	if f.SSVC.Exploitation == "Active" {
-		f.Confidence = min(f.Confidence+0.10, 1.0)
+		f.Confidence = min(f.Confidence+tuning.BoostSSVCActive, 1.0)
 	}
 	if f.SSVC.Automatable == "Yes" {
-		f.Confidence = min(f.Confidence+0.05, 1.0)
+		f.Confidence = min(f.Confidence+tuning.BoostSSVCAutomatable, 1.0)
 	}
 
 	// 4. Path A bypass MEDIUM floor.
-	if f.SourcePath == finding.SourcePattern && f.Confidence < 0.60 {
-		f.Confidence = 0.60
+	if f.SourcePath == finding.SourcePattern && f.Confidence < tuning.FloorPatternPath {
+		f.Confidence = tuning.FloorPatternPath
 	}
 
 	f.SeverityLabel = finding.SeverityFromConfidence(f.Confidence)

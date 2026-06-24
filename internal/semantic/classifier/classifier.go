@@ -57,6 +57,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/hoangharry-tm/zerotrust/internal/semantic/enrichment"
+	"github.com/hoangharry-tm/zerotrust/internal/tuning"
 	"github.com/hoangharry-tm/zerotrust/internal/worker"
 )
 
@@ -92,13 +93,13 @@ const (
 // ThresholdVulnerable is the minimum confidence at which a classifier verdict
 // of "vulnerable" is accepted without down-grading to "uncertain".
 // A-18: conservative until CVEFixes multi-language benchmark is complete.
-const ThresholdVulnerable = 0.80
+const ThresholdVulnerable = tuning.ClassifierVulnerableThreshold
 
 // ThresholdSafe is the minimum confidence required for a "safe" verdict to
 // dismiss a surface without LLM escalation. Below this the verdict is treated
 // as "uncertain" and escalates to the LLM tier (high-recall guarantee).
 // A-18: conservative until CVEFixes multi-language benchmark is complete.
-const ThresholdSafe = 0.20
+const ThresholdSafe = tuning.ClassifierSafeThreshold
 
 // supportedLanguages is the set of language identifiers that UniXcoder handles.
 // Keys are normalised lowercase strings (e.g. "js" is not in the set; callers

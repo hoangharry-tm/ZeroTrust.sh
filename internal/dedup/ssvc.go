@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/hoangharry-tm/zerotrust/internal/finding"
+	"github.com/hoangharry-tm/zerotrust/internal/tuning"
 )
 
 // ── Static CWE lookup tables ──────────────────────────────────────────────────
@@ -80,10 +81,10 @@ var cweTechnicalImpact = map[string]string{
 // ── CISA KEV cache ────────────────────────────────────────────────────────────
 
 const (
-	kevURL    = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
-	kevTTL    = 24 * time.Hour
-	epssURL   = "https://api.first.org/data/v1/epss?cve=%s"
-	epssThreshold = 0.1 // EPSS ≥ 0.1 → "PoC"; ≥ 0.5 → upgrade to "Active"
+	kevURL        = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
+	kevTTL        = tuning.KEVCacheTTL
+	epssURL       = "https://api.first.org/data/v1/epss?cve=%s"
+	epssThreshold = tuning.EPSSPoC
 )
 
 type kevStore struct {
@@ -251,7 +252,7 @@ func DeriveSSVC(ctx context.Context, f finding.Finding) finding.Finding {
 	// ── TechnicalImpact (CWE table + CVSS floor) ────────────────────────────
 	if v, ok := cweTechnicalImpact[f.CWE]; ok {
 		f.SSVC.TechnicalImpact = v
-	} else if f.CVSS >= 7.0 {
+	} else if f.CVSS >= tuning.CVSSHigh {
 		f.SSVC.TechnicalImpact = "Total"
 	} else {
 		f.SSVC.TechnicalImpact = "Partial"
@@ -259,7 +260,7 @@ func DeriveSSVC(ctx context.Context, f finding.Finding) finding.Finding {
 
 	// ── Exploitation (CISA KEV + EPSS; network best-effort) ──────────────────
 	// Use a short timeout so we don't block the scan if the network is slow.
-	netCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	netCtx, cancel := context.WithTimeout(ctx, tuning.SSVCNetTimeout)
 	defer cancel()
 
 	if f.CVE != "" && kevContains(netCtx, f.CVE) {
@@ -269,7 +270,7 @@ func DeriveSSVC(ctx context.Context, f finding.Finding) finding.Finding {
 
 	epss := epssScore(netCtx, f.CVE)
 	switch {
-	case epss >= 0.5:
+	case epss >= tuning.EPSSActive:
 		f.SSVC.Exploitation = "Active"
 	case epss >= epssThreshold:
 		f.SSVC.Exploitation = "PoC"

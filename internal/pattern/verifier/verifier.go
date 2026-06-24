@@ -51,6 +51,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/hoangharry-tm/zerotrust/internal/finding"
+	"github.com/hoangharry-tm/zerotrust/internal/tuning"
 	"github.com/hoangharry-tm/zerotrust/internal/worker"
 )
 
@@ -58,7 +59,7 @@ import (
 // bypasses the LLM Verifier and goes directly to the dedup layer.
 // Findings at or above this score come from deterministic rules that have
 // near-zero false-positive rates; LLM verification adds cost without benefit.
-const HighConfidenceThreshold = 0.90
+const HighConfidenceThreshold = tuning.VerifierHighConfidence
 
 // Verdict is the LLM Verifier classification for a single finding.
 type Verdict string
@@ -113,7 +114,7 @@ func New(w *worker.Manager, logger *slog.Logger) *Verifier {
 	}
 	return &Verifier{
 		w:      w,
-		asc:    ASCConfig{MaxRounds: 2, ConfidenceThreshold: 0.70},
+		asc:    ASCConfig{MaxRounds: tuning.VerifierASCMaxRounds, ConfidenceThreshold: tuning.VerifierASCThreshold},
 		logger: logger,
 	}
 }
@@ -255,6 +256,6 @@ func fallbackResult(f finding.Finding) Result {
 	return Result{
 		FindingID:  f.ID,
 		Verdict:    VerdictUncertain,
-		Confidence: f.Confidence * 0.80,
+		Confidence: f.Confidence * tuning.VerifierUncertainPenalty,
 	}
 }

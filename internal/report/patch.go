@@ -22,6 +22,7 @@ import (
 	"github.com/bluekeyes/go-gitdiff/gitdiff"
 
 	"github.com/hoangharry-tm/zerotrust/internal/finding"
+	"github.com/hoangharry-tm/zerotrust/internal/tuning"
 	"github.com/hoangharry-tm/zerotrust/pkg/ollama"
 )
 
@@ -73,8 +74,8 @@ func ValidatePatch(patch string) (status, scope string, err error) {
 // Returns an empty string if patch generation fails or Ollama is unavailable.
 func GeneratePatch(ctx context.Context, client *ollama.Client, f finding.Finding) (string, error) {
 	resp, err := client.Generate(ctx, buildPatchPrompt(f), &ollama.Options{
-		Temperature: 0.1,
-		NumPredict:  512,
+		Temperature: tuning.PatchLLMTemperature,
+		NumPredict:  tuning.PatchLLMMaxTokens,
 	})
 	if err != nil {
 		return "", fmt.Errorf("patch generate: %w", err)

@@ -17,11 +17,9 @@ package classifier
 import (
 	"log/slog"
 	"path/filepath"
-)
 
-// escalationCap is the fraction of surfaces allowed to reach the LLM tier.
-// Exceeding this is a warning, not an error — the pipeline never hard-fails.
-const escalationCap = 0.25
+	"github.com/hoangharry-tm/zerotrust/internal/tuning"
+)
 
 // ClassifiedSurface pairs an EnrichedSurface result with the classifier verdict.
 type ClassifiedSurface struct {
@@ -86,11 +84,11 @@ func RouteAndLog(surfaces []ClassifiedSurface, logger *slog.Logger) RouteResult 
 		"dismissed", dismissed,
 	)
 	escalationRate := float64(toDedup+toAssembler) / float64(total)
-	if escalationRate > escalationCap {
+	if escalationRate > tuning.EscalationCap {
 		logger.Warn("classifier funnel escalation rate exceeds cap",
 			"component", "classifier",
 			"escalation_rate", escalationRate,
-			"cap", escalationCap,
+			"cap", tuning.EscalationCap,
 			"to_dedup", toDedup,
 			"to_assembler", toAssembler,
 			"total", total,

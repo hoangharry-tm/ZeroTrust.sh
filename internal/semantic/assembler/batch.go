@@ -14,10 +14,12 @@
 
 package assembler
 
+import "github.com/hoangharry-tm/zerotrust/internal/tuning"
+
 // BatchSize is the maximum number of surfaces per LLM prompt batch.
 // Amortises model-load and context-window overhead; matches the summarizer's
 // Python worker batch size.
-const BatchSize = 5
+const BatchSize = tuning.AssemblerBatchSize
 
 // Batch splits contexts into groups of at most BatchSize for batch inference.
 // Each group becomes one prompt payload sent to the Python worker. The last

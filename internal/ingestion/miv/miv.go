@@ -47,7 +47,8 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
-	"time"
+
+	"github.com/hoangharry-tm/zerotrust/internal/tuning"
 )
 
 //go:embed data/registry.json
@@ -135,7 +136,7 @@ func New(registryPath, publicKeyPath string, logger *slog.Logger) *Verifier {
 		registryPath:  registryPath,
 		publicKeyPath: publicKeyPath,
 		rekorURL:      "https://rekor.sigstore.dev",
-		httpClient:    &http.Client{Timeout: 3 * time.Second}, // Rekor is best-effort; 3s matches spec
+		httpClient:    &http.Client{Timeout: tuning.RekorHTTPTimeout},
 		logger:        logger,
 	}
 }

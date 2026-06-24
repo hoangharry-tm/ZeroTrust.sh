@@ -9,6 +9,8 @@ from enum import Enum
 
 from pydantic import BaseModel, Field
 
+import tuning
+
 # ── LLM Verifier ─────────────────────────────────────────────────────────────
 
 class LLMVerdict(str, Enum):
@@ -22,7 +24,7 @@ class LLMVerifierResult(BaseModel):
 
     verdict: LLMVerdict
     confidence: float = Field(ge=0.0, le=1.0)
-    justification: str = Field(max_length=200)
+    justification: str = Field(max_length=tuning.VERDICT_MAX_JUSTIFICATION_LEN)
     asc_rounds: int = Field(default=0, ge=0)
 
 

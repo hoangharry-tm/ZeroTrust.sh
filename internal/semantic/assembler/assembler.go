@@ -36,6 +36,7 @@ import (
 	"fmt"
 
 	"github.com/hoangharry-tm/zerotrust/internal/semantic/enrichment"
+	"github.com/hoangharry-tm/zerotrust/internal/tuning"
 	"github.com/hoangharry-tm/zerotrust/pkg/cpg"
 )
 
@@ -100,7 +101,7 @@ type Assembler struct {
 //   - maxDepth: maximum call chain depth (token budget constraint; default 3).
 func New(graph cpg.Graph, maxDepth int) *Assembler {
 	if maxDepth <= 0 {
-		maxDepth = 3
+		maxDepth = tuning.AssemblerMaxDepth
 	}
 	return &Assembler{graph: graph, maxDepth: maxDepth}
 }

@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/hoangharry-tm/zerotrust/internal/tuning"
 	"github.com/hoangharry-tm/zerotrust/pkg/cpg"
 )
 
@@ -125,12 +126,12 @@ func (c *Client) BuildCPG(ctx context.Context, cfg BuildConfig) error {
 // caller must invoke BuildCPG for a full rebuild instead.
 func (c *Client) IncrementalPatch(ctx context.Context, cfg IncrementalPatchConfig) error {
 	if cfg.MaxDepth == 0 {
-		cfg.MaxDepth = 5
+		cfg.MaxDepth = tuning.CPGDefaultMaxDepth
 	}
 	if cfg.HubCallerThreshold == 0 {
-		cfg.HubCallerThreshold = 50
+		cfg.HubCallerThreshold = tuning.CPGHubCallerThreshold
 	}
-	if cfg.MaxDepth > 6 {
+	if cfg.MaxDepth > tuning.CPGHardMaxDepth {
 		return ErrDepthExceeded
 	}
 

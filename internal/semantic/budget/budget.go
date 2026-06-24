@@ -38,7 +38,10 @@
 // Security-critical content is never truncated.
 package budget
 
-import "github.com/hoangharry-tm/zerotrust/internal/semantic/summarizer"
+import (
+	"github.com/hoangharry-tm/zerotrust/internal/semantic/summarizer"
+	"github.com/hoangharry-tm/zerotrust/internal/tuning"
+)
 
 // Input bundles a semantic summary with the ranking metadata that the Summarizer
 // stage cannot carry: CVSS score, classifier confidence, and call-graph depth.
@@ -103,7 +106,7 @@ type Controller struct {
 //   - w3: weight for reachability from entry point (1 / CallGraphDepth).
 func New(tokenCap int, w1, w2, w3 float64) *Controller {
 	if tokenCap <= 0 {
-		tokenCap = 50_000
+		tokenCap = tuning.DefaultTokenCap
 	}
 	return &Controller{tokenCap: tokenCap, w1: w1, w2: w2, w3: w3}
 }

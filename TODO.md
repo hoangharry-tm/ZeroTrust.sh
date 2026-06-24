@@ -1,104 +1,108 @@
 # ZeroTrust.sh — TODO
 
-> L0 ✅ · L1 ✅ · L2 ✅ · L3 ✅ · ML4.1 ✅ · ML4.2 ✅ · ML4.3 ✅ (all complete as of Jun 24, ~6 weeks early)
+> L0 ✅ · L1 ✅ · L2 ✅ · L3 ✅ · ML4.1 ✅ · ML4.2 ✅ · ML4.3 ✅ · Test audit ✅ (all complete as of Jun 24, ~6 weeks early)
 > Full plan: `docs/planning/implementation-plan.md`
+> **Aug 6 hard deadline** — 6 weeks of buffer remaining.
 
 ---
 
-## Layer 4 — Dedup Complete + Report + Final Integration
+## Priority Order
 
-> Plan window: Jul 28 – Aug 6 · Budget: ~50h work + 13h buffer · **Hard deadline: Aug 6**
+1. **Data Pipeline** — build the corpus for testing, benchmarking, profiling, and tuning (feeds A-18 + all future evaluation)
+2. **A-18 Resolution** — QLoRA fine-tuning on CVEFixes; unblocks accuracy claims and threshold recalibration
+3. **Approach 3 / PoE** — LangGraph agentic scanner, Docker sandbox, BOLAZ IDOR — last, only after data is solid
+
+---
+
+## Next: ML-DATA — Data Collection & Pipeline (`pipeline/`)
+
+> **Why first**: Every remaining workstream (A-18 fine-tuning, benchmark reporting, funnel calibration, regression testing, threshold recalibration) requires a labelled, multi-language corpus. The `pipeline/` directory is currently empty. Building it now unblocks everything else.
 >
-> Checkpoint: `zerotrust scan ./test-codebase` runs the full pipeline (Path A + Path B), deduplicates, scores, generates a self-contained HTML report with patch suggestions. Repo clean, README present.
+> Output: `tests/corpus/` (gitignored) — per-language JSONL files ready for training, eval, and profiling.
+
+### ML-DATA.1 — CVEFixes Collector (`pipeline/collectors/`)
+
+- [ ] **T1** — Download CVEFixes SQLite DB (`pipeline/collectors/cvefixes.py`); verify checksum; store at `~/.zerotrust/cvefixes.db` (not in repo)
+- [ ] **T2** — Query `file_change` + `fixes` + `commits`; extract function-level hunks via Tree-sitter (reuse tree-sitter-languages already in project); output raw JSONL per language: `{code, label, cve_id, cwe_id, language, repo, commit}`
+- [ ] **T3** — Language filter: Python / Java / JavaScript / Go only (match scanner rule coverage); discard C/C++ (BigVul territory, not our gap)
+- [ ] **T4** — Dedup: drop samples where `sha256(code)` appears in both vuln and safe sets; log dropped count
+
+**Checkpoint**: `python pipeline/collectors/cvefixes.py` produces `tests/corpus/raw/{language}.jsonl`; row counts logged.
 
 ---
 
-### ML4.1 — Dedup Complete + SSVC-Inspired Confidence Scoring ✅ Done Jun 24
+### ML-DATA.2 — Normalizer (`pipeline/normalizer/`)
 
-- [x] **T1** — Gate 3: MiniLM-L6-v2 embedding similarity (`worker/handlers/embed.py`; `worker.Embed()`; cosine similarity in Go; threshold 0.95)
-- [x] **T2** — Gate 4: AST token edit distance (`worker/handlers/ast_edit.py`; tree-sitter-languages optional + regex fallback; `worker.ASTEditSimilarity()`; threshold 0.85)
-- [x] **T3** — SSVC dimension sourcing (`internal/dedup/ssvc.go`; CISA KEV bundle cached `~/.zerotrust/kev.json` 24h TTL; EPSS via FIRST API; 20-entry CWE static maps; NVD deferred to buffer)
-- [x] **T4** — Score → label + CVE CVSS floor + SSVC boosts + Path A MEDIUM floor (`applyBoostAndScore`)
-- [x] **T5** — Cross-path +15pp boost; BLOCK not boosted (`f.Confidence < 0.92` guard)
-- [x] **T6** — Framework-safe suppression + `.zerotrust-suppressions.yaml` sidecar (`internal/dedup/sidecar.go`; 8 framework globs; ID/path/CWE matching; `dedup.NewWithRoot(cfg.Target)`)
-- [x] **T7** — `poe_context` population from Path B LLM Scan (`llmscan.buildPoeContext()` from `TaintFlow`+`AuthGuard`+`LogicFlaw`)
+- [ ] **T1** — Strip comments, normalise whitespace, clip functions to 512 tokens (match UniXcoder context window); write to `tests/corpus/normalized/{language}.jsonl`
+- [ ] **T2** — Class balance audit: log vuln:safe ratio per language; apply random oversampling of minority class to reach ≤ 3:1 ratio (document in `docs/benchmarks/a18_gap.md`)
+- [ ] **T3** — Stratified 80/10/10 train/val/test split per language; write `{language}_{split}.jsonl`
 
-**27 dedup tests green · `make test` clean.**
+**Checkpoint**: `python pipeline/normalizer/normalize.py` produces train/val/test splits; class distribution table written to `docs/benchmarks/corpus_stats.md`.
 
 ---
 
-### ML4.2 — HTML Report + Patch Suggestions ✅ Done Jun 24
+### ML-DATA.3 — Labeler & Quality Check (`pipeline/labeler/`)
 
-> `internal/report/` · `internal/report/patch.go` · `internal/report/template.html`
+- [ ] **T1** — Rule-based sanity check: samples where CWE matches a known-safe pattern (e.g. CWE-0 placeholder) are flagged and removed
+- [ ] **T2** — Overlap check: assert zero overlap between train and test splits (hash-based)
+- [ ] **T3** — Coverage report: for each scanner rule in `rules/`, confirm ≥ 1 CVEFixes sample covers that CWE; flag rules with no corpus coverage
 
-- [x] **T1** — Complete HTML report:
-  - `html/template` + `embed`; SSVC-inspired severity labels with colour coding.
-  - Filtering by severity / file / detection path (Path A / Path B / cross-path).
-  - Search across finding titles and file paths.
-  - Expandable findings: **Evidence** (matched code) · **SSVC** (scoring) · **PoE Context** · **Patch** (unified diff).
-  - All free-text fields via contextual escaping — no `template.HTML()`.
-  - Scope notice bar; `diffLines` template func for server-side diff rendering.
-
-- [x] **T2** — XSS mitigations:
-  - CSP: `default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'`.
-  - XSS tests cover `justification`, `path`, and `matched_code` fields; `TestRenderContainsCSPHeader` added.
-
-- [x] **T3** — Patch generation (`internal/report/patch.go`):
-  - `GeneratePatch(ctx, client, finding)` — zero-shot unified diff via Ollama.
-  - CVE+CVSS injected as few-shot prefix for BLOCK/HIGH findings with a CVE.
-  - `extractDiff` handles fenced ` ```diff ` blocks and bare `---` output.
-
-- [x] **T4** — Patch validation:
-  - `ValidatePatch(patch)` uses `go-gitdiff`; returns `(status, scope, err)`.
-  - `Finding.PatchStatus = "malformed"` when `gitdiff.Parse` errors (catches off-by-one hunk headers).
-  - 4 tests: single-hunk OK, multi-hunk, multi-file, garbage input.
-
-- [x] **T5** — Patch scope labels:
-  - `single_hunk` / `multi_hunk` / `multi_file` computed from file + hunk counts in `ValidatePatch`.
-  - `Finding.PatchScope` set; PatchEval reliability note rendered in Patch tab (~22% / ~12% / 0–7.7%).
-
-- [x] **T6** — Suppression sidecar UI action:
-  - Per-finding **ACK** button in report UI; toggles to ✓ when clicked.
-  - Sticky bar at bottom shows count + **Download .zerotrust-suppressions.yaml** button.
-  - JS Blob download generates YAML in `dedup.SidecarEntry` format, directly compatible with `LoadSidecar`.
-
-**All report tests green · `go vet` clean · `make test` passes.**
+**Checkpoint**: `python pipeline/labeler/check.py` exits 0 with zero overlap and coverage report written.
 
 ---
 
-### ML4.3 — End-to-End Integration + Final Delivery (8h) ✅ Done Jun 24
+### ML-DATA.4 — Profiling & Benchmarking Harness (`scripts/benchmarks/`)
 
-> Plan window: Aug 5–6 · This is the last milestone before hard deadline Aug 6.
-> Unblocked: Path A + Path B both complete; Dedup + SSVC scoring complete; HTML report + patches complete.
+- [ ] **T1** — Benchmark script (`scripts/benchmarks/corpus_bench.py`): run classifier on the test split; record precision/recall/F1 per language; write to `docs/benchmarks/a18_gap.md` results table
+- [ ] **T2** — Profiling harness (`scripts/benchmarks/profile_scan.py`): run `zerotrust scan` on a 5K-LOC synthetic codebase sampled from corpus; capture wall-clock, peak RSS, p50/p95 latency per stage; append to `docs/benchmarks/performance.md`
+- [ ] **T3** — Regression gate: add `make bench` target; fails CI if F1 drops below 0.75 on any language or wall-clock exceeds 60s on 5K LOC
 
-- [x] **T1** — Full pipeline run (3h):
-  - `zerotrust scan ./tests/integration/spring-boot-app` with `--native` flag.
-  - Path A + Path B findings both present in output.
-  - Dedup merges cross-path duplicates correctly (SourcePath upgrades PATTERN→BOTH; +15pp boost applied).
-  - SSVC scoring applied; HTML report generated at `--report zerotrust-report.html`.
-  - All 5 severity labels reachable; no silent drops (SUPPRESSED emits, never disappears).
-
-- [x] **T2** — Precision/recall vs G1 baseline (2h):
-  - Run Path A only vs Path A+B on the Spring Boot test codebase.
-  - Record TP/FP/FN counts for both modes.
-  - Document delta to `docs/benchmarks/final_eval.md`.
-
-- [x] **T3** — Performance benchmark (1.5h):
-  - Wall-clock time on 5K LOC synthetic codebase: cold scan (first run) + warm scan (DI cache hit).
-  - Peak RSS memory during scan.
-  - Log results to `docs/benchmarks/performance.md`.
-
-- [x] **T4** — Final delivery (1.5h):
-  - `CLAUDE.md` accurate and up to date with current architecture.
-  - README present with quickstart (`make build`, `zerotrust scan ./...`, report output).
-  - `make build` · `make test` · `make demo` all pass clean.
-  - `git status` clean; no uncommitted changes; no TODO/FIXME left in shipped code.
-
-**Done when**: all four tasks above pass; `make test` green end-to-end; HTML report opens in browser with real findings from Spring Boot testbed.
+**Checkpoint**: `make bench` runs clean; all thresholds met or explicitly documented as known gaps.
 
 ---
 
-> **Drop sequence** (execute only if Layer 4 falls behind schedule):
-> 1. Gate 4 AST edit distance (T2) — saves 2h; 3-gate dedup still correct *(already done)*
-> 2. SSVC live APIs → CVSS-only scoring (T3 partial) — saves 8h; document in report *(already done; NVD in buffer)*
-> 3. Patch suggestions (ML4.2 T3–T6) — saves 12.5h; report shows findings only, no diffs *(already done — moot)*
+## After Data Pipeline: A-18 Resolution (QLoRA Fine-Tuning)
+
+> Unblocked by ML-DATA.3. Full task breakdown in `docs/planning/implementation-plan.md` under `[BONUS] R&D — A-18 Resolution`.
+
+| ID     | Task                                                        | Est.                        |
+| ------ | ----------------------------------------------------------- | --------------------------- |
+| A18.T1 | CVEFixes data pipeline                                      | ✅ covered by ML-DATA above |
+| A18.T2 | Class balancing + splits                                    | ✅ covered by ML-DATA.2     |
+| A18.T3 | QLoRA fine-tune per language (RunPod A40, ~$15–25)          | 6.0h                        |
+| A18.T4 | Per-language F1/precision/recall evaluation                 | 3.0h                        |
+| A18.T5 | Save LoRA adapter + wire into `worker/handlers/classify.py` | 2.0h                        |
+| A18.T6 | Threshold recalibration (0.80 → 0.85–0.90 per language)     | 1.0h                        |
+| A18.T7 | Update accuracy claims in CLAUDE.md, README, report output  | 0.5h                        |
+
+**Hard time-box: 12.5h post-data-pipeline.** If Go/Ruby sample counts < 1.5k, keep high-recall mode for those languages and document.
+
+---
+
+## Last: Approach 3 / PoE — Agentic Scanner
+
+> Start only after the corpus is collected and A-18 is resolved (or consciously deferred past Aug 6).
+> Approach 3 per CLAUDE.md: LangGraph 3-agent ensemble (Recon → Exploit → Verify), Threat Feature Extractor, Docker PoE sandbox, BOLAZ IDOR tracking.
+
+| ID     | Task                                                    | Notes                                                                |
+| ------ | ------------------------------------------------------- | -------------------------------------------------------------------- |
+| PoE.T1 | LangGraph agent scaffold: Recon → Exploit → Verify loop | Replaces `llmscan.go` bounded ReAct; IPC switches to local gRPC      |
+| PoE.T2 | Docker PoE sandbox (`docker/sandbox/`)                  | Isolated execution env for Exploit agent; no network egress          |
+| PoE.T3 | BOLAZ IDOR tracking                                     | Resource-ID dataflow across agent turns                              |
+| PoE.T4 | Threat Feature Extractor (Python)                       | Union schema over taint + auth + logic features; feeds Exploit agent |
+| PoE.T5 | Wire PoE confidence into Dedup gate                     | PoE-confirmed findings bypass Gate 3 similarity check                |
+
+**Do not start PoE until ML-DATA is done.** Agentic scanner quality is directly correlated with corpus quality — a bad corpus produces an untuned agent that overfits to the Spring Boot testbed.
+
+---
+
+## Completed
+
+- [x] L0 — Go skeleton, ingestion (MIV + DI), Path A wrappers, Python worker IPC, Dedup skeleton, HTML skeleton
+- [x] L1 — Heuristic Targeting (ML3.1), UniXcoder Classifier (ML3.2), CPG Assembler (ML3.3)
+- [x] L2 — OpenGrep + Joern CPG taint + instrscan + LLM Verifier (Path A complete)
+- [x] L3 — Summarizer, Budget Controller, LLM Semantic Scan (Path B complete)
+- [x] ML4.1 — Dedup complete: Gates 1–4, SSVC sourcing, cross-path boost, sidecar suppression
+- [x] ML4.2 — HTML report + patch suggestions: XSS mitigations, CSP, go-gitdiff validation, ACK/suppress UI
+- [x] ML4.3 — End-to-end integration: Spring Boot testbed, benchmarks, final delivery
+- [x] Test audit — 4 new test files (patch, summarizer, output, expand); 3 vacuous tests removed/fixed; 507 tests green

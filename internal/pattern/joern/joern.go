@@ -76,21 +76,22 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/hoangharry-tm/zerotrust/internal/tuning"
 	"github.com/hoangharry-tm/zerotrust/pkg/cpg"
 )
 
 // defaults for all configurable timeouts and retry counts.
 const (
-	defaultServerURL      = "http://127.0.0.1:8080"
-	defaultBinaryPath     = "joern" // Homebrew installs as "joern", not "joern-server"
-	defaultHost           = "127.0.0.1"
-	defaultPort           = 8080
-	defaultPingRetries    = 12
-	defaultPingInterval   = 500 * time.Millisecond
-	defaultPingTimeout    = 30 * time.Second // per-ping-attempt timeout
-	defaultStopTimeout    = 5 * time.Second
-	defaultQueryTimeout   = 30 * time.Second
-	defaultBuildTimeout   = 120 * time.Second
+	defaultServerURL  = "http://127.0.0.1:8080"
+	defaultBinaryPath = "joern" // Homebrew installs as "joern", not "joern-server"
+	defaultHost       = "127.0.0.1"
+	defaultPort       = tuning.JoernDefaultPort
+	defaultPingRetries    = tuning.JoernPingRetries
+	defaultPingInterval   = tuning.JoernPingInterval
+	defaultPingTimeout    = tuning.JoernPingTimeout
+	defaultStopTimeout    = tuning.JoernStopTimeout
+	defaultQueryTimeout   = tuning.JoernQueryTimeout
+	defaultBuildTimeout   = tuning.JoernBuildTimeout
 )
 
 // Option configures a Client.

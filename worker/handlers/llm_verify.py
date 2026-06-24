@@ -18,6 +18,8 @@ import ollama
 from models.xgrammar import GrammarEnforcer
 from schemas.verdict import LLMVerdict, LLMVerifierResult
 
+import tuning
+
 log = logging.getLogger(__name__)
 
 # ── Environment-driven configuration ─────────────────────────────────────────
@@ -33,7 +35,7 @@ _client: ollama.Client | None = None
 _enforcer: GrammarEnforcer[LLMVerifierResult] | None = None
 
 # ASC resampling temperatures for rounds 1 and 2 (index 0 = first extra round).
-_ASC_TEMPERATURES: list[float] = [0.35, 0.6]
+_ASC_TEMPERATURES: list[float] = tuning.ASC_TEMPERATURES
 
 
 def _get_client() -> ollama.Client:
@@ -51,7 +53,7 @@ def _get_client() -> ollama.Client:
             return _client
 
         log.debug("initialising Ollama client (url=%s, model=%s)", OLLAMA_URL, MODEL)
-        _client = ollama.Client(host=OLLAMA_URL, timeout=30)
+        _client = ollama.Client(host=OLLAMA_URL, timeout=tuning.OLLAMA_TIMEOUT_SECONDS)
 
         log.debug("initialising GrammarEnforcer for LLMVerifierResult")
         _enforcer = GrammarEnforcer(LLMVerifierResult)
@@ -111,7 +113,7 @@ def _call_ollama(
     enforcer: GrammarEnforcer[LLMVerifierResult],
     prompt: str,
     finding_id: str,
-    temperature: float = 0.1,
+    temperature: float = tuning.LLM_VERIFY_TEMPERATURE,
 ) -> LLMVerifierResult:
     """Make one Ollama chat call and parse the result through the enforcer.
 
@@ -121,7 +123,7 @@ def _call_ollama(
         RuntimeError: Ollama is unreachable.
         ValueError: Schema mismatch after both attempts.
     """
-    options = {"temperature": temperature, "num_predict": 300}
+    options = {"temperature": temperature, "num_predict": tuning.LLM_VERIFY_MAX_PREDICT}
 
     def _chat(fmt: Any) -> str:
         try:
@@ -250,15 +252,15 @@ def handle(payload: dict[str, Any]) -> dict[str, Any]:
         ValueError: The LLM response does not conform to the expected schema.
     """
     finding_id: str = str(payload.get("finding_id", ""))
-    asc_max_rounds: int = int(payload.get("asc_max_rounds", 2))
-    asc_confidence_threshold: float = float(payload.get("asc_confidence_threshold", 0.70))
+    asc_max_rounds: int = int(payload.get("asc_max_rounds", tuning.ASC_MAX_ROUNDS))
+    asc_confidence_threshold: float = float(payload.get("asc_confidence_threshold", tuning.ASC_CONFIDENCE_THRESHOLD))
 
     client = _get_client()
     enforcer = _get_enforcer()
     prompt = _build_prompt(payload)
 
     log.debug("llm_verify: initial call (finding_id=%s)", finding_id)
-    initial = _call_ollama(client, enforcer, prompt, finding_id, temperature=0.1)
+    initial = _call_ollama(client, enforcer, prompt, finding_id, temperature=tuning.LLM_VERIFY_TEMPERATURE)
 
     needs_asc = (
         initial.verdict == LLMVerdict.UNCERTAIN

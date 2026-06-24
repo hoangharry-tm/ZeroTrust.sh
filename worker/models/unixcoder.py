@@ -41,15 +41,15 @@ try:
 except ImportError:
     _XFORMERS_AVAILABLE = False
 
+from tuning import (
+    UNIXCODER_VULNERABLE_THRESHOLD as _VULNERABLE_THRESHOLD,
+    UNIXCODER_SAFE_THRESHOLD as _SAFE_THRESHOLD,
+    UNIXCODER_BATCH_SIZE as _BATCH_SIZE,
+    UNIXCODER_MAX_LENGTH as _MAX_LENGTH,
+    UNIXCODER_HIDDEN_SIZE as _HIDDEN_SIZE,
+)
+
 log = logging.getLogger(__name__)
-
-# ── Thresholds (high-recall mode — see A-18 above) ───────────────────────────
-
-_VULNERABLE_THRESHOLD: float = 0.85
-_SAFE_THRESHOLD: float = 0.15
-_BATCH_SIZE: int = 16
-_MAX_LENGTH: int = 512
-_HIDDEN_SIZE: int = 768
 
 
 # ── Output type ──────────────────────────────────────────────────────────────

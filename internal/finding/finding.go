@@ -22,6 +22,8 @@ import (
 	"encoding/hex"
 	"path/filepath"
 	"strings"
+
+	"github.com/hoangharry-tm/zerotrust/internal/tuning"
 )
 
 // SeverityLabel is the SSVC-inspired five-tier output label.
@@ -201,13 +203,13 @@ type Channel chan Finding
 // stay in exactly one place.
 func SeverityFromConfidence(confidence float64) SeverityLabel {
 	switch {
-	case confidence >= 0.92:
+	case confidence >= tuning.ConfBlock:
 		return SeverityBlock
-	case confidence >= 0.75:
+	case confidence >= tuning.ConfHigh:
 		return SeverityHigh
-	case confidence >= 0.60:
+	case confidence >= tuning.ConfMedium:
 		return SeverityMedium
-	case confidence >= 0.30:
+	case confidence >= tuning.ConfLow:
 		return SeverityLow
 	default:
 		return SeveritySuppressed

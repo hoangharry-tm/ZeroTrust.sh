@@ -44,6 +44,7 @@ import (
 	"fmt"
 
 	"github.com/hoangharry-tm/zerotrust/internal/semantic/assembler"
+	"github.com/hoangharry-tm/zerotrust/internal/tuning"
 	"github.com/hoangharry-tm/zerotrust/internal/worker"
 )
 
@@ -83,7 +84,7 @@ type Summarizer struct {
 // Parameters:
 //   - w: the shared Python worker manager.
 func New(w *worker.Manager) *Summarizer {
-	return &Summarizer{w: w, batchSize: 5}
+	return &Summarizer{w: w, batchSize: tuning.SummarizerBatchSize}
 }
 
 // Summarize converts call chains into semantic summaries using batch inference.

@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/hoangharry-tm/zerotrust/internal/tuning"
 	"github.com/hoangharry-tm/zerotrust/pkg/cpg"
 )
 
@@ -37,7 +38,7 @@ type joernGraph struct {
 // CPGs for large codebases can produce thousands of paths; this cap prevents
 // unbounded memory growth. Paths are ranked by source-to-sink hop count before
 // truncation — shorter (more direct) paths are kept.
-const maxTaintPaths = 1_000
+const maxTaintPaths = tuning.CPGMaxTaintPaths
 
 // ─── wire types ───────────────────────────────────────────────────────────────
 

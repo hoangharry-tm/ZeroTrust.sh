@@ -32,7 +32,8 @@ import (
 	"net/http"
 	"strings"
 	"sync/atomic"
-	"time"
+
+	"github.com/hoangharry-tm/zerotrust/internal/tuning"
 )
 
 // ErrModelBlocked is returned by Generate and Chat when the Model Integrity
@@ -97,7 +98,7 @@ func New(baseURL, model string) *Client {
 	return &Client{
 		baseURL:    baseURL,
 		model:      model,
-		httpClient: &http.Client{Timeout: 120 * time.Second},
+		httpClient: &http.Client{Timeout: tuning.OllamaHTTPTimeout},
 	}
 }
 

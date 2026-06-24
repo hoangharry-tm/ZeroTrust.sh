@@ -35,6 +35,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/hoangharry-tm/zerotrust/internal/tuning"
 	"github.com/hoangharry-tm/zerotrust/pkg/cpg"
 )
 
@@ -295,7 +296,7 @@ func AutoFlagCVESurfaces(surfaces []Surface) (flagged []Surface, remaining []Sur
 		}
 		cvss := s.CVSSScore
 		if cvss == 0 {
-			cvss = 5.0
+			cvss = tuning.CVSSMissingDefault
 		}
 		conf := cvssBandConfidence(cvss)
 		if conf == 0 {
@@ -312,12 +313,12 @@ func AutoFlagCVESurfaces(surfaces []Surface) (flagged []Surface, remaining []Sur
 // Returns 0 when the score is below the auto-flag threshold (4.0).
 func cvssBandConfidence(cvss float64) float64 {
 	switch {
-	case cvss >= 9.0:
-		return 0.95
-	case cvss >= 7.0:
-		return 0.82
-	case cvss >= 4.0:
-		return 0.68
+	case cvss >= tuning.CVSSCritical:
+		return tuning.ConfCVSSCritical
+	case cvss >= tuning.CVSSHigh:
+		return tuning.ConfCVSSHigh
+	case cvss >= tuning.CVSSMedium:
+		return tuning.ConfCVSSMedium
 	default:
 		return 0
 	}

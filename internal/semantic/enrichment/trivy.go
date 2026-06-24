@@ -44,11 +44,8 @@ import (
 	"strings"
 
 	"github.com/hoangharry-tm/zerotrust/internal/finding"
+	"github.com/hoangharry-tm/zerotrust/internal/tuning"
 )
-
-// autoFlagThreshold is the minimum CVSS score that causes a surface to be
-// auto-flagged, bypassing the UniXcoder classifier entirely.
-const autoFlagThreshold = 7.0
 
 // trivyFSResult is the top-level JSON structure returned by `trivy fs --format json`.
 type trivyFSResult struct {
@@ -162,7 +159,7 @@ func bestCVSS(c trivyCVSS) float64 {
 }
 
 // AutoFlagSeverity maps a CVSS score to the SSVC-inspired SeverityLabel for a
-// CVE auto-flagged surface. Surfaces below autoFlagThreshold are not auto-flagged
+// CVE auto-flagged surface. Surfaces below tuning.AutoFlagCVSS are not auto-flagged
 // and this function should not be called for them.
 //
 // Mapping (L3.1.T5):
@@ -185,7 +182,7 @@ func AutoFlagSeverity(cvss float64) finding.SeverityLabel {
 }
 
 // ApplyCVEMatches enriches a surface slice with CVE data from a Trivy result map
-// and sets AutoFlagged on surfaces whose highest CVSS score is ≥ autoFlagThreshold.
+// and sets AutoFlagged on surfaces whose highest CVSS score is ≥ tuning.AutoFlagCVSS.
 //
 // The match is by package name: a surface is matched to a CVE when the surface's
 // source file is in a module directory that contains the vulnerable package
@@ -230,7 +227,7 @@ func ApplyCVEMatches(surfaces []EnrichedSurface, cvesByPkg map[string][]CVEMatch
 		sortCVEMatches(matches)
 		s.CVEMatches = matches
 
-		if matches[0].CVSS >= autoFlagThreshold {
+		if matches[0].CVSS >= tuning.AutoFlagCVSS {
 			s.AutoFlagged = true
 		}
 	}

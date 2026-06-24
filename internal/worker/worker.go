@@ -57,7 +57,8 @@ import (
 	"path/filepath"
 	"sync"
 	"sync/atomic"
-	"time"
+
+	"github.com/hoangharry-tm/zerotrust/internal/tuning"
 )
 
 // ErrWorkerDead is returned when the worker process has crashed and the
@@ -279,7 +280,7 @@ func Start(ctx context.Context, workerPath string, logger *slog.Logger) (*Manage
 	if err := m.spawn(); err != nil {
 		return nil, fmt.Errorf("worker: spawn: %w", err)
 	}
-	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	pingCtx, cancel := context.WithTimeout(ctx, tuning.WorkerStartPingTimeout)
 	defer cancel()
 	if err := m.Ping(pingCtx); err != nil {
 		_ = m.Stop()
@@ -361,7 +362,7 @@ func (m *Manager) handleDeath() {
 			"component", "worker",
 		)
 		if err := m.spawn(); err == nil {
-			pingCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			pingCtx, cancel := context.WithTimeout(context.Background(), tuning.WorkerRestartPingTimeout)
 			defer cancel()
 			if err := m.Ping(pingCtx); err == nil {
 				m.logger.Info("python worker restarted successfully",
@@ -496,7 +497,7 @@ func (m *Manager) Stop() error {
 	m.stopping.Store(true)
 
 	// Best-effort graceful shutdown; ignore errors (process may already be dead).
-	shutCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	shutCtx, cancel := context.WithTimeout(context.Background(), tuning.WorkerShutdownTimeout)
 	defer cancel()
 	_, _ = m.Call(shutCtx, MsgShutdown, nil)
 

@@ -23,6 +23,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/hoangharry-tm/zerotrust/internal/tuning"
 )
 
 // queryRequest is the JSON body sent to POST /query.
@@ -49,7 +51,7 @@ type queryResultResponse struct {
 }
 
 // resultPollInterval is how long to wait between GET /result/{uuid} retries.
-const resultPollInterval = 200 * time.Millisecond
+const resultPollInterval = tuning.JoernResultPollInterval
 
 // doQuery sends a Joern DSL expression to POST /query, then polls
 // GET /result/{uuid} until the result is ready. Returns the raw stdout bytes

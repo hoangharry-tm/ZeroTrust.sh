@@ -25,7 +25,10 @@
 
 package budget
 
-import "github.com/hoangharry-tm/zerotrust/internal/semantic/summarizer"
+import (
+	"github.com/hoangharry-tm/zerotrust/internal/semantic/summarizer"
+	"github.com/hoangharry-tm/zerotrust/internal/tuning"
+)
 
 // computePriority applies the surface ranking formula.
 // callGraphDepth ≤ 0 is treated as 1 (unknown reachability → maximum weight).
@@ -49,5 +52,5 @@ func estimateTokens(s summarizer.Summary) int {
 	for _, san := range s.TaintFlow.SanitizerNodes {
 		chars += len(san)
 	}
-	return int(float64(chars)*0.3) + 50
+	return int(float64(chars)*tuning.TokenEstCharsPerTok) + tuning.TokenEstOverhead
 }
