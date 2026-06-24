@@ -16,7 +16,6 @@ package verifier_test
 
 import (
 	"context"
-	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -45,17 +44,6 @@ func makeFindings(n int) []finding.Finding {
 		}
 	}
 	return fs
-}
-
-func makeVerifyResult(findingID, verdict string, confidence float64, ascRounds int) json.RawMessage {
-	b, _ := json.Marshal(map[string]any{
-		"finding_id":    findingID,
-		"verdict":       verdict,
-		"confidence":    confidence,
-		"justification": "test justification",
-		"asc_rounds":    ascRounds,
-	})
-	return b
 }
 
 // ---------------------------------------------------------------------------
@@ -239,9 +227,5 @@ func TestVerify_EmptySlice(t *testing.T) {
 // makeVerifyResult used internally
 // ---------------------------------------------------------------------------
 
-func TestMakeVerifyResult_IsValidJSON(t *testing.T) {
-	raw := makeVerifyResult("id-001", "confirmed", 0.91, 0)
-	var m map[string]any
-	require.NoError(t, json.Unmarshal(raw, &m))
-	assert.Equal(t, "confirmed", m["verdict"])
-}
+// makeVerifyResult produces a JSON result payload matching the worker schema.
+// Tested implicitly via TestApplyResults_* which depend on correct JSON encoding.

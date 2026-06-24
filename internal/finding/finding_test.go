@@ -195,21 +195,15 @@ func TestComputeID_EmptyInputsDoNotPanic(t *testing.T) {
 	}
 }
 
-// Validate the SHA-256 formula: hex(sha256(cwe + ":" + path + ":" + code)).
-// If the formula changes, this test catches it before any downstream breakage.
-func TestComputeID_FormulaIsStable(t *testing.T) {
-	// Pre-computed with: echo -n 'CWE-89:src/db.go:x' | sha256sum
-	const known = "CWE-89"
-	const knownPath = "src/db.go"
-	const knownCode = "x"
-	// We do not hard-code the hex here to avoid brittleness, but we verify the
-	// formula by computing it two ways and asserting they match.
-	id1 := ComputeID(known, knownPath, knownCode)
-	id2 := ComputeID(known, knownPath, knownCode)
-	if id1 != id2 {
-		t.Error("formula must be stable across two identical calls")
-	}
-	if len(id1) != 64 {
-		t.Errorf("expected 64 hex chars, got %d", len(id1))
+// TestComputeID_KnownHash pins the SHA-256 formula to a pre-computed value.
+// If the formula (cwe + ":" + path + ":" + code) or hash algorithm changes,
+// this test fails — intentionally. Verify with:
+//
+//	echo -n 'CWE-89:src/db.go:x' | sha256sum
+func TestComputeID_KnownHash(t *testing.T) {
+	const want = "5da88350e9c0054e42c1b084cf361547e40d0cc6d557e5fc86fbacceaaf92376"
+	got := ComputeID("CWE-89", "src/db.go", "x")
+	if got != want {
+		t.Errorf("ComputeID formula changed:\n got  %s\n want %s", got, want)
 	}
 }

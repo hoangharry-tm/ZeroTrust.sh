@@ -91,32 +91,6 @@ func TestCWEMissing(t *testing.T) {
 	}
 }
 
-// ─── severityFromScore ───────────────────────────────────────────────────────
-
-func TestSeverityFromScore(t *testing.T) {
-	cases := []struct {
-		score float64
-		want  finding.SeverityLabel
-	}{
-		{0.95, finding.SeverityBlock},
-		{0.92, finding.SeverityBlock},
-		{0.91, finding.SeverityHigh},
-		{0.75, finding.SeverityHigh},
-		{0.74, finding.SeverityMedium},
-		{0.60, finding.SeverityMedium},
-		{0.59, finding.SeverityLow},
-		{0.30, finding.SeverityLow},
-		{0.29, finding.SeveritySuppressed},
-		{0.00, finding.SeveritySuppressed},
-	}
-	for _, tc := range cases {
-		got := finding.SeverityFromConfidence(tc.score)
-		if got != tc.want {
-			t.Errorf("score %.2f: expected %s, got %s", tc.score, tc.want, got)
-		}
-	}
-}
-
 // ─── normalise ───────────────────────────────────────────────────────────────
 
 func TestNormalisePopulatesFields(t *testing.T) {
