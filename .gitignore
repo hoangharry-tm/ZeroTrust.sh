@@ -17,6 +17,7 @@ dist/
 # ZeroTrust.sh runtime artifacts
 *.cpg
 report.html
+!site/public/report.html
 .zerotrust-suppressions.yaml
 
 # docs/api/ is NOT where Go API docs live — godocs/api/ is.
