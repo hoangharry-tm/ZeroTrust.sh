@@ -55,6 +55,7 @@ demo-report-small:
 
 demo-report-large:
 	go run ./cmd/zerotrust --mock-large --report $(BUILD_DIR)/report-large.html
+	cp $(BUILD_DIR)/report-large.html site/public/report.html
 
 demo-report: demo-report-small
 

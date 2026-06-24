@@ -18,7 +18,7 @@
 
 ---
 
-**[Website](https://hoangharry-tm.github.io/ZeroTrust.sh/) · [Architecture](docs/architecture/detail.md) · [Plan](docs/planning/implementation-plan.md) · [Report Mockup](docs/report-example.html)**
+**[Website](https://hoangharry-tm.github.io/ZeroTrust.sh/) · [Architecture](docs/architecture/detail.md) · [Plan](docs/planning/implementation-plan.md) · [Live Report Demo](https://hoangharry-tm.github.io/ZeroTrust.sh/report.html)**
 
 </div>
 
@@ -305,7 +305,7 @@ Before submitting a rule PR: run `make test` and confirm 0 FP on clean controls.
 
 <div align="center">
 
-**Docs:** [Architecture](docs/architecture/detail.md) · [Implementation Plan](docs/planning/implementation-plan.md) · [Research Papers](docs/research-papers.md) · [Report Mockup](docs/report-example.html)
+**Docs:** [Architecture](docs/architecture/detail.md) · [Implementation Plan](docs/planning/implementation-plan.md) · [Research Papers](docs/research-papers.md) · [Live Report Demo](https://hoangharry-tm.github.io/ZeroTrust.sh/report.html)
 
 **Website:** [hoangharry-tm.github.io/ZeroTrust.sh](https://hoangharry-tm.github.io/ZeroTrust.sh/)
 
