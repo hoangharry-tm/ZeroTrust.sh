@@ -13,7 +13,7 @@ JOERN_VERSION := v4.0.550
 # Homebrew installs as "joern" (uses --server flag mode, not a separate joern-server binary).
 JOERN_BIN     := $(shell command -v joern 2>/dev/null || echo "$(HOME)/bin/joern/joern")
 
-.PHONY: build test test-rules test-integration joern-check lint worker-install demo demo-report clean docker-build docker-push
+.PHONY: build test test-rules test-integration joern-check lint worker-install format-template demo demo-report demo-report-small demo-report-large clean docker-build docker-push
 
 build:
 	@mkdir -p $(BUILD_DIR)
@@ -44,11 +44,19 @@ lint:
 worker-install:
 	cd worker && uv sync --extra dev
 
+format-template:
+	node scripts/format_template.mjs
+
 demo:
 	@./scripts/pipeline/run_demo.sh
 
-demo-report:
-	go run ./cmd/zerotrust --mock --report $(BUILD_DIR)/report.html
+demo-report-small:
+	go run ./cmd/zerotrust --mock --report $(BUILD_DIR)/report-small.html
+
+demo-report-large:
+	go run ./cmd/zerotrust --mock-large --report $(BUILD_DIR)/report-large.html
+
+demo-report: demo-report-small
 
 docker-build:
 	@mkdir -p $(BUILD_DIR)

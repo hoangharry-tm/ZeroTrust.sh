@@ -353,29 +353,26 @@ func (m *Manager) handleDeath() {
 
 	m.mu.Lock()
 	alreadyRestarted := m.restarted
+	isStopping := m.stopping.Load()
 	m.mu.Unlock()
 
-	if !alreadyRestarted {
-		// Check stopping inside the restart decision block to minimize the window
-		// where a concurrent Stop() could result in an orphaned process being spawned.
-		if !m.stopping.Load() {
-			m.logger.Error("python worker process exited unexpectedly, attempting restart",
-				"component", "worker",
-			)
-			if err := m.spawn(); err == nil {
-				pingCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-				defer cancel()
-				if err := m.Ping(pingCtx); err == nil {
-					m.logger.Info("python worker restarted successfully",
-						"component", "worker",
-					)
-					m.mu.Lock()
-					m.restarted = true
-					m.mu.Unlock()
-					// Drain the crash-window requests — callers must retry.
-					m.drainPending("worker restarted after crash; retry the request")
-					return
-				}
+	if !alreadyRestarted && !isStopping {
+		m.logger.Error("python worker process exited unexpectedly, attempting restart",
+			"component", "worker",
+		)
+		if err := m.spawn(); err == nil {
+			pingCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			if err := m.Ping(pingCtx); err == nil {
+				m.logger.Info("python worker restarted successfully",
+					"component", "worker",
+				)
+				m.mu.Lock()
+				m.restarted = true
+				m.mu.Unlock()
+				// Drain the crash-window requests — callers must retry.
+				m.drainPending("worker restarted after crash; retry the request")
+				return
 			}
 		}
 	}

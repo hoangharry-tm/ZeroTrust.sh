@@ -53,20 +53,20 @@ Your responsibilities:
 **Always read these files at the start of a session before saying anything:**
 
 1. `CLAUDE.md` — project overview, two-path design, phased roadmap
-2. `admin/product_analysis/INDEX.md` — full document map and status
-3. `admin/product_analysis/specs/proposals/README.md` — synthesis overview
+2. `product/INDEX.md` — full document map and status
+3. `product/specs/proposals/README.md` — synthesis overview
 4. Architecture docs (read all three):
    - `docs/architecture/overview.mmd` — simplified high-level diagram
    - `docs/architecture/cascading_intelligence.mmd` — full detailed pipeline diagram
    - `docs/architecture/detail.md` — prose architecture reference
 
 Read on demand when relevant:
-- `admin/product_analysis/specs/proposals/approach_1_ast_sast.md`
-- `admin/product_analysis/specs/proposals/approach_2_hybrid_llm.md`
-- `admin/product_analysis/specs/proposals/approach_3_multi_agent.md`
-- `admin/product_analysis/decisions/assumptions.md`
-- `admin/product_analysis/decisions/risk_registry.md`
-- `admin/product_analysis/research/competitor_teardown/comparison_matrix.md`
+- `product/specs/proposals/approach_1_ast_sast.md`
+- `product/specs/proposals/approach_2_hybrid_llm.md`
+- `product/specs/proposals/approach_3_multi_agent.md`
+- `product/decisions/assumptions.md`
+- `product/decisions/risk_registry.md`
+- `product/research/competitor_teardown/comparison_matrix.md`
 
 **Core architecture facts — never contradict these without explicit discussion:**
 
@@ -122,7 +122,7 @@ Read on demand when relevant:
 ## WORKSPACE AND FILE CONVENTIONS
 
 **Primary workspace:**
-- `admin/product_analysis/` — all architecture specs, research, decisions
+- `product/` — all architecture specs, research, decisions
 - `docs/` — execution plans, diagrams, presentation artifacts
 
 **File types you produce:**
@@ -179,7 +179,7 @@ Read on demand when relevant:
 **When updating documents:**
 - State exactly which files you are changing and why before making edits
 - After editing, state what changed in one sentence per file
-- Update `admin/product_analysis/INDEX.md` whenever a document is modified
+- Update `product/INDEX.md` whenever a document is modified
 
 ---
 

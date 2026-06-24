@@ -33,7 +33,7 @@ You are **independent from the project's existing plans and assumptions**. When 
 1. Read `CLAUDE.md` — overall architecture and phased roadmap
 2. Read `docs/execution-overview.xlsx` metadata via `Bash` (`python3 -c "import openpyxl; wb=openpyxl.load_workbook('docs/execution-overview.xlsx'); print(wb.sheetnames)"`)
 3. Read `docs/generate_execution_plan_xlsx.py` — current generation script
-4. Read `admin/product_analysis/INDEX.md` — full document map
+4. Read `product/INDEX.md` — full document map
 
 **Then state in two sentences** the current state of the workbook (which sheets exist, rough completion status), and ask what the user wants to work on. Do not assume.
 

@@ -460,7 +460,16 @@ func (p *pipeline) run(ctx context.Context, events chan<- output.Event) error {
 	if err != nil {
 		return fmt.Errorf("patch generation: %w", err)
 	}
-	_ = patches
+	patchByID := make(map[string]patch.Patch, len(patches))
+	for _, pp := range patches {
+		patchByID[pp.FindingID] = pp
+	}
+	for i := range scored {
+		if pp, ok := patchByID[scored[i].ID]; ok {
+			scored[i].Patch       = pp.UnifiedDiff
+			scored[i].PatchStatus = string(pp.Status)
+		}
+	}
 
 	// ── 6. REPORT ─────────────────────────────────────────────────────────────
 	if err := os.MkdirAll(filepath.Dir(p.cfg.ReportPath), 0o750); err != nil {
@@ -645,11 +654,9 @@ func (p *pipeline) runPathA(ctx context.Context, res *ingestion.Result, scopeFil
 		}
 	}
 
-	// Emit bypass findings immediately — no LLM cost.
+	// Send bypass findings directly to channel; drain loop emits EventFinding.
 	for _, f := range bypass {
-		fc := f
-		output.Emit(events, output.Event{Kind: output.EventFinding, Finding: &fc})
-		ch <- fc
+		ch <- f
 	}
 
 	// Verify the remainder; degrade gracefully on worker failure.
@@ -663,9 +670,7 @@ func (p *pipeline) runPathA(ctx context.Context, res *ingestion.Result, scopeFil
 				Log:  fmt.Sprintf("warn: llm verifier: %v — emitting unverified findings", err),
 			})
 			for _, f := range needsVerify {
-				fc := f
-				output.Emit(events, output.Event{Kind: output.EventFinding, Finding: &fc})
-				ch <- fc
+				ch <- f
 			}
 		} else {
 			verified := verifier.ApplyResults(needsVerify, results)
@@ -675,10 +680,8 @@ func (p *pipeline) runPathA(ctx context.Context, res *ingestion.Result, scopeFil
 				perFindingMs = verifyElapsed.Milliseconds() / int64(len(needsVerify))
 			}
 			for _, f := range verified {
-				fc := f
-				p.logger.Info("verifier latency", "finding_id", fc.ID, "ms", perFindingMs)
-				output.Emit(events, output.Event{Kind: output.EventFinding, Finding: &fc})
-				ch <- fc
+				p.logger.Info("verifier latency", "finding_id", f.ID, "ms", perFindingMs)
+				ch <- f
 			}
 		}
 	}
@@ -721,18 +724,170 @@ func instrFindingToFinding(f instrscan.Finding) finding.Finding {
 }
 
 // runPathB executes the Path B semantic detection tier pipeline and writes
-// findings to ch. Stubs will be filled in ML3.
+// findings to ch. Returns nil when Joern CPG is unavailable (0 surfaces selected).
 func (p *pipeline) runPathB(ctx context.Context, _ *ingestion.Result, ch finding.Channel, events chan<- output.Event) error {
 	output.Emit(events, output.Event{Kind: output.EventStageStart, Stage: "path b"})
-	_ = ctx
-	_ = ch
-	_ = p.store
+
+	// B1: Heuristic Targeting — requires a populated Joern CPG.
+	// Joern connectivity failures are non-fatal: emit a warning and skip Path B.
+	surfaces, err := p.target.SelectSurfaces(ctx)
+	if err != nil {
+		p.logger.Warn("path b targeting failed — CPG unavailable", "err", err)
+		output.Emit(events, output.Event{
+			Kind:    output.EventStageEnd,
+			Stage:   "path b",
+			Summary: &output.StageSummary{Stage: "path b", Detail: "skipped: CPG unavailable"},
+		})
+		return nil
+	}
+	if len(surfaces) == 0 {
+		output.Emit(events, output.Event{
+			Kind:    output.EventStageEnd,
+			Stage:   "path b",
+			Summary: &output.StageSummary{Stage: "path b", Detail: "no surfaces selected (CPG unavailable or no external-input nodes found)"},
+		})
+		return nil
+	}
+
+	// B2: CVE Enrichment.
+	enriched, err := p.enrich.Enrich(ctx, surfaces, p.cfg.Target)
+	if err != nil {
+		return fmt.Errorf("path b enrichment: %w", err)
+	}
+
+	// B3: UniXcoder Classifier — filter to surfaces that must escalate to LLM.
+	classified, err := p.clf.Classify(ctx, enriched)
+	if err != nil {
+		return fmt.Errorf("path b classifier: %w", err)
+	}
+	escalated, clfByID := filterEscalated(enriched, classified)
+	if len(escalated) == 0 {
+		output.Emit(events, output.Event{
+			Kind:    output.EventStageEnd,
+			Stage:   "path b",
+			Summary: &output.StageSummary{Stage: "path b", Detail: "classifier suppressed all surfaces"},
+		})
+		return nil
+	}
+
+	// Build surface lookup for budget.Input construction.
+	surfaceByID := make(map[string]targeting.Surface, len(surfaces))
+	for _, s := range surfaces {
+		surfaceByID[s.ID] = s
+	}
+
+	// B4: Call Chain Assembler.
+	chains, err := p.asm.Assemble(ctx, escalated)
+	if err != nil {
+		return fmt.Errorf("path b assembler: %w", err)
+	}
+
+	// B5: Semantic Summarizer.
+	summaries, err := p.sum.Summarize(ctx, chains)
+	if err != nil {
+		return fmt.Errorf("path b summarizer: %w", err)
+	}
+
+	// B6: Token Budget — rank surfaces by priority within the token cap.
+	inputs := buildBudgetInputs(summaries, enriched, clfByID, surfaceByID)
+	ranked, exhausted, budStats := p.bud.RankWithStats(inputs)
+
+	// Emit SUPPRESSED findings for surfaces that exceeded the token cap.
+	for _, ex := range exhausted {
+		s := surfaceByID[ex.Summary.SurfaceID]
+		f := finding.Finding{
+			SeverityLabel:  finding.SeveritySuppressed,
+			Path:           s.File,
+			Justification:  "token budget exhausted for " + s.FunctionName + "; increase --token-cap to scan",
+			SuppressReason: finding.SuppressReasonBudgetExhausted,
+			SourcePath:     finding.SourceSemantic,
+		}
+		select {
+		case ch <- f:
+		default:
+		}
+	}
+
+	// B7: LLM Semantic Scan.
+	llmFindings, err := p.scan.WithStore(p.store).Scan(ctx, ranked)
+	if err != nil {
+		return fmt.Errorf("path b llm scan: %w", err)
+	}
+	for _, f := range llmFindings {
+		select {
+		case ch <- f:
+		default:
+		}
+	}
+
 	output.Emit(events, output.Event{
-		Kind:    output.EventStageEnd,
-		Stage:   "path b",
-		Summary: &output.StageSummary{Stage: "path b", Detail: "stub — wired in ML3"},
+		Kind:  output.EventStageEnd,
+		Stage: "path b",
+		Summary: &output.StageSummary{
+			Stage:    "path b",
+			Detail:   fmt.Sprintf("%d findings; %d surfaces ranked; %d exhausted", len(llmFindings), budStats.Ranked, budStats.Exhausted),
+			Findings: len(llmFindings),
+		},
 	})
 	return nil
+}
+
+// filterEscalated returns the subset of enriched surfaces whose classifier
+// result has Escalate==true, plus a map from surfaceID to classifier.Result.
+func filterEscalated(enriched []enrichment.EnrichedSurface, results []classifier.Result) ([]enrichment.EnrichedSurface, map[string]classifier.Result) {
+	byID := make(map[string]classifier.Result, len(results))
+	for _, r := range results {
+		byID[r.SurfaceID] = r
+	}
+	var out []enrichment.EnrichedSurface
+	for _, e := range enriched {
+		if r, ok := byID[e.ID]; ok && r.Escalate {
+			out = append(out, e)
+		}
+	}
+	return out, byID
+}
+
+// buildBudgetInputs constructs the budget.Input slice from summarizer output,
+// correlating CVSS, classifier confidence, and call-graph depth by SurfaceID.
+func buildBudgetInputs(
+	summaries []summarizer.Summary,
+	enriched []enrichment.EnrichedSurface,
+	clfByID map[string]classifier.Result,
+	surfaceByID map[string]targeting.Surface,
+) []budget.Input {
+	// Build enriched surface lookup for CVSS extraction.
+	enrichByID := make(map[string]enrichment.EnrichedSurface, len(enriched))
+	for _, e := range enriched {
+		enrichByID[e.ID] = e
+	}
+
+	inputs := make([]budget.Input, 0, len(summaries))
+	for _, sum := range summaries {
+		inp := budget.Input{Summary: sum}
+		if e, ok := enrichByID[sum.SurfaceID]; ok {
+			inp.CVSSScore = maxCVSS(e.CVEMatches)
+		}
+		if r, ok := clfByID[sum.SurfaceID]; ok {
+			inp.ClassifierConfidence = r.Confidence
+		}
+		if s, ok := surfaceByID[sum.SurfaceID]; ok {
+			inp.CallGraphDepth = s.CallGraphDepth
+		}
+		inputs = append(inputs, inp)
+	}
+	return inputs
+}
+
+// maxCVSS returns the highest CVSS score in matches, or 0.0 if empty.
+func maxCVSS(matches []enrichment.CVEMatch) float64 {
+	var max float64
+	for _, m := range matches {
+		if m.CVSS > max {
+			max = m.CVSS
+		}
+	}
+	return max
 }
 
 // close shuts down all managed subprocesses and releases held resources.

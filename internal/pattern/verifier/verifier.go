@@ -214,7 +214,7 @@ func (v *Verifier) Verify(ctx context.Context, findings []finding.Finding) ([]Re
 //
 // Mapping:
 //   - confirmed     → confidence updated; SeverityLabel re-derived.
-//   - false_positive → SeveritySuppressed + SuppressReasonFrameworkSafe.
+//   - false_positive → SeveritySuppressed + SuppressReasonFalsePositive.
 //   - uncertain      → SeveritySuppressed + SuppressReasonUncertain.
 //
 // The returned slice has the same length and order as findings. If the lengths
@@ -236,7 +236,7 @@ func ApplyResults(findings []finding.Finding, results []Result) []finding.Findin
 		case VerdictFalsePositive:
 			f.Confidence = r.Confidence
 			f.SeverityLabel = finding.SeveritySuppressed
-			f.SuppressReason = finding.SuppressReasonFrameworkSafe
+			f.SuppressReason = finding.SuppressReasonFalsePositive
 		case VerdictUncertain:
 			f.Confidence = r.Confidence
 			f.SeverityLabel = finding.SeveritySuppressed

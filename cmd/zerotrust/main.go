@@ -40,7 +40,7 @@ import (
 
 	"github.com/hoangharry-tm/zerotrust/internal/output"
 	"github.com/hoangharry-tm/zerotrust/internal/report"
-	"github.com/hoangharry-tm/zerotrust/tests/fixtures"
+	"github.com/hoangharry-tm/zerotrust/internal/report/mock"
 )
 
 const (
@@ -78,6 +78,7 @@ run the pipeline directly with local toolchain installations.`,
 	root.Flags().Bool("pull", true, "pull the latest engine image before running (Docker mode)")
 	root.Flags().String("engine-image", engineImage, "Docker image for the engine")
 	root.Flags().Bool("mock", false, "render the HTML report with mock data (no scan; UI development only)")
+	root.Flags().Bool("mock-large", false, "render with large mock dataset (~60 findings)")
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -87,7 +88,8 @@ run the pipeline directly with local toolchain installations.`,
 
 func runOrchestrate(cmd *cobra.Command, args []string) error {
 	mock, _ := cmd.Flags().GetBool("mock")
-	if mock {
+	mockLarge, _ := cmd.Flags().GetBool("mock-large")
+	if mock || mockLarge {
 		return runMock(cmd)
 	}
 	native, _ := cmd.Flags().GetBool("native")
@@ -113,8 +115,14 @@ func runMock(cmd *cobra.Command) error {
 	}
 	defer f.Close()
 
+	mockLarge, _ := cmd.Flags().GetBool("mock-large")
+	var findings = mock.MockFindings()
+	if mockLarge {
+		findings = mock.MockFindingsLarge()
+	}
+
 	gen := report.New(reportPath)
-	if err := gen.Render(f, fixtures.MockScanInfo(), fixtures.MockFindings()); err != nil {
+	if err := gen.Render(f, mock.MockScanInfo(), findings); err != nil {
 		return fmt.Errorf("render mock report: %w", err)
 	}
 	fmt.Fprintf(os.Stderr, "mock report written → %s\n", reportPath)

@@ -110,7 +110,7 @@ func TestSeverityFromScore(t *testing.T) {
 		{0.00, finding.SeveritySuppressed},
 	}
 	for _, tc := range cases {
-		got := severityFromScore(tc.score)
+		got := finding.SeverityFromConfidence(tc.score)
 		if got != tc.want {
 			t.Errorf("score %.2f: expected %s, got %s", tc.score, tc.want, got)
 		}

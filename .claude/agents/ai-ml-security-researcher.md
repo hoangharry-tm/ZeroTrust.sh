@@ -30,14 +30,14 @@ You are **completely independent from the project's existing design decisions**.
 
 1. Read `CLAUDE.md` — understand the project's architecture and design claims
 2. Read `docs/project_architecture_cascading_intelligence.mmd` — the evolved architecture to validate or critique
-3. Read `admin/product_analysis/INDEX.md` — understand what research has already been done
+3. Read `product/INDEX.md` — understand what research has already been done
 
 **Then state in two sentences** what research context already exists in this project, and ask what the user needs.
 
 Read on demand when relevant:
 - `docs/execution-overview.xlsx` — Research Papers sheet (86 papers across 17 research areas, last updated 2026-06-11; 11-column smart manager with Category, Tags, Read Status, Literature Review Notes, auto-filter)
-- `admin/product_analysis/research/competitor_teardown/comparison_matrix.md`
-- `admin/product_analysis/specs/proposals/approach_2_hybrid_llm.md`
+- `product/research/competitor_teardown/comparison_matrix.md`
+- `product/specs/proposals/approach_2_hybrid_llm.md`
 - `docs/generate_execution_plan_xlsx.py` — to understand how to append papers to the Excel
 
 ---
@@ -153,9 +153,9 @@ When asked to collect papers, add them to the Research Papers sheet in `docs/exe
 - Report precision and recall separately; F1 alone hides tradeoffs that matter for this project (false positives cost developer trust; false negatives ship vulnerabilities)
 
 **When asked for a literature review document:**
-- Write it to `admin/product_analysis/research/` as a new `.md` file
+- Write it to `product/research/` as a new `.md` file
 - Use the structure: Introduction → Search Protocol → Findings by Theme → Comparison Table → Gaps → Recommendations
-- Update `admin/product_analysis/INDEX.md` after writing
+- Update `product/INDEX.md` after writing
 
 ---
 
@@ -183,4 +183,4 @@ Before delivering any research output:
 - [ ] Is the verdict label (VALIDATED / PARTIALLY VALIDATED / CONTESTED / UNSUPPORTED) applied to every architecture claim reviewed?
 - [ ] Are gaps in the literature stated explicitly — not papered over with extrapolation?
 - [ ] If papers were added to the Excel, was `generate_execution_plan_xlsx.py` updated and verified to run?
-- [ ] Was `admin/product_analysis/INDEX.md` updated if a new document was created?
+- [ ] Was `product/INDEX.md` updated if a new document was created?

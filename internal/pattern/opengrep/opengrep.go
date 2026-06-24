@@ -260,7 +260,7 @@ func normalise(raw RawFinding) finding.Finding {
 		LineRange:     finding.LineRange{Start: raw.Start.Line, End: raw.End.Line},
 		CWE:           cwe,
 		Confidence:    confidence,
-		SeverityLabel: severityFromScore(confidence),
+		SeverityLabel: finding.SeverityFromConfidence(confidence),
 		SourcePath:    finding.SourcePattern,
 		Justification: raw.Extra.Message,
 		MatchedCode:   raw.Extra.Lines,
@@ -314,18 +314,3 @@ func cweFromMetadata(meta map[string]any) string {
 	return fmt.Sprint(v)
 }
 
-// severityFromScore maps a confidence score to an SSVC-inspired SeverityLabel.
-func severityFromScore(score float64) finding.SeverityLabel {
-	switch {
-	case score >= 0.92:
-		return finding.SeverityBlock
-	case score >= 0.75:
-		return finding.SeverityHigh
-	case score >= 0.60:
-		return finding.SeverityMedium
-	case score >= 0.30:
-		return finding.SeverityLow
-	default:
-		return finding.SeveritySuppressed
-	}
-}

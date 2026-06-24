@@ -74,19 +74,22 @@ scripts/rules/  scripts/pipeline/  scripts/benchmarks/
 docker/engine/  docker/sandbox/
 site/                                      ← GitHub Pages marketing site
 docs/architecture/  docs/engineering/  docs/rules/  docs/deployment/
-admin/audit/  admin/product/
+docs/audit/  product/
 ```
 
 ## Status
 
 - [x] Architecture finalized (Cascading Intelligence Pipeline, fully specified)
 - [x] Repository initialized — `go build ./...` clean
-- [x] **Approach 1 in progress** — M1 complete; M2/M3 rules in progress; deadline 2026-06-20
+- [x] **Approach 1** — OpenGrep + ast-grep rules (30+ rules, 0 FPs); AI agent config scanner; Spring Boot testbed
 - [x] Deployment model finalized — single binary with Docker (default) and --native modes
-- [ ] Core engine (Approach 2 starts 2026-06-23)
-- [ ] Rule engine + YAML ruleset
-- [ ] Local LLM integration
-- [ ] HTML report generator
+- [x] **Approach 2** — Full dual-path engine shipped (ML4.3, 2026-06-24, ~6 weeks early)
+  - Path A: OpenGrep + ast-grep + Joern CPG taint + instrscan + LLM Verifier
+  - Path B: Heuristic Targeting → Enrichment → UniXcoder Classifier → Call Chain Assembler → Summarizer → Token Budget → LLM Semantic Scan
+  - Dedup: 4-gate deduplication + SSVC-inspired scoring + sidecar suppression
+  - HTML report: self-contained dashboard, SSVC labels, patch suggestions, ACK/suppression download
+- [x] `zerotrust scan <dir> --native --report report.html` runs end-to-end on the Spring Boot testbed
+- [x] `make build` · `make test` · `make demo` all pass clean
 
 **Implementation plan**: `docs/planning/implementation-plan.md` · **Research**: `docs/research-papers.md`
 

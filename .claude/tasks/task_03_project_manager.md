@@ -47,7 +47,7 @@ The source of truth for project structure is:
 - `docs/planning/execution-plan-approach-1.md` — detailed Approach 1 plan with PERT data
 - `docs/roadmap/ZeroTrust_Internship_Roadmap.xlsx` — current Excel file to refine
 - `docs/roadmap/generate_execution_plan_xlsx.py` — current Python generation script to extend
-- `admin/product_analysis/INDEX.md` — full document map
+- `product/INDEX.md` — full document map
 
 **Always read these files before starting any work.**
 

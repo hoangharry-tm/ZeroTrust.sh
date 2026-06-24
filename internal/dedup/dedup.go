@@ -107,18 +107,26 @@ type Layer struct {
 	// root is the project root used to load .zerotrust-suppressions.yaml.
 	// Empty string → sidecar not loaded.
 	root string
+	// sc is the sidecar loaded once per Layer from root. Nil when root is empty.
+	sc *Sidecar
 }
 
 // New returns a Layer ready to process findings (Gates 3+4 skipped; no sidecar).
 func New() *Layer { return &Layer{} }
 
 // NewWithRoot returns a Layer that loads the .zerotrust-suppressions.yaml sidecar
-// from root on each Process call.
-func NewWithRoot(root string) *Layer { return &Layer{root: root} }
+// from root once at construction time.
+func NewWithRoot(root string) *Layer {
+	sc := LoadSidecar(root)
+	return &Layer{root: root, sc: &sc}
+}
 
 // NewWithWorker returns a Layer that uses w for Gate 3 (embedding similarity)
 // and Gate 4 (AST edit distance), and loads the sidecar from root.
-func NewWithWorker(w *worker.Manager, root string) *Layer { return &Layer{w: w, root: root} }
+func NewWithWorker(w *worker.Manager, root string) *Layer {
+	sc := LoadSidecar(root)
+	return &Layer{w: w, root: root, sc: &sc}
+}
 
 // Process deduplicates findings through all active gates, applies cross-path
 // confidence boost, SSVC sourcing, and severity derivation.
@@ -190,15 +198,13 @@ func (l *Layer) process(ctx context.Context, input []finding.Finding) ([]finding
 	stats.MergeCount += mergeCount4
 
 	// ── SSVC sourcing + cross-path boost + severity derivation ────────────────
-	sc := LoadSidecar(l.root)
-
 	out := make([]finding.Finding, 0, len(survivors4))
 	for _, f := range survivors4 {
 		f = DeriveSSVC(ctx, f)
 		f = applyBoostAndScore(f)
 		f = AutoSuppress(f)
-		if f.SeverityLabel != finding.SeveritySuppressed {
-			f = sc.Apply(f)
+		if l.sc != nil && f.SeverityLabel != finding.SeveritySuppressed {
+			f = l.sc.Apply(f)
 		}
 		if f.SeverityLabel == finding.SeveritySuppressed {
 			stats.AutoSuppressedCount++
@@ -268,18 +274,29 @@ func (l *Layer) gate3(ctx context.Context, survivors []finding.Finding) (
 		}
 	}
 
+	// Build post-gate3 slice and a remap from pre-gate3 index → post-gate3 index.
+	newIdx := make(map[int]int, len(survivors))
 	out := make([]finding.Finding, 0, len(survivors))
 	for i, f := range survivors {
 		if !merged[i] {
+			newIdx[i] = len(out)
 			out = append(out, f)
 		}
 	}
-	return out, records, mergeCount, nearMiss
+	// Remap nearMiss to post-gate3 indices; drop pairs where either side was merged.
+	remapped := nearMiss[:0]
+	for _, pair := range nearMiss {
+		ni, oki := newIdx[pair[0]]
+		nj, okj := newIdx[pair[1]]
+		if oki && okj {
+			remapped = append(remapped, [2]int{ni, nj})
+		}
+	}
+	return out, records, mergeCount, remapped
 }
 
 // gate4 evaluates near-miss pairs (identified by gate3) using AST token edit distance.
-// Indices in nearMiss refer to the original survivors slice before gate3 filtering;
-// gate4 receives the post-gate3 survivors and a position map to handle shifts.
+// nearMiss contains post-gate3 index pairs; only those specific pairs are evaluated.
 func (l *Layer) gate4(ctx context.Context, survivors []finding.Finding, nearMiss [][2]int) (
 	[]finding.Finding, []MergeRecord, int,
 ) {
@@ -291,29 +308,29 @@ func (l *Layer) gate4(ctx context.Context, survivors []finding.Finding, nearMiss
 	var records []MergeRecord
 	var mergeCount int
 
-	// Full pairwise on post-gate3 survivors.
-	// Gate4 only runs when nearMiss is non-empty (~5% of scans), so the O(N²)
-	// cost over the already-small survivor set is acceptable.
-	for i := 0; i < len(survivors); i++ {
-		if merged[i] || survivors[i].MatchedCode == "" {
+	// Only evaluate the near-miss pairs flagged by gate3 — O(|nearMiss|) IPC calls.
+	for _, pair := range nearMiss {
+		i, j := pair[0], pair[1]
+		if i >= len(survivors) || j >= len(survivors) {
 			continue
 		}
-		for j := i + 1; j < len(survivors); j++ {
-			if merged[j] || survivors[j].MatchedCode == "" {
-				continue
-			}
-			lang := langFromPath(survivors[i].Path)
-			sim, err := l.w.ASTEditSimilarity(ctx, survivors[i].MatchedCode, survivors[j].MatchedCode, lang)
-			if err != nil {
-				continue
-			}
-			if sim >= astEditThreshold {
-				m, rec := merge(survivors[i], survivors[j], StrategyEditDistance)
-				survivors[i] = m
-				records = append(records, rec)
-				merged[j] = true
-				mergeCount++
-			}
+		if merged[i] || merged[j] {
+			continue
+		}
+		if survivors[i].MatchedCode == "" || survivors[j].MatchedCode == "" {
+			continue
+		}
+		lang := finding.LangFromPath(survivors[i].Path)
+		sim, err := l.w.ASTEditSimilarity(ctx, survivors[i].MatchedCode, survivors[j].MatchedCode, lang)
+		if err != nil {
+			continue
+		}
+		if sim >= astEditThreshold {
+			m, rec := merge(survivors[i], survivors[j], StrategyEditDistance)
+			survivors[i] = m
+			records = append(records, rec)
+			merged[j] = true
+			mergeCount++
 		}
 	}
 
@@ -337,29 +354,11 @@ func cosineSimilarity(a, b []float64) float64 {
 		na += a[i] * a[i]
 		nb += b[i] * b[i]
 	}
-	denom := math.Sqrt(na) * math.Sqrt(nb)
+	denom := math.Sqrt(na * nb)
 	if denom == 0 {
 		return 0
 	}
 	return dot / denom
-}
-
-// langFromPath returns the tree-sitter language name for a file path.
-func langFromPath(path string) string {
-	switch strings.ToLower(filepath.Ext(path)) {
-	case ".py":
-		return "python"
-	case ".java":
-		return "java"
-	case ".go":
-		return "go"
-	case ".js", ".mjs":
-		return "javascript"
-	case ".ts", ".tsx":
-		return "typescript"
-	default:
-		return "python" // ponytail: fallback; tree-sitter-languages will error gracefully
-	}
 }
 
 // gate1Key returns the Gate 1 dedup key for f.
@@ -441,7 +440,7 @@ func applyBoostAndScore(f finding.Finding) finding.Finding {
 		f.Confidence = 0.60
 	}
 
-	f.SeverityLabel = DeriveSeverityLabel(f.Confidence)
+	f.SeverityLabel = finding.SeverityFromConfidence(f.Confidence)
 	return f
 }
 
@@ -499,25 +498,8 @@ func AutoSuppress(f finding.Finding) finding.Finding {
 	return applyFrameworkSafe(f)
 }
 
-// DeriveSeverityLabel maps a Confidence score to the corresponding SeverityLabel
-// using the fixed threshold table.
-//
-//	BLOCK      ≥ 0.92
-//	HIGH     0.75 – 0.91
-//	MEDIUM   0.60 – 0.74
-//	LOW      0.30 – 0.59
-//	SUPPRESSED < 0.30
+// DeriveSeverityLabel maps a Confidence score to the corresponding SeverityLabel.
+// Delegates to finding.SeverityFromConfidence, which owns the canonical thresholds.
 func DeriveSeverityLabel(confidence float64) finding.SeverityLabel {
-	switch {
-	case confidence >= 0.92:
-		return finding.SeverityBlock
-	case confidence >= 0.75:
-		return finding.SeverityHigh
-	case confidence >= 0.60:
-		return finding.SeverityMedium
-	case confidence >= 0.30:
-		return finding.SeverityLow
-	default:
-		return finding.SeveritySuppressed
-	}
+	return finding.SeverityFromConfidence(confidence)
 }

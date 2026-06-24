@@ -20,6 +20,8 @@ package finding
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"path/filepath"
+	"strings"
 )
 
 // SeverityLabel is the SSVC-inspired five-tier output label.
@@ -72,6 +74,8 @@ const (
 	SuppressReasonUserAck SuppressReason = "user_acknowledged"
 	// SuppressReasonSafe means the LLM concluded the surface is not vulnerable.
 	SuppressReasonSafe SuppressReason = "safe"
+	// SuppressReasonFalsePositive means the LLM Verifier determined the finding is a false positive.
+	SuppressReasonFalsePositive SuppressReason = "false_positive"
 )
 
 // PoEStatus tracks the outcome of the Proof-of-Exploitability attempt (Approach 3).
@@ -207,6 +211,35 @@ func SeverityFromConfidence(confidence float64) SeverityLabel {
 		return SeverityLow
 	default:
 		return SeveritySuppressed
+	}
+}
+
+// LangFromPath returns the canonical language name for a source file path.
+// Used by dedup (tree-sitter AST edit distance) and enrichment (classifier routing).
+// Returns "unknown" for unrecognised extensions; callers that need a non-empty
+// fallback (e.g. tree-sitter) should substitute their own default.
+func LangFromPath(path string) string {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".py":
+		return "python"
+	case ".java":
+		return "java"
+	case ".go":
+		return "go"
+	case ".js", ".mjs":
+		return "javascript"
+	case ".ts", ".tsx":
+		return "typescript"
+	case ".rs":
+		return "rust"
+	case ".kt", ".kts":
+		return "kotlin"
+	case ".swift":
+		return "swift"
+	case ".cs":
+		return "csharp"
+	default:
+		return "unknown"
 	}
 }
 

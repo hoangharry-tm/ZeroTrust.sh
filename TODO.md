@@ -1,6 +1,6 @@
 # ZeroTrust.sh — TODO
 
-> L0 ✅ · L1 ✅ · L2 ✅ · L3 ✅ · ML4.1 ✅ · ML4.2 ✅ (all complete as of Jun 24, ~6 weeks early)
+> L0 ✅ · L1 ✅ · L2 ✅ · L3 ✅ · ML4.1 ✅ · ML4.2 ✅ · ML4.3 ✅ (all complete as of Jun 24, ~6 weeks early)
 > Full plan: `docs/planning/implementation-plan.md`
 
 ---
@@ -66,29 +66,35 @@
 
 ---
 
-### ML4.3 — End-to-End Integration + Final Delivery (8h)
+### ML4.3 — End-to-End Integration + Final Delivery (8h) ✅ Done Jun 24
 
-- [ ] **T1** — Full pipeline run (3h):
+> Plan window: Aug 5–6 · This is the last milestone before hard deadline Aug 6.
+> Unblocked: Path A + Path B both complete; Dedup + SSVC scoring complete; HTML report + patches complete.
+
+- [x] **T1** — Full pipeline run (3h):
   - `zerotrust scan ./tests/integration/spring-boot-app` with `--native` flag.
   - Path A + Path B findings both present in output.
-  - Dedup merges cross-path duplicates correctly.
+  - Dedup merges cross-path duplicates correctly (SourcePath upgrades PATTERN→BOTH; +15pp boost applied).
   - SSVC scoring applied; HTML report generated at `--report zerotrust-report.html`.
-  - All 5 severity labels reachable; no silent drops.
+  - All 5 severity labels reachable; no silent drops (SUPPRESSED emits, never disappears).
 
-- [ ] **T2** — Precision/recall vs G1 baseline (2h):
+- [x] **T2** — Precision/recall vs G1 baseline (2h):
   - Run Path A only vs Path A+B on the Spring Boot test codebase.
-  - Document improvement to `docs/benchmarks/final_eval.md`.
+  - Record TP/FP/FN counts for both modes.
+  - Document delta to `docs/benchmarks/final_eval.md`.
 
-- [ ] **T3** — Performance benchmark (1.5h):
-  - Wall-clock time on 5K LOC synthetic codebase (cold + warm scan).
-  - Peak RSS memory. Log to `docs/benchmarks/performance.md`.
+- [x] **T3** — Performance benchmark (1.5h):
+  - Wall-clock time on 5K LOC synthetic codebase: cold scan (first run) + warm scan (DI cache hit).
+  - Peak RSS memory during scan.
+  - Log results to `docs/benchmarks/performance.md`.
 
-- [ ] **T4** — Final delivery (1.5h):
-  - `CLAUDE.md` accurate; README present with quickstart.
+- [x] **T4** — Final delivery (1.5h):
+  - `CLAUDE.md` accurate and up to date with current architecture.
+  - README present with quickstart (`make build`, `zerotrust scan ./...`, report output).
   - `make build` · `make test` · `make demo` all pass clean.
-  - `git status` clean; no uncommitted changes.
+  - `git status` clean; no uncommitted changes; no TODO/FIXME left in shipped code.
 
-**Done when**: all four tasks above pass; `make test` green end-to-end.
+**Done when**: all four tasks above pass; `make test` green end-to-end; HTML report opens in browser with real findings from Spring Boot testbed.
 
 ---
 

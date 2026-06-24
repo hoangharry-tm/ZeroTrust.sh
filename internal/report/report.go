@@ -18,7 +18,7 @@
 package report
 
 import (
-	_ "embed"
+	"embed"
 	"fmt"
 	"html/template"
 	"io"
@@ -29,8 +29,8 @@ import (
 	"github.com/hoangharry-tm/zerotrust/internal/finding"
 )
 
-//go:embed template.html
-var tmplSource string
+//go:embed template/layout.html template/styles.css template/scripts.js
+var tmplFS embed.FS
 
 // ScanInfo holds per-scan metadata rendered in the report header.
 type ScanInfo struct {
@@ -209,10 +209,34 @@ var templateFuncs = template.FuncMap{
 		}
 		return lines
 	},
+
+	// inlineCSS returns the embedded stylesheet as safe CSS.
+	"inlineCSS": func() template.CSS { return cssContent },
+
+	// inlineJS returns the embedded script as safe JavaScript.
+	"inlineJS": func() template.JS { return jsContent },
+}
+
+var (
+	cssContent template.CSS
+	jsContent  template.JS
+)
+
+func init() {
+	data, err := tmplFS.ReadFile("template/styles.css")
+	if err != nil {
+		panic(err)
+	}
+	cssContent = template.CSS(data)
+	data, err = tmplFS.ReadFile("template/scripts.js")
+	if err != nil {
+		panic(err)
+	}
+	jsContent = template.JS(data)
 }
 
 var tmpl = template.Must(
-	template.New("report").Funcs(templateFuncs).Parse(tmplSource),
+	template.New("layout.html").Funcs(templateFuncs).ParseFS(tmplFS, "template/layout.html"),
 )
 
 // Generator produces the HTML report from a scored finding set.

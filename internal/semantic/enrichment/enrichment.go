@@ -38,9 +38,9 @@ package enrichment
 
 import (
 	"context"
-	"path/filepath"
 	"strings"
 
+	"github.com/hoangharry-tm/zerotrust/internal/finding"
 	"github.com/hoangharry-tm/zerotrust/internal/semantic/targeting"
 	"github.com/hoangharry-tm/zerotrust/pkg/cpg"
 )
@@ -149,7 +149,7 @@ func (e *Enricher) Enrich(ctx context.Context, surfaces []targeting.Surface, pro
 	for _, s := range surfaces {
 		es := EnrichedSurface{
 			Surface:  s,
-			Language: langFromFile(s.File),
+			Language: finding.LangFromPath(s.File),
 		}
 
 		if e.graph != nil {
@@ -220,31 +220,6 @@ func (e *Enricher) DetectIDORFlows(_ context.Context, surface targeting.Surface)
 		}
 	}
 	return flows, nil
-}
-
-func langFromFile(file string) string {
-	switch filepath.Ext(file) {
-	case ".go":
-		return "go"
-	case ".py":
-		return "python"
-	case ".java":
-		return "java"
-	case ".js", ".mjs":
-		return "javascript"
-	case ".ts", ".tsx":
-		return "typescript"
-	case ".rs":
-		return "rust"
-	case ".kt", ".kts":
-		return "kotlin"
-	case ".swift":
-		return "swift"
-	case ".cs":
-		return "csharp"
-	default:
-		return "unknown"
-	}
 }
 
 func nodeIDs(nodes []cpg.Node) []string {

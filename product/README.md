@@ -35,7 +35,7 @@ ZeroTrust.sh is a local, privacy-first CLI security scanner and automated patch 
 All notebooks are in `notebooks/`. To open JupyterLab with the project environment:
 
 ```bash
-cd /Users/hoangharry/mh_code/internships/VNG_ZingPlayStudio/ZeroTrust.sh/admin/product_analysis
+cd /Users/hoangharry/mh_code/internships/VNG_ZingPlayStudio/ZeroTrust.sh/product
 uv run jupyter lab
 ```
 

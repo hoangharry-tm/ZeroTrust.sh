@@ -238,7 +238,7 @@ func (s *Scanner) reactLoop(ctx context.Context, surface budget.RankedSurface, p
 		return buildResult(surface.SurfaceID, resp2, steps, true), nil
 	}
 
-	// Step 3 (T5): trigger constraint — stub until ML3.4 T5.
+	// Step 3: trigger constraint — validate exploit preconditions before confirming.
 	resp3, err := s.callStep(ctx, surface, 3, steps, priorInfs)
 	if err != nil {
 		return ScanResult{}, fmt.Errorf("step 3: %w", err)

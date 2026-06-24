@@ -87,7 +87,7 @@ const (
 )
 
 type kevStore struct {
-	mu   sync.Mutex
+	mu   sync.RWMutex
 	data map[string]bool
 	at   time.Time
 }
@@ -101,18 +101,31 @@ func kevContains(ctx context.Context, cve string) bool {
 	if cve == "" {
 		return false
 	}
+	// Fast path: read lock if data is fresh.
+	globalKEV.mu.RLock()
+	if globalKEV.data != nil && time.Since(globalKEV.at) <= kevTTL {
+		result := globalKEV.data[cve]
+		globalKEV.mu.RUnlock()
+		return result
+	}
+	globalKEV.mu.RUnlock()
+
+	// Slow path: fetch outside the lock, then write.
+	data, err := loadKEV(ctx)
+
 	globalKEV.mu.Lock()
 	defer globalKEV.mu.Unlock()
-
-	if time.Since(globalKEV.at) > kevTTL || globalKEV.data == nil {
-		if data, err := loadKEV(ctx); err == nil {
-			globalKEV.data = data
-			globalKEV.at = time.Now()
-		} else {
-			slog.Warn("ssvc: KEV refresh failed", "err", err)
-			if globalKEV.data == nil {
-				globalKEV.data = map[string]bool{}
-			}
+	// Double-check: another goroutine may have refreshed while we fetched.
+	if globalKEV.data != nil && time.Since(globalKEV.at) <= kevTTL {
+		return globalKEV.data[cve]
+	}
+	if err == nil {
+		globalKEV.data = data
+		globalKEV.at = time.Now()
+	} else {
+		slog.Warn("ssvc: KEV refresh failed", "err", err)
+		if globalKEV.data == nil {
+			globalKEV.data = map[string]bool{}
 		}
 	}
 	return globalKEV.data[cve]

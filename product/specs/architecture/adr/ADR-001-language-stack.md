@@ -2,7 +2,7 @@
 
 **Status:** Accepted — 2026-06-11  
 **Deciders:** Hoang (intern)  
-**Context doc:** `admin/product_analysis/specs/proposals/tech_stack_analysis.md`
+**Context doc:** `product/specs/proposals/tech_stack_analysis.md`
 
 ---
 

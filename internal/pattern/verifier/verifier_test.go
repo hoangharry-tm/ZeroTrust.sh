@@ -96,7 +96,7 @@ func TestApplyResults_FalsePositiveSetsSuppressed(t *testing.T) {
 
 	require.Len(t, out, 1)
 	assert.Equal(t, finding.SeveritySuppressed, out[0].SeverityLabel)
-	assert.Equal(t, finding.SuppressReasonFrameworkSafe, out[0].SuppressReason)
+	assert.Equal(t, finding.SuppressReasonFalsePositive, out[0].SuppressReason)
 }
 
 func TestApplyResults_UncertainSetsSuppressedUncertain(t *testing.T) {
@@ -207,7 +207,7 @@ func TestApplyResults_MultipleFindings(t *testing.T) {
 	require.Len(t, out, 3)
 	assert.Equal(t, finding.SeverityBlock, out[0].SeverityLabel)
 	assert.Equal(t, finding.SeveritySuppressed, out[1].SeverityLabel)
-	assert.Equal(t, finding.SuppressReasonFrameworkSafe, out[1].SuppressReason)
+	assert.Equal(t, finding.SuppressReasonFalsePositive, out[1].SuppressReason)
 	assert.Equal(t, finding.SeveritySuppressed, out[2].SeverityLabel)
 	assert.Equal(t, finding.SuppressReasonUncertain, out[2].SuppressReason)
 }

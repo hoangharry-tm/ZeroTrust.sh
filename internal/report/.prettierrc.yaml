@@ -1,0 +1,7 @@
+# Prettier config for ZeroTrust.sh HTML report template
+# Use: node scripts/format_template.mjs
+
+htmlWhitespaceSensitivity: css
+printWidth: 120
+tabWidth: 2
+singleAttributePerLine: false

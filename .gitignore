@@ -4,6 +4,7 @@ build/
 
 # Python
 worker/.venv/
+product/.venv/
 **/__pycache__/
 *.pyc
 *.pyo
