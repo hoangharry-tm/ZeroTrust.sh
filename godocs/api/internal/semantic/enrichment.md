@@ -42,7 +42,7 @@ var ErrTrivyDBNotInitialized = errors.New("trivy: vulnerability DB not initialis
 ```
 
 <a name="ApplyCVEMatches"></a>
-## func [ApplyCVEMatches](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/enrichment/trivy.go#L184>)
+## func [ApplyCVEMatches](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/enrichment/trivy.go#L198>)
 
 ```go
 func ApplyCVEMatches(surfaces []EnrichedSurface, cvesByPkg map[string][]CVEMatch)
@@ -58,7 +58,7 @@ Parameters:
 - cvesByPkg: the map returned by RunTrivy.
 
 <a name="AutoFlagSeverity"></a>
-## func [AutoFlagSeverity](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/enrichment/trivy.go#L160>)
+## func [AutoFlagSeverity](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/enrichment/trivy.go#L174>)
 
 ```go
 func AutoFlagSeverity(cvss float64) finding.SeverityLabel
@@ -76,7 +76,7 @@ Mapping \(L3.1.T5\):
 ```
 
 <a name="CVEMatch"></a>
-## type [CVEMatch](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/enrichment/enrichment.go#L33-L44>)
+## type [CVEMatch](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/enrichment/enrichment.go#L47-L58>)
 
 CVEMatch holds a single CVE finding from Trivy for a dependency used by a surface.
 
@@ -96,7 +96,7 @@ type CVEMatch struct {
 ```
 
 <a name="EnrichedSurface"></a>
-## type [EnrichedSurface](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/enrichment/enrichment.go#L60-L83>)
+## type [EnrichedSurface](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/enrichment/enrichment.go#L74-L97>)
 
 EnrichedSurface adds CVE, call graph, source code, and IDOR metadata to a targeting.Surface.
 
@@ -128,7 +128,7 @@ type EnrichedSurface struct {
 ```
 
 <a name="Enricher"></a>
-## type [Enricher](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/enrichment/enrichment.go#L86-L93>)
+## type [Enricher](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/enrichment/enrichment.go#L100-L107>)
 
 Enricher adds CVE, call graph, and IDOR data to a surface list.
 
@@ -139,7 +139,7 @@ type Enricher struct {
 ```
 
 <a name="New"></a>
-### func [New](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/enrichment/enrichment.go#L101>)
+### func [New](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/enrichment/enrichment.go#L115>)
 
 ```go
 func New(graph cpg.Graph, trivyPath string, offlineMode bool) *Enricher
@@ -154,7 +154,7 @@ Parameters:
 - offlineMode: true disables all outbound network requests during CVE lookup.
 
 <a name="Enricher.DetectIDORFlows"></a>
-### func \(\*Enricher\) [DetectIDORFlows](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/enrichment/enrichment.go#L135>)
+### func \(\*Enricher\) [DetectIDORFlows](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/enrichment/enrichment.go#L149>)
 
 ```go
 func (e *Enricher) DetectIDORFlows(_ context.Context, _ targeting.Surface) ([]ResourceIDFlow, error)
@@ -168,7 +168,7 @@ Parameters:
 - surface: the surface to analyse.
 
 <a name="Enricher.Enrich"></a>
-### func \(\*Enricher\) [Enrich](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/enrichment/enrichment.go#L124>)
+### func \(\*Enricher\) [Enrich](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/enrichment/enrichment.go#L138>)
 
 ```go
 func (e *Enricher) Enrich(_ context.Context, _ []targeting.Surface, _ string) ([]EnrichedSurface, error)
@@ -197,7 +197,7 @@ Returns:
 - error: non\-nil if Trivy fails to start or CPG queries fail.
 
 <a name="Enricher.RunTrivy"></a>
-### func \(\*Enricher\) [RunTrivy](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/enrichment/trivy.go#L86>)
+### func \(\*Enricher\) [RunTrivy](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/enrichment/trivy.go#L100>)
 
 ```go
 func (e *Enricher) RunTrivy(ctx context.Context, projectRoot string) (map[string][]CVEMatch, error)
@@ -208,7 +208,7 @@ RunTrivy executes the Trivy binary against projectRoot and returns all CVE match
 Returns ErrTrivyDBNotInitialized when offlineMode is true but the local vulnerability database has not been bootstrapped yet. The caller should re\-run without offline mode once to initialise the DB.
 
 <a name="ResourceIDFlow"></a>
-## type [ResourceIDFlow](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/enrichment/enrichment.go#L48-L56>)
+## type [ResourceIDFlow](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/enrichment/enrichment.go#L62-L70>)
 
 ResourceIDFlow describes an untrusted external resource ID observed flowing through a surface toward a storage sink \(the IDOR signal\).
 

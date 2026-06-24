@@ -42,7 +42,7 @@ SSVC dimension sourcing:
 
 
 <a name="AutoSuppress"></a>
-## func [AutoSuppress](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/dedup/dedup.go#L239>)
+## func [AutoSuppress](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/dedup/dedup.go#L253>)
 
 ```go
 func AutoSuppress(f finding.Finding) finding.Finding
@@ -51,7 +51,7 @@ func AutoSuppress(f finding.Finding) finding.Finding
 AutoSuppress applies test\-file and framework\-safe suppression rules to f. Returns the finding with SeverityLabel and SuppressReason updated if suppression applies; returns it unchanged otherwise.
 
 <a name="DeriveSSVC"></a>
-## func [DeriveSSVC](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/dedup/dedup.go#L267>)
+## func [DeriveSSVC](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/dedup/dedup.go#L281>)
 
 ```go
 func DeriveSSVC(f finding.Finding) finding.Finding
@@ -60,7 +60,7 @@ func DeriveSSVC(f finding.Finding) finding.Finding
 DeriveSSVC populates the SSVC dimensions on a finding using CVE lookup tables \(CISA KEV, EPSS, NVD CVSS, CWE automatable/impact maps\). Stubs until G4.M4.1 when Trivy enrichment is integrated.
 
 <a name="DeriveSeverityLabel"></a>
-## func [DeriveSeverityLabel](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/dedup/dedup.go#L280>)
+## func [DeriveSeverityLabel](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/dedup/dedup.go#L294>)
 
 ```go
 func DeriveSeverityLabel(confidence float64) finding.SeverityLabel
@@ -77,7 +77,7 @@ SUPPRESSED < 0.30
 ```
 
 <a name="Layer"></a>
-## type [Layer](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/dedup/dedup.go#L74>)
+## type [Layer](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/dedup/dedup.go#L88>)
 
 Layer deduplicates and scores the merged finding set from both detection paths.
 
@@ -86,7 +86,7 @@ type Layer struct{}
 ```
 
 <a name="New"></a>
-### func [New](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/dedup/dedup.go#L77>)
+### func [New](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/dedup/dedup.go#L91>)
 
 ```go
 func New() *Layer
@@ -95,7 +95,7 @@ func New() *Layer
 New returns a Layer ready to process findings.
 
 <a name="Layer.Process"></a>
-### func \(\*Layer\) [Process](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/dedup/dedup.go#L87>)
+### func \(\*Layer\) [Process](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/dedup/dedup.go#L101>)
 
 ```go
 func (l *Layer) Process(findings []finding.Finding) ([]finding.Finding, error)
@@ -110,7 +110,7 @@ Parameters:
 - findings: merged finding list from both paths \(Path A \+ Path B\).
 
 <a name="Layer.ProcessWithStats"></a>
-### func \(\*Layer\) [ProcessWithStats](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/dedup/dedup.go#L93>)
+### func \(\*Layer\) [ProcessWithStats](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/dedup/dedup.go#L107>)
 
 ```go
 func (l *Layer) ProcessWithStats(findings []finding.Finding) ([]finding.Finding, []MergeRecord, Stats, error)
@@ -119,7 +119,7 @@ func (l *Layer) ProcessWithStats(findings []finding.Finding) ([]finding.Finding,
 ProcessWithStats is identical to Process but also returns dedup statistics.
 
 <a name="MergeRecord"></a>
-## type [MergeRecord](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/dedup/dedup.go#L53-L63>)
+## type [MergeRecord](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/dedup/dedup.go#L67-L77>)
 
 MergeRecord describes how two findings were merged during deduplication.
 
@@ -138,7 +138,7 @@ type MergeRecord struct {
 ```
 
 <a name="Stats"></a>
-## type [Stats](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/dedup/dedup.go#L66-L71>)
+## type [Stats](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/dedup/dedup.go#L80-L85>)
 
 Stats describes the dedup pass outcome for reporting in the scan header.
 
@@ -152,7 +152,7 @@ type Stats struct {
 ```
 
 <a name="Strategy"></a>
-## type [Strategy](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/dedup/dedup.go#L39>)
+## type [Strategy](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/dedup/dedup.go#L53>)
 
 Strategy identifies which dedup gate resolved a duplicate pair.
 

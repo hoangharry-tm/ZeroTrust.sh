@@ -1,4 +1,4 @@
-// Copyright 2026 hoangharry-tm
+// Copyright 2026 Minh Hoang Ton
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -31,6 +31,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"syscall"
 	"time"
 
@@ -38,6 +39,8 @@ import (
 	"github.com/spf13/pflag"
 
 	"github.com/hoangharry-tm/zerotrust/internal/output"
+	"github.com/hoangharry-tm/zerotrust/internal/report"
+	"github.com/hoangharry-tm/zerotrust/tests/fixtures"
 )
 
 const (
@@ -74,6 +77,7 @@ run the pipeline directly with local toolchain installations.`,
 	root.Flags().Bool("native", false, "run directly with local dependencies (no Docker)")
 	root.Flags().Bool("pull", true, "pull the latest engine image before running (Docker mode)")
 	root.Flags().String("engine-image", engineImage, "Docker image for the engine")
+	root.Flags().Bool("mock", false, "render the HTML report with mock data (no scan; UI development only)")
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -82,11 +86,45 @@ run the pipeline directly with local toolchain installations.`,
 }
 
 func runOrchestrate(cmd *cobra.Command, args []string) error {
+	mock, _ := cmd.Flags().GetBool("mock")
+	if mock {
+		return runMock(cmd)
+	}
 	native, _ := cmd.Flags().GetBool("native")
 	if native {
 		return runScan(cmd, args)
 	}
 	return runContainer(cmd, args)
+}
+
+// runMock renders the HTML report with hardcoded fixture data and opens it in the
+// default browser. No scan is performed.
+func runMock(cmd *cobra.Command) error {
+	reportPath, _ := cmd.Flags().GetString("report")
+	if reportPath == "" {
+		reportPath = "build/report.html"
+	}
+	if err := os.MkdirAll(filepath.Dir(reportPath), 0750); err != nil {
+		return fmt.Errorf("create report dir: %w", err)
+	}
+	f, err := os.Create(reportPath)
+	if err != nil {
+		return fmt.Errorf("create report file: %w", err)
+	}
+	defer f.Close()
+
+	gen := report.New(reportPath)
+	if err := gen.Render(f, fixtures.MockScanInfo(), fixtures.MockFindings()); err != nil {
+		return fmt.Errorf("render mock report: %w", err)
+	}
+	fmt.Fprintf(os.Stderr, "mock report written → %s\n", reportPath)
+
+	// ponytail: open is fire-and-forget; ignore error (user can open manually)
+	opener := map[string]string{"darwin": "open", "linux": "xdg-open", "windows": "explorer"}
+	if bin, ok := opener[runtime.GOOS]; ok {
+		_ = exec.Command(bin, reportPath).Start()
+	}
+	return nil
 }
 
 // runScan builds a ScanConfig and drives the pipeline directly.

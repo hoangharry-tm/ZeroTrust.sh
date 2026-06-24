@@ -4,6 +4,64 @@
 
 ---
 
+## Background & Strategic Context
+
+### The Rule Count Problem
+
+At publication, the novel rule count sits at ~10–12. Anyone evaluating the project will ask: "if there are only this many rules, why not just submit a PR to the Semgrep community registry?" The answer — that these target AI-agent-specific patterns that no community ruleset covers — is valid, but only if the ruleset is large enough to demonstrate a *class* of problems rather than a handful of examples. A thin ruleset reads as incomplete; a wide ruleset with a coherent taxonomy reads as a purpose-built tool.
+
+### Why AI-Generated Rules Are Insufficient on Their Own
+
+Writing a rule naively costs:
+
+1. **Research**: web search → fetch → read → synthesize literature to identify the real-world pattern
+2. **Logic derivation**: determine what to match, what to exclude, what variants exist, where the FP boundary is
+3. **YAML transcription**: write the OpenGrep/ast-grep YAML correctly (metavariable scope, pattern-not, focus-metavariable)
+4. **Fixture writing**: write bad/ and ok/ fixtures that reflect realistic AI-generated code, not synthetic minimal examples
+5. **Validation**: run test_rules.sh, verify 0 FP on ok/ fixtures
+
+Steps 1 and 4 are token-heavy but low-reasoning. Steps 2 and 5 are where the intellectual work is. Currently all five steps consume the same expensive LLM budget in the same session. That doesn't scale to 50+ rules.
+
+### The Delegation Strategy
+
+The viable split is:
+
+- **Claude Code owns**: threat modeling, pattern taxonomy derivation, identifying the FP boundary, writing the rule *specification* (what to match, what to exclude, which variants exist, which corpus samples are fixtures)
+- **Free agents (OpenCode, etc.) own**: translating that spec into valid YAML, writing fixture files for each variant, running test_rules.sh and iterating until green
+
+This works because YAML transcription and fixture writing are high-token, low-reasoning tasks. The intellectual bottleneck stays with Claude Code; the mechanical execution goes to free agents. The key constraint: the spec must be precise enough that a less capable agent can't misinterpret it — vague delegation ("write me a rule for SQL injection") produces syntactically plausible but semantically wrong YAML that costs more to fix than to write from scratch.
+
+### Why the Test Data Problem Is Structural
+
+AI-generated test fixtures have two failure modes:
+
+1. **Construct validity**: the fixture tests that the rule parses a specific syntax, not that it detects a real vulnerability class. A minimal 3-line file with a naked `todo!()` stub never appears in production code.
+2. **The circular evidence problem**: using Claude Code to generate test fixtures for patterns Claude Code would generate means you never discover the cases where real agents write something unexpected. The fixture validates the rule against itself, not against reality.
+
+The research audit confirmed this: fixtures in the current `tests/fixtures/bad/` directory are minimal isolated examples. Real AI-generated code embeds the vulnerability in 150–200 lines of otherwise correct scaffolding — surrounding imports, class definitions, docstrings, unrelated methods. A rule that matches the 3-line fixture may not match the 200-line real-world file if context suppresses the pattern.
+
+### Why Real Data Solves Both Problems
+
+A pipeline that pulls from BigVul, CVEFixes, OSV, and real GitHub AI-assisted PRs:
+
+- **Eliminates the realism gap**: fixtures are real code with real CVEs attached, not invented examples
+- **Makes claims defensible**: "our rules achieve X% recall on Y real CVEs" with a runnable notebook is a publishable claim; "we tested on synthetic examples" is not
+- **Breaks the circular evidence loop**: real data contains patterns the model wouldn't invent, exposing true FP/FN rates
+- **Amortizes research cost**: the corpus is built once and queried cheaply in every future rule derivation session via MCP tools, replacing web search + synthesis with a SQL query
+
+### Long-Run Token Economics
+
+With the MCP tool layer over the corpus:
+
+- A rule derivation session starts with `get_coverage_gaps()` and `query_corpus()` — structured tool calls, not web searches
+- Token spend goes to logic derivation (the expensive part), not literature lookup (the cheap part)
+- The corpus grows over time via scheduled collectors, so each subsequent session has more evidence without additional research cost
+- The benchmark notebook produces the coverage report automatically — no manual measurement per rule
+
+This is the difference between building a research tool once and paying a one-time engineering cost, versus paying the research cost again every session.
+
+---
+
 ## Overview
 
 Two parallel tracks that feed each other. The pipeline produces a curated corpus of real, labeled, AI-generated vulnerable code. The rules generation engine consumes that corpus to produce defensible, coverage-grounded rules economically.

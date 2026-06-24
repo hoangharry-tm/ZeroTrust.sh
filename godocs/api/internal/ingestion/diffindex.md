@@ -36,7 +36,7 @@ var ErrCPGUnavailable = fmt.Errorf("CPG graph unavailable for expansion")
 ```
 
 <a name="DeriveProjectID"></a>
-## func [DeriveProjectID](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/ingestion/diffindex/diffindex.go#L200>)
+## func [DeriveProjectID](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/ingestion/diffindex/diffindex.go#L214>)
 
 ```go
 func DeriveProjectID(projectRoot string) string
@@ -51,7 +51,7 @@ Parameters:
 - projectRoot: absolute path to the codebase root.
 
 <a name="ChangeSet"></a>
-## type [ChangeSet](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/ingestion/diffindex/diffindex.go#L44-L55>)
+## type [ChangeSet](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/ingestion/diffindex/diffindex.go#L58-L69>)
 
 ChangeSet is the output of a differential comparison.
 
@@ -71,7 +71,7 @@ type ChangeSet struct {
 ```
 
 <a name="ExpandWithCPG"></a>
-### func [ExpandWithCPG](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/ingestion/diffindex/expand.go#L18>)
+### func [ExpandWithCPG](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/ingestion/diffindex/expand.go#L32>)
 
 ```go
 func ExpandWithCPG(ctx context.Context, cs *ChangeSet, g cpg.Graph) (*ChangeSet, error)
@@ -84,7 +84,7 @@ This ensures that when a utility function changes, the analysis scope includes t
 If the CPG is unavailable or any query fails, the original ChangeSet is returned unchanged — expansion is best\-effort and must not block the scan.
 
 <a name="FileState"></a>
-## type [FileState](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/ingestion/diffindex/diffindex.go#L32-L41>)
+## type [FileState](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/ingestion/diffindex/diffindex.go#L46-L55>)
 
 FileState records the cached state of one file from a prior scan.
 
@@ -102,7 +102,7 @@ type FileState struct {
 ```
 
 <a name="Indexer"></a>
-## type [Indexer](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/ingestion/diffindex/diffindex.go#L58-L61>)
+## type [Indexer](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/ingestion/diffindex/diffindex.go#L72-L75>)
 
 Indexer computes the differential file set for each scan.
 
@@ -113,7 +113,7 @@ type Indexer struct {
 ```
 
 <a name="New"></a>
-### func [New](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/ingestion/diffindex/diffindex.go#L65>)
+### func [New](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/ingestion/diffindex/diffindex.go#L79>)
 
 ```go
 func New(db *sqlite.DB, logger *slog.Logger) *Indexer
@@ -122,7 +122,7 @@ func New(db *sqlite.DB, logger *slog.Logger) *Indexer
 New returns an Indexer backed by db. If logger is nil, slog.Default\(\) is used.
 
 <a name="Indexer.Commit"></a>
-### func \(\*Indexer\) [Commit](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/ingestion/diffindex/diffindex.go#L173>)
+### func \(\*Indexer\) [Commit](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/ingestion/diffindex/diffindex.go#L187>)
 
 ```go
 func (ix *Indexer) Commit(ctx context.Context, projectID string, cs *ChangeSet) error
@@ -137,7 +137,7 @@ Parameters:
 - cs: the ChangeSet returned by Diff for this scan.
 
 <a name="Indexer.Diff"></a>
-### func \(\*Indexer\) [Diff](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/ingestion/diffindex/diffindex.go#L85>)
+### func \(\*Indexer\) [Diff](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/ingestion/diffindex/diffindex.go#L99>)
 
 ```go
 func (ix *Indexer) Diff(ctx context.Context, projectID, projectRoot string) (*ChangeSet, error)

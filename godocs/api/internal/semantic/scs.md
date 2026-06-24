@@ -24,14 +24,14 @@ Concurrency: the store is goroutine\-safe. LLM Semantic Scan iterates surfaces s
 - [type Result](<#Result>)
 - [type Store](<#Store>)
   - [func New\(\) \*Store](<#New>)
-  - [func \(s \*Store\) Get\(ctx context.Context, q Query\) \(\*Result, error\)](<#Store.Get>)
+  - [func \(s \*Store\) Get\(\_ context.Context, q Query\) \(\*Result, error\)](<#Store.Get>)
   - [func \(s \*Store\) Put\(ctx context.Context, inf Inference\)](<#Store.Put>)
   - [func \(s \*Store\) RegisterNeighbours\(surfaceID string, neighbourIDs \[\]string\)](<#Store.RegisterNeighbours>)
   - [func \(s \*Store\) Snapshot\(\) map\[string\]\[\]Inference](<#Store.Snapshot>)
 
 
 <a name="Inference"></a>
-## type [Inference](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/scs/scs.go#L54-L64>)
+## type [Inference](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/scs/scs.go#L70-L80>)
 
 Inference is a single piece of knowledge about a surface stored after LLM analysis.
 
@@ -61,7 +61,7 @@ type Inference struct {
 ```
 
 <a name="InferenceKind"></a>
-## type [InferenceKind](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/scs/scs.go#L27>)
+## type [InferenceKind](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/scs/scs.go#L43>)
 
 InferenceKind classifies what the LLM learned about a surface.
 
@@ -89,7 +89,7 @@ const (
 ```
 
 <a name="Query"></a>
-## type [Query](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/scs/scs.go#L67-L76>)
+## type [Query](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/scs/scs.go#L83-L92>)
 
 Query describes what accumulated context to retrieve for a given surface.
 
@@ -107,7 +107,7 @@ type Query struct {
 ```
 
 <a name="Result"></a>
-## type [Result](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/scs/scs.go#L79-L82>)
+## type [Result](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/scs/scs.go#L95-L98>)
 
 Result is the set of prior inferences relevant to a Query.
 
@@ -119,7 +119,7 @@ type Result struct {
 ```
 
 <a name="Store"></a>
-## type [Store](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/scs/scs.go#L94-L98>)
+## type [Store](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/scs/scs.go#L110-L114>)
 
 Store is the per\-scan in\-memory graph of accumulated LLM inferences. It is created once per scan run and discarded when the scan completes.
 
@@ -140,7 +140,7 @@ type Store struct {
 ```
 
 <a name="New"></a>
-### func [New](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/scs/scs.go#L101>)
+### func [New](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/scs/scs.go#L117>)
 
 ```go
 func New() *Store
@@ -149,16 +149,16 @@ func New() *Store
 New returns an empty Store ready for use within a single scan run.
 
 <a name="Store.Get"></a>
-### func \(\*Store\) [Get](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/scs/scs.go#L128>)
+### func \(\*Store\) [Get](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/scs/scs.go#L145>)
 
 ```go
-func (s *Store) Get(ctx context.Context, q Query) (*Result, error)
+func (s *Store) Get(_ context.Context, q Query) (*Result, error)
 ```
 
-Get retrieves accumulated inferences relevant to the given query. Results include inferences for the surface itself and all registered neighbours. Inferences are ordered by descending Confidence; MaxResults is honoured if \> 0.
+Get retrieves accumulated inferences relevant to the given query. Results include inferences for the surface itself and all registered neighbours. If NeighbourIDs is empty the store uses its registered CPG\-neighbour graph. Inferences are ordered by descending Confidence; MaxResults is honoured if \> 0.
 
 <a name="Store.Put"></a>
-### func \(\*Store\) [Put](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/scs/scs.go#L110>)
+### func \(\*Store\) [Put](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/scs/scs.go#L126>)
 
 ```go
 func (s *Store) Put(ctx context.Context, inf Inference)
@@ -167,7 +167,7 @@ func (s *Store) Put(ctx context.Context, inf Inference)
 Put stores an inference for future context retrieval. Multiple inferences for the same surface are accumulated, not replaced.
 
 <a name="Store.RegisterNeighbours"></a>
-### func \(\*Store\) [RegisterNeighbours](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/scs/scs.go#L119>)
+### func \(\*Store\) [RegisterNeighbours](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/scs/scs.go#L135>)
 
 ```go
 func (s *Store) RegisterNeighbours(surfaceID string, neighbourIDs []string)
@@ -176,7 +176,7 @@ func (s *Store) RegisterNeighbours(surfaceID string, neighbourIDs []string)
 RegisterNeighbours records the CPG neighbour relationships for a surface. This must be called before Get so the store can resolve callee inferences. Neighbours are CPG\-adjacent functions in either call direction.
 
 <a name="Store.Snapshot"></a>
-### func \(\*Store\) [Snapshot](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/scs/scs.go#L138>)
+### func \(\*Store\) [Snapshot](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/scs/scs.go#L173>)
 
 ```go
 func (s *Store) Snapshot() map[string][]Inference

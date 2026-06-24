@@ -30,14 +30,15 @@ Token estimation: each surface's token cost is estimated from the length of its 
 
 - [type Controller](<#Controller>)
   - [func New\(tokenCap int, w1, w2, w3 float64\) \*Controller](<#New>)
-  - [func \(c \*Controller\) Rank\(summaries \[\]summarizer.Summary\) \(ranked \[\]RankedSurface, exhausted \[\]summarizer.Summary\)](<#Controller.Rank>)
-  - [func \(c \*Controller\) RankWithStats\(summaries \[\]summarizer.Summary\) \(ranked \[\]RankedSurface, exhausted \[\]summarizer.Summary, stats Stats\)](<#Controller.RankWithStats>)
+  - [func \(c \*Controller\) Rank\(inputs \[\]Input\) \(ranked \[\]RankedSurface, exhausted \[\]Input\)](<#Controller.Rank>)
+  - [func \(c \*Controller\) RankWithStats\(inputs \[\]Input\) \(ranked \[\]RankedSurface, exhausted \[\]Input, stats Stats\)](<#Controller.RankWithStats>)
+- [type Input](<#Input>)
 - [type RankedSurface](<#RankedSurface>)
 - [type Stats](<#Stats>)
 
 
 <a name="Controller"></a>
-## type [Controller](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/budget/budget.go#L56-L65>)
+## type [Controller](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/budget/budget.go#L85-L94>)
 
 Controller ranks surfaces and enforces the token cap.
 
@@ -48,7 +49,7 @@ type Controller struct {
 ```
 
 <a name="New"></a>
-### func [New](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/budget/budget.go#L75>)
+### func [New](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/budget/budget.go#L104>)
 
 ```go
 func New(tokenCap int, w1, w2, w3 float64) *Controller
@@ -64,46 +65,46 @@ Parameters:
 - w3: weight for reachability from entry point \(1 / CallGraphDepth\).
 
 <a name="Controller.Rank"></a>
-### func \(\*Controller\) [Rank](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/budget/budget.go#L94>)
+### func \(\*Controller\) [Rank](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/budget/budget.go#L116>)
 
 ```go
-func (c *Controller) Rank(summaries []summarizer.Summary) (ranked []RankedSurface, exhausted []summarizer.Summary)
+func (c *Controller) Rank(inputs []Input) (ranked []RankedSurface, exhausted []Input)
 ```
 
-Rank sorts summaries by priority \(descending\) and partitions them into ranked \(fits within token cap\) and exhausted \(exceeds cap\) slices.
+Rank sorts inputs by priority \(descending\) and partitions them into ranked \(fits within token cap\) and exhausted \(exceeds cap\) slices.
 
 The caller must emit a SUPPRESSED finding with SuppressReasonBudgetExhausted for each entry in the exhausted slice — they must never be silently dropped.
 
-Parameters:
-
-- summaries: the full list of semantic summaries from the Summarizer stage.
-
-Returns:
-
-- ranked: surfaces that fit within tokenCap, ordered by descending priority.
-- exhausted: surfaces that would exceed tokenCap, in the original order.
-
 <a name="Controller.RankWithStats"></a>
-### func \(\*Controller\) [RankWithStats](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/budget/budget.go#L110>)
+### func \(\*Controller\) [RankWithStats](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/budget/budget.go#L122>)
 
 ```go
-func (c *Controller) RankWithStats(summaries []summarizer.Summary) (ranked []RankedSurface, exhausted []summarizer.Summary, stats Stats)
+func (c *Controller) RankWithStats(inputs []Input) (ranked []RankedSurface, exhausted []Input, stats Stats)
 ```
 
-RankWithStats is identical to Rank but also returns a Stats summary describing the partitioning decision. Use this when the scan report should include token budget utilisation metadata.
+RankWithStats is identical to Rank but also returns a Stats summary.
 
-Parameters:
+<a name="Input"></a>
+## type [Input](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/budget/budget.go#L46-L56>)
 
-- summaries: the full list of semantic summaries from the Summarizer stage.
+Input bundles a semantic summary with the ranking metadata that the Summarizer stage cannot carry: CVSS score, classifier confidence, and call\-graph depth. Callers construct Inputs from the classifier.ClassifiedSurface and summarizer.Summary.
 
-Returns:
-
-- ranked: surfaces within the token cap.
-- exhausted: surfaces beyond the cap.
-- stats: partitioning statistics.
+```go
+type Input struct {
+    // Summary is the structured semantic output from the Summarizer stage.
+    Summary summarizer.Summary
+    // CVSSScore is the highest CVSS v3 score among CVE matches for this surface (0.0–10.0).
+    CVSSScore float64
+    // ClassifierConfidence is the UniXcoder confidence for the winning label (0.0–1.0).
+    ClassifierConfidence float64
+    // CallGraphDepth is the hop count from the nearest external-input node (≥ 1).
+    // Surfaces with depth 0 (unknown) are treated as depth 1 by the ranker.
+    CallGraphDepth int
+}
+```
 
 <a name="RankedSurface"></a>
-## type [RankedSurface](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/budget/budget.go#L31-L41>)
+## type [RankedSurface](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/budget/budget.go#L60-L70>)
 
 RankedSurface is a summarized surface with its computed priority score. Passed to the LLM Semantic Scan in descending priority order.
 
@@ -122,7 +123,7 @@ type RankedSurface struct {
 ```
 
 <a name="Stats"></a>
-## type [Stats](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/budget/budget.go#L44-L53>)
+## type [Stats](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/budget/budget.go#L73-L82>)
 
 Stats describes what the Controller decided about the full surface set.
 

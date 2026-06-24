@@ -1,4 +1,4 @@
-// Copyright 2026 hoangharry-tm
+// Copyright 2026 Minh Hoang Ton
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -100,7 +100,8 @@ func (db *DB) Close() error { return db.conn.Close() }
 // Returns sql.ErrNoRows if no prior scan entry exists for the file.
 func (db *DB) GetScanState(ctx context.Context, projectID, filePath string) (*ScanStateRow, error) {
 	row := &ScanStateRow{}
-	err := db.conn.QueryRowContext(ctx,
+	err := db.conn.QueryRowContext(
+		ctx,
 		`SELECT project_id, file_path, content_hash, last_scanned_at
 		 FROM scan_state WHERE project_id = ? AND file_path = ?`,
 		projectID, filePath,
@@ -113,7 +114,8 @@ func (db *DB) GetScanState(ctx context.Context, projectID, filePath string) (*Sc
 
 // UpsertScanState inserts or replaces the scan state row for one file.
 func (db *DB) UpsertScanState(ctx context.Context, row ScanStateRow) error {
-	_, err := db.conn.ExecContext(ctx,
+	_, err := db.conn.ExecContext(
+		ctx,
 		`INSERT OR REPLACE INTO scan_state (project_id, file_path, content_hash, last_scanned_at)
 		 VALUES (?, ?, ?, ?)`,
 		row.ProjectID, row.FilePath, row.ContentHash, row.LastScannedAt,
@@ -123,7 +125,8 @@ func (db *DB) UpsertScanState(ctx context.Context, row ScanStateRow) error {
 
 // ListScanState returns all cached state rows for the given projectID.
 func (db *DB) ListScanState(ctx context.Context, projectID string) ([]ScanStateRow, error) {
-	rows, err := db.conn.QueryContext(ctx,
+	rows, err := db.conn.QueryContext(
+		ctx,
 		`SELECT project_id, file_path, content_hash, last_scanned_at
 		 FROM scan_state WHERE project_id = ?`,
 		projectID,
@@ -146,7 +149,8 @@ func (db *DB) ListScanState(ctx context.Context, projectID string) ([]ScanStateR
 
 // DeleteScanState removes the state row for (projectID, filePath).
 func (db *DB) DeleteScanState(ctx context.Context, projectID, filePath string) error {
-	_, err := db.conn.ExecContext(ctx,
+	_, err := db.conn.ExecContext(
+		ctx,
 		`DELETE FROM scan_state WHERE project_id = ? AND file_path = ?`,
 		projectID, filePath,
 	)
@@ -158,7 +162,8 @@ func (db *DB) DeleteScanState(ctx context.Context, projectID, filePath string) e
 // IsSuppressed reports whether findingID is in the suppressions table for projectID.
 func (db *DB) IsSuppressed(ctx context.Context, projectID, findingID string) (bool, error) {
 	var count int
-	err := db.conn.QueryRowContext(ctx,
+	err := db.conn.QueryRowContext(
+		ctx,
 		`SELECT COUNT(*) FROM suppressions WHERE project_id = ? AND finding_id = ?`,
 		projectID, findingID,
 	).Scan(&count)
@@ -173,7 +178,8 @@ func (db *DB) AddSuppression(ctx context.Context, row SuppressionRow) error {
 	if row.SuppressedAt == 0 {
 		row.SuppressedAt = time.Now().Unix()
 	}
-	_, err := db.conn.ExecContext(ctx,
+	_, err := db.conn.ExecContext(
+		ctx,
 		`INSERT OR REPLACE INTO suppressions (project_id, finding_id, reason, suppressed_at)
 		 VALUES (?, ?, ?, ?)`,
 		row.ProjectID, row.FindingID, row.Reason, row.SuppressedAt,
@@ -186,7 +192,8 @@ func (db *DB) AddSuppression(ctx context.Context, row SuppressionRow) error {
 
 // ListSuppressions returns all suppression rows for the given projectID.
 func (db *DB) ListSuppressions(ctx context.Context, projectID string) ([]SuppressionRow, error) {
-	rows, err := db.conn.QueryContext(ctx,
+	rows, err := db.conn.QueryContext(
+		ctx,
 		`SELECT project_id, finding_id, reason, suppressed_at
 		 FROM suppressions WHERE project_id = ?`,
 		projectID,
@@ -234,15 +241,16 @@ func ensureFile(path string) error {
 
 // applyPragmas sets per-connection SQLite settings for performance and safety.
 func (db *DB) applyPragmas() error {
+	ctx := context.Background()
 	pragmas := []string{
-		"PRAGMA journal_mode=WAL",    // concurrent reads during writes
-		"PRAGMA foreign_keys=ON",     // referential integrity
-		"PRAGMA busy_timeout=5000",   // 5 s retry on lock instead of SQLITE_BUSY
-		"PRAGMA synchronous=NORMAL",  // safe with WAL; faster than FULL
-		"PRAGMA temp_store=MEMORY",   // temp tables in RAM
+		"PRAGMA journal_mode=WAL",   // concurrent reads during writes
+		"PRAGMA foreign_keys=ON",    // referential integrity
+		"PRAGMA busy_timeout=5000",  // 5 s retry on lock instead of SQLITE_BUSY
+		"PRAGMA synchronous=NORMAL", // safe with WAL; faster than FULL
+		"PRAGMA temp_store=MEMORY",  // temp tables in RAM
 	}
 	for _, p := range pragmas {
-		if _, err := db.conn.Exec(p); err != nil {
+		if _, err := db.conn.ExecContext(ctx, p); err != nil {
 			return fmt.Errorf("sqlite pragma %q: %w", p, err)
 		}
 	}
@@ -254,7 +262,7 @@ func (db *DB) applyPragmas() error {
 // via SQLite's built-in user_version PRAGMA.
 func (db *DB) migrate() error {
 	var ver int
-	if err := db.conn.QueryRow("PRAGMA user_version").Scan(&ver); err != nil {
+	if err := db.conn.QueryRowContext(context.Background(), "PRAGMA user_version").Scan(&ver); err != nil {
 		return fmt.Errorf("read schema version: %w", err)
 	}
 	for ver < currentSchemaVersion {
@@ -267,7 +275,8 @@ func (db *DB) migrate() error {
 }
 
 func (db *DB) runMigration(ver int) error {
-	tx, err := db.conn.Begin()
+	ctx := context.Background()
+	tx, err := db.conn.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
@@ -275,9 +284,9 @@ func (db *DB) runMigration(ver int) error {
 
 	switch ver {
 	case 1:
-		err = migration1(tx)
+		err = migration1(ctx, tx)
 	case 2:
-		err = migration2(tx)
+		err = migration2(ctx, tx)
 	default:
 		return fmt.Errorf("unknown migration version %d", ver)
 	}
@@ -287,14 +296,14 @@ func (db *DB) runMigration(ver int) error {
 
 	// user_version must be set outside the transaction in some SQLite builds;
 	// set it inside and then commit — this is safe with modernc.org/sqlite.
-	if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version = %d", ver)); err != nil {
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", ver)); err != nil {
 		return fmt.Errorf("set user_version: %w", err)
 	}
 	return tx.Commit()
 }
 
-func migration1(tx *sql.Tx) error {
-	_, err := tx.Exec(`
+func migration1(ctx context.Context, tx *sql.Tx) error {
+	_, err := tx.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS scan_state (
 			project_id      TEXT    NOT NULL,
 			file_path       TEXT    NOT NULL,
@@ -316,8 +325,8 @@ func migration1(tx *sql.Tx) error {
 	return err
 }
 
-func migration2(tx *sql.Tx) error {
-	_, err := tx.Exec(`
+func migration2(ctx context.Context, tx *sql.Tx) error {
+	_, err := tx.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS projects (
 			project_id       TEXT    PRIMARY KEY,
 			root_path        TEXT    NOT NULL UNIQUE,

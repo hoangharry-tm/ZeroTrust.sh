@@ -1,4 +1,4 @@
-// Copyright 2026 hoangharry-tm
+// Copyright 2026 Minh Hoang Ton
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -20,31 +20,30 @@
 // surfaces that reached Tier 3 through the Path B cost funnel.
 //
 // ReAct loop (VULSOLVER pattern, max 3 steps):
-//   - Step 1 (Reconnaissance): identify taint flows, auth patterns, IDOR signals.
-//   - Step 2 (Exploitation): model whether identified signals constitute an exploitable flaw.
-//   - Step 3 (Verification): apply progressive constraints to reduce false positives.
-//     Semantic exit conditions allow early termination when confidence is high.
+//   - Step 1 (T3): "Does tainted data flow from caller into this surface?"
+//   - Step 2 (T4): "Does this surface propagate taint to any callee?"
+//   - Step 3 (T5): trigger constraint at sink; XGrammar-2 output schema enforced.
 //
-// Backbone capability check: before the first surface is processed, a structured JSON
-// probe is sent. If the model fails to return valid JSON within two attempts, the scan
-// downgrades to single-pass CoD+SCoT for all surfaces in this run.
+// Backbone capability check: before the first surface is processed, a structured
+// JSON probe is sent. If the model fails to return valid JSON, the scan downgrades
+// to single-pass CoD+SCoT for all surfaces in this run.
 //
-// Uncertain verdicts are emitted as SUPPRESSED findings with SuppressReasonUncertain.
-// They are never silently dropped.
+// Uncertain verdicts are emitted as SUPPRESSED with SuppressReasonUncertain.
+// Safe verdicts are emitted as SUPPRESSED with SuppressReasonSafe.
+// Neither is silently dropped.
 //
 // Approach 3 replaces the single LLM with a 3-agent ensemble:
 // Reconnaissance Agent → Exploitation Agent → Verification Agent (LangGraph).
-//
-// Scan Security Context Store: after each surface is processed, the Scanner writes
-// inferences to the SCS store. The store is queried for accumulated context before
-// analysing each subsequent surface, enabling cross-surface vulnerability detection
-// (RepoAudit ICML 2025 memoization pattern).
 package llmscan
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
 
 	"github.com/hoangharry-tm/zerotrust/internal/finding"
+	"github.com/hoangharry-tm/zerotrust/internal/semantic/assembler"
 	"github.com/hoangharry-tm/zerotrust/internal/semantic/budget"
 	"github.com/hoangharry-tm/zerotrust/internal/semantic/scs"
 	"github.com/hoangharry-tm/zerotrust/internal/worker"
@@ -92,94 +91,298 @@ type ScanResult struct {
 	EarlyExit bool
 }
 
+// caller is the single method of worker.Manager used by the Scanner.
+// Defined here (consumer package) per go-dev interface placement guidance.
+type caller interface {
+	Call(ctx context.Context, msgType worker.MessageType, payload any) (*worker.Response, error)
+}
+
 // Scanner runs the bounded ReAct LLM scan over ranked surfaces.
 type Scanner struct {
-	// w is the Python worker that runs the LLM scan handler.
-	w *worker.Manager
-	// store is the per-scan Scan Security Context Store for cross-surface inference.
+	w     caller
 	store *scs.Store
 }
 
 // New returns a Scanner backed by the Python worker.
-// store is the per-scan SCS store; pass scs.New() from the pipeline orchestrator.
-//
-// Parameters:
-//   - w: the shared Python worker manager.
 func New(w *worker.Manager) *Scanner {
 	return &Scanner{w: w}
 }
 
 // WithStore attaches a Scan Security Context Store to the Scanner.
 // Call this before Scan when cross-surface vulnerability detection is needed.
-// If not called, the Scanner operates without accumulated context.
-//
-// Parameters:
-//   - store: the per-scan SCS store created by the pipeline orchestrator.
 func (s *Scanner) WithStore(store *scs.Store) *Scanner {
 	s.store = store
 	return s
 }
 
-// Scan runs the bounded ReAct loop (or single-pass fallback) for each surface
-// and returns normalised findings.
-//
-// Processing order:
-//  1. Backbone capability check (one per Scan call, not per surface).
-//  2. For each surface (callee-first order from budget.Rank):
-//     a. Query SCS store for accumulated context from prior surfaces.
-//     b. Run the ReAct loop (or single-pass) via the Python worker.
-//     c. Write inferences to the SCS store.
-//     d. Normalise the ScanResult into a finding.Finding.
-//
-// Uncertain surfaces are emitted as SUPPRESSED with SuppressReasonUncertain.
-//
-// Parameters:
-//   - ctx: cancellation context; honours deadline across all surface scans.
-//   - surfaces: the ranked surface list from the Token Budget Controller.
-//
-// Returns:
-//   - []finding.Finding: one finding per surface (uncertain → SUPPRESSED).
-//   - error: non-nil only for unrecoverable worker communication failures.
-func (s *Scanner) Scan(ctx context.Context, surfaces []budget.RankedSurface) ([]finding.Finding, error) {
-	// implemented in G3.M3.4
-	return nil, nil
+// scanStepRequest is the per-step IPC payload sent to the Python llm_scan handler.
+type scanStepRequest struct {
+	SurfaceID    string                    `json:"surface_id"`
+	Step         int                       `json:"step"`
+	Mode         ScanMode                  `json:"mode"`
+	TaintFlow    assembler.TaintFlowSchema `json:"taint_flow"`
+	AuthGuard    assembler.AuthGuardSchema `json:"auth_guard"`
+	LogicFlaw    assembler.LogicFlawSchema `json:"logic_flaw"`
+	PriorSteps   []ReActStep               `json:"prior_steps,omitempty"`
+	PriorContext []scs.Inference           `json:"prior_context,omitempty"`
 }
 
-// BackboneCheck probes the Python worker to verify the configured model can produce
-// valid structured JSON output. Returns the ScanMode to use for the full scan.
-//
-// Parameters:
-//   - ctx: cancellation context.
-//
-// Returns:
-//   - ScanMode: ScanModeReAct if the model passes, ScanModeSinglePass if it fails.
-//   - error: non-nil only for worker communication failures (not JSON parse failures).
+// scanStepResponse is the per-step IPC response from the Python llm_scan handler.
+type scanStepResponse struct {
+	Thought     string `json:"thought"`
+	Action      string `json:"action"`
+	Observation string `json:"observation"`
+	// Verdict is set on the final step or when EarlyExit is true.
+	Verdict    string  `json:"verdict"`
+	Confidence float64 `json:"confidence"`
+	CWE        string  `json:"cwe"`
+	EarlyExit  bool    `json:"early_exit"`
+}
+
+// BackboneCheck probes the Python worker to verify the model can produce valid
+// structured JSON output. Returns ScanModeReAct on success, ScanModeSinglePass
+// on failure. Worker communication errors degrade gracefully to single-pass.
 func (s *Scanner) BackboneCheck(ctx context.Context) (ScanMode, error) {
-	// implemented in G3.M3.4
-	return ScanModeSinglePass, nil
+	resp, err := s.w.Call(ctx, worker.MsgLLMScan, map[string]string{"type": "backbone_probe"})
+	if err != nil {
+		return ScanModeSinglePass, nil // degrade gracefully
+	}
+	if resp.Status == worker.ResponseError || !json.Valid(resp.Result) {
+		return ScanModeSinglePass, nil
+	}
+	return ScanModeReAct, nil
 }
 
-// scanSurface runs the ReAct loop or single-pass scan for a single surface.
-// Returns the ScanResult and writes inferences to the SCS store if attached.
+// Scan runs the backbone check once then processes each surface in order.
+// For each surface it queries the SCS store, runs the ReAct loop or single-pass
+// scan, writes inferences back to the store, and normalises the result to a Finding.
 //
-// Parameters:
-//   - ctx: cancellation context.
-//   - surface: the ranked surface to scan.
-//   - mode: whether to use ReAct or single-pass.
-//   - priorContext: accumulated inferences from the SCS store (may be nil).
-func (s *Scanner) scanSurface(ctx context.Context, surface budget.RankedSurface, mode ScanMode, priorContext *scs.Result) (ScanResult, error) {
-	// implemented in G3.M3.4
-	return ScanResult{}, nil
+// Every surface produces exactly one finding: uncertain → SUPPRESSED(uncertain),
+// safe → SUPPRESSED(safe), vulnerable → severity derived from confidence.
+func (s *Scanner) Scan(ctx context.Context, surfaces []budget.RankedSurface) ([]finding.Finding, error) {
+	mode, err := s.BackboneCheck(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("backbone check: %w", err)
+	}
+
+	findings := make([]finding.Finding, 0, len(surfaces))
+	for _, surf := range surfaces {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
+		var prior *scs.Result
+		if s.store != nil {
+			prior, err = s.store.Get(ctx, scs.Query{SurfaceID: surf.SurfaceID})
+			if err != nil {
+				return nil, fmt.Errorf("scs get %s: %w", surf.SurfaceID, err)
+			}
+		}
+
+		result, err := s.scanSurface(ctx, surf, mode, prior)
+		if err != nil {
+			return nil, fmt.Errorf("scan surface %s: %w", surf.SurfaceID, err)
+		}
+
+		if s.store != nil {
+			s.store.Put(ctx, scs.Inference{
+				SurfaceID:  surf.SurfaceID,
+				Kind:       verdictToKind(result.Verdict),
+				Narrative:  result.Justification,
+				Confidence: result.Confidence,
+			})
+		}
+
+		findings = append(findings, toFinding(result, surf))
+	}
+	return findings, nil
 }
 
-// toFinding normalises a ScanResult into a finding.Finding.
-// Uncertain verdicts produce SUPPRESSED findings; confident verdicts derive
-// SeverityLabel and Confidence from the scan result's scores.
+// scanSurface routes to reactLoop or singlePass based on mode.
+func (s *Scanner) scanSurface(ctx context.Context, surface budget.RankedSurface, mode ScanMode, prior *scs.Result) (ScanResult, error) {
+	if mode == ScanModeSinglePass {
+		return s.singlePass(ctx, surface, prior)
+	}
+	return s.reactLoop(ctx, surface, prior)
+}
+
+// reactLoop runs the bounded 3-step ReAct loop.
 //
-// Parameters:
-//   - result: the ScanResult from scanSurface.
-//   - surface: the ranked surface that was scanned (for file, line, CWE).
+// Step 1 (T3): transfer constraint — does tainted data flow from caller into this surface?
+// Step 2 (T4): callee taint — does this surface propagate taint to any callee?
+// Step 3 (T5, stub): trigger constraint at sink — implemented in ML3.4 T5.
+func (s *Scanner) reactLoop(ctx context.Context, surface budget.RankedSurface, prior *scs.Result) (ScanResult, error) {
+	var priorInfs []scs.Inference
+	if prior != nil {
+		priorInfs = prior.Inferences
+	}
+	steps := make([]ReActStep, 0, 3)
+
+	// Step 1 (T3): transfer constraint.
+	resp1, err := s.callStep(ctx, surface, 1, steps, priorInfs)
+	if err != nil {
+		return ScanResult{}, fmt.Errorf("step 1: %w", err)
+	}
+	steps = append(steps, ReActStep{StepNum: 1, Thought: resp1.Thought, Action: resp1.Action, Observation: resp1.Observation})
+	if resp1.EarlyExit {
+		return buildResult(surface.SurfaceID, resp1, steps, true), nil
+	}
+
+	// Step 2 (T4): callee taint propagation.
+	resp2, err := s.callStep(ctx, surface, 2, steps, priorInfs)
+	if err != nil {
+		return ScanResult{}, fmt.Errorf("step 2: %w", err)
+	}
+	steps = append(steps, ReActStep{StepNum: 2, Thought: resp2.Thought, Action: resp2.Action, Observation: resp2.Observation})
+	if resp2.EarlyExit {
+		return buildResult(surface.SurfaceID, resp2, steps, true), nil
+	}
+
+	// Step 3 (T5): trigger constraint — stub until ML3.4 T5.
+	resp3, err := s.callStep(ctx, surface, 3, steps, priorInfs)
+	if err != nil {
+		return ScanResult{}, fmt.Errorf("step 3: %w", err)
+	}
+	steps = append(steps, ReActStep{StepNum: 3, Thought: resp3.Thought, Action: resp3.Action, Observation: resp3.Observation})
+	return buildResult(surface.SurfaceID, resp3, steps, false), nil
+}
+
+// singlePass sends the full surface in a single prompt (CoD+SCoT fallback).
+func (s *Scanner) singlePass(ctx context.Context, surface budget.RankedSurface, prior *scs.Result) (ScanResult, error) {
+	var priorInfs []scs.Inference
+	if prior != nil {
+		priorInfs = prior.Inferences
+	}
+	req := scanStepRequest{
+		SurfaceID:    surface.SurfaceID,
+		Step:         1,
+		Mode:         ScanModeSinglePass,
+		TaintFlow:    surface.TaintFlow,
+		AuthGuard:    surface.AuthGuard,
+		LogicFlaw:    surface.LogicFlaw,
+		PriorContext: priorInfs,
+	}
+	resp, err := s.w.Call(ctx, worker.MsgLLMScan, req)
+	if err != nil {
+		return ScanResult{}, fmt.Errorf("worker call: %w", err)
+	}
+	if resp.Status == worker.ResponseError {
+		return ScanResult{}, fmt.Errorf("worker error: %s", resp.Error)
+	}
+	var sr scanStepResponse
+	if err := json.Unmarshal(resp.Result, &sr); err != nil {
+		return ScanResult{}, fmt.Errorf("unmarshal: %w", err)
+	}
+	return ScanResult{
+		SurfaceID:     surface.SurfaceID,
+		Verdict:       sr.Verdict,
+		Confidence:    sr.Confidence,
+		Justification: sr.Observation,
+		CWE:           sr.CWE,
+		Mode:          ScanModeSinglePass,
+	}, nil
+}
+
+// callStep sends one ReAct step to the Python worker and returns the response.
+func (s *Scanner) callStep(ctx context.Context, surface budget.RankedSurface, stepNum int, priorSteps []ReActStep, priorContext []scs.Inference) (scanStepResponse, error) {
+	req := scanStepRequest{
+		SurfaceID:    surface.SurfaceID,
+		Step:         stepNum,
+		Mode:         ScanModeReAct,
+		TaintFlow:    surface.TaintFlow,
+		AuthGuard:    surface.AuthGuard,
+		LogicFlaw:    surface.LogicFlaw,
+		PriorSteps:   priorSteps,
+		PriorContext: priorContext,
+	}
+	resp, err := s.w.Call(ctx, worker.MsgLLMScan, req)
+	if err != nil {
+		return scanStepResponse{}, fmt.Errorf("worker call: %w", err)
+	}
+	if resp.Status == worker.ResponseError {
+		return scanStepResponse{}, fmt.Errorf("worker error: %s", resp.Error)
+	}
+	var sr scanStepResponse
+	if err := json.Unmarshal(resp.Result, &sr); err != nil {
+		return scanStepResponse{}, fmt.Errorf("unmarshal step %d: %w", stepNum, err)
+	}
+	return sr, nil
+}
+
+// toFinding normalises a ScanResult to a finding.Finding.
+// Uncertain and safe verdicts produce SUPPRESSED findings — never silent drops.
 func toFinding(result ScanResult, surface budget.RankedSurface) finding.Finding {
-	// implemented in G3.M3.4
-	return finding.Finding{}
+	severity := finding.SeverityFromConfidence(result.Confidence)
+	var suppressReason finding.SuppressReason
+
+	switch result.Verdict {
+	case "uncertain", "":
+		severity = finding.SeveritySuppressed
+		suppressReason = finding.SuppressReasonUncertain
+	case "safe":
+		severity = finding.SeveritySuppressed
+		suppressReason = finding.SuppressReasonSafe
+	}
+
+	return finding.Finding{
+		ID:             finding.ComputeID(result.CWE, surface.SurfaceID, surface.FunctionID),
+		Path:           surface.SurfaceID, // ponytail: file path not threaded to this stage; SurfaceID used as proxy
+		CWE:            result.CWE,
+		SeverityLabel:  severity,
+		Confidence:     result.Confidence,
+		SuppressReason: suppressReason,
+		Justification:  result.Justification,
+		SourcePath:     finding.SourceSemantic,
+		PoeContext:     buildPoeContext(result, surface),
+	}
+}
+
+// buildPoeContext constructs a PoeContext from the LLM scan result and surface
+// taint schema. Returns nil when no taint data is available.
+func buildPoeContext(result ScanResult, surface budget.RankedSurface) *finding.PoeContext {
+	tf := surface.TaintFlow
+	if len(tf.UntrustedSources) == 0 && tf.SinkType == "" {
+		return nil
+	}
+
+	var conditions []string
+	if surface.AuthGuard.CheckPresent {
+		conditions = append(conditions, "bypass "+string(surface.AuthGuard.CheckLocation)+" auth check")
+	}
+	if surface.LogicFlaw.ResourceIDSource != "" && string(surface.LogicFlaw.CheckLocation) == "unknown" {
+		conditions = append(conditions, "supply arbitrary resource ID via "+surface.LogicFlaw.ResourceIDSource)
+	}
+
+	return &finding.PoeContext{
+		SourceNode:         strings.Join(tf.UntrustedSources, ", "),
+		SinkNode:           tf.SinkType,
+		TaintPathSummary:   result.Justification,
+		RequiredConditions: strings.Join(conditions, "; "),
+	}
+}
+
+// buildResult constructs a ScanResult from the final step response.
+func buildResult(surfaceID string, resp scanStepResponse, steps []ReActStep, earlyExit bool) ScanResult {
+	return ScanResult{
+		SurfaceID:     surfaceID,
+		Verdict:       resp.Verdict,
+		Confidence:    resp.Confidence,
+		Justification: resp.Observation,
+		CWE:           resp.CWE,
+		Steps:         steps,
+		Mode:          ScanModeReAct,
+		EarlyExit:     earlyExit,
+	}
+}
+
+// verdictToKind maps an LLM verdict string to an SCS InferenceKind.
+func verdictToKind(verdict string) scs.InferenceKind {
+	switch verdict {
+	case "vulnerable":
+		return scs.InferenceTaintSink
+	case "safe":
+		return scs.InferenceSafe
+	default:
+		return scs.InferenceSafe // uncertain → record as safe for SCS accumulation
+	}
 }

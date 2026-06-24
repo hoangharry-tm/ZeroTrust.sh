@@ -1,4 +1,4 @@
-// Copyright 2026 hoangharry-tm
+// Copyright 2026 Minh Hoang Ton
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -70,6 +70,8 @@ const (
 	SuppressReasonFrameworkSafe SuppressReason = "framework_safe"
 	// SuppressReasonUserAck means the user manually acknowledged this finding.
 	SuppressReasonUserAck SuppressReason = "user_acknowledged"
+	// SuppressReasonSafe means the LLM concluded the surface is not vulnerable.
+	SuppressReasonSafe SuppressReason = "safe"
 )
 
 // PoEStatus tracks the outcome of the Proof-of-Exploitability attempt (Approach 3).
@@ -166,12 +168,23 @@ type Finding struct {
 	// RuleID is the OpenGrep / ast-grep rule identifier that matched (Path A only).
 	// Empty for Path B findings.
 	RuleID string
+	// CVE is the primary CVE identifier (e.g. "CVE-2021-44228"); empty when no CVE match.
+	// Populated for Path B findings that passed through the enrichment stage.
+	CVE string
+	// CVSS is the CVSS v3 base score (0.0–10.0) for the primary CVE; 0.0 when no CVE match.
+	CVSS float64
 	// SSVC carries the three SSVC-inspired scoring dimensions.
 	SSVC SSVCDimensions
 	// PoeContext carries the structured exploit context (non-nil from Approach 2+).
 	PoeContext *PoeContext
 	// PoEResult is the sandbox exploitation result (Approach 3 only; nil otherwise).
 	PoEResult *PoEResult
+	// Patch is the zero-shot unified diff fix suggestion (empty when not generated).
+	Patch string
+	// PatchStatus is the validation result: "ok" | "malformed" | "" (not generated).
+	PatchStatus string
+	// PatchScope is the diff scope label: "single_hunk" | "multi_hunk" | "multi_file" | "".
+	PatchScope string
 }
 
 // Channel is the typed channel through which pipeline stages emit findings.

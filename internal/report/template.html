@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
 <title>ZeroTrust.sh — {{ .Info.ProjectName }}</title>
 <style>
   :root {
@@ -132,6 +133,13 @@
   .path-SEMANTIC { border-color: rgba(168,85,247,.3);  color: #c084fc; }
   .path-BOTH     { border-color: rgba(34,197,94,.3);   color: #4ade80; }
   .chevron { color: var(--text-3); transition: transform .2s; flex-shrink: 0; }
+  .ack-btn { font-family: var(--font-mono); font-size: 10px; padding: 2px 7px; border-radius: var(--radius-sm); border: 1px solid var(--border-strong); background: transparent; color: var(--text-3); cursor: pointer; flex-shrink: 0; transition: background .12s, color .12s, border-color .12s; }
+  .ack-btn:hover { background: var(--bg-4); color: var(--text-1); }
+  .ack-btn.acked { background: rgba(34,197,94,.10); border-color: rgba(34,197,94,.3); color: #4ade80; }
+  .suppress-bar { display: none; align-items: center; gap: 10px; padding: 8px 24px; background: var(--bg-3); border-top: 1px solid var(--border); position: sticky; bottom: 0; }
+  .suppress-bar.visible { display: flex; }
+  .suppress-dl { font-family: var(--font-mono); font-size: 11px; padding: 5px 12px; border-radius: var(--radius-sm); border: 1px solid rgba(34,197,94,.4); background: rgba(34,197,94,.10); color: #4ade80; cursor: pointer; }
+  .suppress-clear { font-size: 11px; color: var(--text-3); background: none; border: none; cursor: pointer; padding: 4px 8px; }
   .finding-card.expanded .chevron { transform: rotate(90deg); }
 
   /* finding body */
@@ -404,6 +412,8 @@
               <span class="finding-file">{{ .Path }}{{ if .LineRange.Start }}:{{ .LineRange.Start }}{{ end }}</span>
               {{ if .CWE }}<span class="cwe-tag">{{ .CWE }}</span>{{ end }}
               <span class="path-tag path-{{ .SourcePath }}">{{ sourcepathLabel .SourcePath }}</span>
+              <button class="ack-btn" data-id="{{ .ID }}" data-path="{{ .Path }}" data-cwe="{{ .CWE }}" data-just="{{ .Justification }}"
+                      onclick="event.stopPropagation();toggleAck(this)" title="Acknowledge / suppress this finding">ACK</button>
               <svg class="chevron" width="14" height="14" viewBox="0 0 16 16" fill="none">
                 <path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
               </svg>
@@ -416,6 +426,9 @@
               {{ if and .PoeContext (ne .SeverityLabel "SUPPRESSED") }}
               <button class="ftab" onclick="switchTab(this,'poe')">PoE Context</button>
               {{ end }}
+              {{ if .Patch }}
+              <button class="ftab" onclick="switchTab(this,'patch')">Patch</button>
+              {{ end }}
             </div>
 
             <!-- EVIDENCE TAB -->
@@ -423,7 +436,7 @@
               {{ if eq .SeverityLabel "SUPPRESSED" }}
               <div class="info-note">
                 <svg class="note-icon" width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M2 8h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M8 2l6 6-6 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                Auto-suppressed: {{ .Reason }}
+                Auto-suppressed: {{ .SuppressReason }}
               </div>
               {{ end }}
               {{ if .MatchedCode }}
@@ -497,6 +510,37 @@
             </div>
             {{ end }}
 
+            <!-- PATCH TAB -->
+            {{ if .Patch }}
+            <div class="ftab-panel" data-tab="patch">
+              {{ if eq .PatchStatus "malformed" }}
+              <div class="info-note warn" style="margin-bottom:10px">
+                <svg class="note-icon" width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M8 2L14 13H2L8 2Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M8 6v3M8 11v.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                Patch is malformed — hunk headers could not be parsed. LLM off-by-one in @@ lines is the primary failure mode.
+              </div>
+              {{ else }}
+              {{ if .PatchScope }}
+              <div class="scope-notice" style="margin-bottom:10px">
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" style="color:var(--accent);flex-shrink:0"><circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5"/><path d="M8 5v4M8 11v.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                Scope: <strong style="margin:0 4px">{{ .PatchScope }}</strong>
+                {{ if eq .PatchScope "single_hunk" }}— ~22% apply cleanly (PatchEval){{ end }}
+                {{ if eq .PatchScope "multi_hunk" }}— ~12% apply cleanly (PatchEval); verify each hunk{{ end }}
+                {{ if eq .PatchScope "multi_file" }}— 0–7.7% apply cleanly (PatchEval); manual review required{{ end }}
+              </div>
+              {{ end }}
+              <div class="diff-file-header">{{ .Path }}</div>
+              <div class="diff-block">
+                {{ range diffLines .Patch }}
+                <div class="diff-line{{ .Class }}">
+                  <span class="diff-sign">{{ .Sign }}</span>
+                  <span class="diff-code">{{ .Content }}</span>
+                </div>
+                {{ end }}
+              </div>
+              {{ end }}
+            </div>
+            {{ end }}
+
           </div>
         </div>
         {{ end }}
@@ -504,6 +548,15 @@
       </div>
     </main>
   </div>
+</div>
+
+<!-- SUPPRESS BAR -->
+<div class="suppress-bar" id="suppressBar">
+  <span style="font-size:12px;color:var(--text-2)">
+    <span id="suppressCount">0</span> finding(s) acknowledged
+  </span>
+  <button class="suppress-dl" id="suppressDl">↓ Download .zerotrust-suppressions.yaml</button>
+  <button class="suppress-clear" onclick="clearAcks()">Clear</button>
 </div>
 
 <script>
@@ -617,6 +670,58 @@
       return 0;
     });
     cards.forEach(c => list.appendChild(c));
+  });
+
+  // ── Acknowledge / suppression sidecar ─────────────────────────────────────
+  const acked = new Map(); // id → {path, cwe, justification}
+
+  function toggleAck(btn) {
+    const id   = btn.dataset.id;
+    const path = btn.dataset.path;
+    const cwe  = btn.dataset.cwe;
+    const just = btn.dataset.just;
+    if (acked.has(id)) {
+      acked.delete(id);
+      btn.classList.remove('acked');
+      btn.textContent = 'ACK';
+    } else {
+      acked.set(id, { path, cwe, justification: just });
+      btn.classList.add('acked');
+      btn.textContent = '✓';
+    }
+    updateSuppressBar();
+  }
+
+  function clearAcks() {
+    acked.clear();
+    document.querySelectorAll('.ack-btn.acked').forEach(b => {
+      b.classList.remove('acked');
+      b.textContent = 'ACK';
+    });
+    updateSuppressBar();
+  }
+
+  function updateSuppressBar() {
+    const bar = document.getElementById('suppressBar');
+    document.getElementById('suppressCount').textContent = acked.size;
+    bar.classList.toggle('visible', acked.size > 0);
+  }
+
+  document.getElementById('suppressDl').addEventListener('click', function() {
+    let yaml = 'suppressions:\n';
+    acked.forEach(function(v, id) {
+      yaml += '  - id: ' + id + '\n';
+      if (v.path) yaml += '    path: ' + JSON.stringify(v.path) + '\n';
+      if (v.cwe)  yaml += '    cwe: '  + v.cwe + '\n';
+      yaml += '    reason: user_acknowledged\n';
+      yaml += '    # ' + (v.justification || '').slice(0, 80) + '\n';
+    });
+    const blob = new Blob([yaml], { type: 'text/yaml' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = '.zerotrust-suppressions.yaml';
+    a.click();
+    URL.revokeObjectURL(a.href);
   });
 </script>
 </body>

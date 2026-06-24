@@ -32,7 +32,7 @@ ast\-grep outputs a JSON array when invoked with \-\-json. Each element is decod
 
 
 <a name="FilterFiles"></a>
-## func [FilterFiles](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/astgrep/astgrep.go#L139>)
+## func [FilterFiles](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/astgrep/astgrep.go#L153>)
 
 ```go
 func FilterFiles(files []string) []string
@@ -49,7 +49,7 @@ Returns:
 - \[\]string: files whose language falls in ast\-grep's ownership set.
 
 <a name="RawMatch"></a>
-## type [RawMatch](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/astgrep/astgrep.go#L29-L42>)
+## type [RawMatch](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/astgrep/astgrep.go#L43-L56>)
 
 RawMatch is a single JSON object in ast\-grep's JSON output array.
 
@@ -71,7 +71,7 @@ type RawMatch struct {
 ```
 
 <a name="RawPos"></a>
-## type [RawPos](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/astgrep/astgrep.go#L55-L60>)
+## type [RawPos](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/astgrep/astgrep.go#L69-L74>)
 
 RawPos is a line/column position within a source file.
 
@@ -85,7 +85,7 @@ type RawPos struct {
 ```
 
 <a name="RawRange"></a>
-## type [RawRange](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/astgrep/astgrep.go#L45-L52>)
+## type [RawRange](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/astgrep/astgrep.go#L59-L66>)
 
 RawRange is the byte and line/column span of a match.
 
@@ -101,7 +101,7 @@ type RawRange struct {
 ```
 
 <a name="Runner"></a>
-## type [Runner](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/astgrep/astgrep.go#L63-L68>)
+## type [Runner](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/astgrep/astgrep.go#L77-L82>)
 
 Runner invokes ast\-grep as a subprocess against a language\-filtered file set.
 
@@ -112,7 +112,7 @@ type Runner struct {
 ```
 
 <a name="New"></a>
-### func [New](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/astgrep/astgrep.go#L75>)
+### func [New](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/astgrep/astgrep.go#L89>)
 
 ```go
 func New(binaryPath, rulesDir string) *Runner
@@ -126,7 +126,7 @@ Parameters:
 - rulesDir: path to the ast\-grep rules/ subdirectory \(e.g. "rules/astgrep/"\).
 
 <a name="Runner.Scan"></a>
-### func \(\*Runner\) [Scan](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/astgrep/astgrep.go#L91>)
+### func \(\*Runner\) [Scan](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/astgrep/astgrep.go#L105>)
 
 ```go
 func (r *Runner) Scan(ctx context.Context, files []string) ([]finding.Finding, error)
@@ -147,7 +147,7 @@ Returns:
 - error: non\-nil if the subprocess fails to start or produces unparseable output.
 
 <a name="Runner.Version"></a>
-### func \(\*Runner\) [Version](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/astgrep/astgrep.go#L154>)
+### func \(\*Runner\) [Version](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/astgrep/astgrep.go#L168>)
 
 ```go
 func (r *Runner) Version(ctx context.Context) (string, error)

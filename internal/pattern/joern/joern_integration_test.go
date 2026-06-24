@@ -1,6 +1,6 @@
 //go:build integration
 
-// Copyright 2026 hoangharry-tm
+// Copyright 2026 Minh Hoang Ton
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -58,9 +58,9 @@ func springBootDir(t *testing.T) string {
 	if !ok {
 		t.Fatal("runtime.Caller failed")
 	}
-	// Navigate from internal/pattern/joern/ up to the repo root, then into testdata.
+	// Navigate from internal/pattern/joern/ up to the repo root, then into tests/integration.
 	root := filepath.Join(filepath.Dir(thisFile), "..", "..", "..")
-	dir := filepath.Join(root, "testdata", "spring-boot-app")
+	dir := filepath.Join(root, "tests", "integration", "spring-boot-app")
 	if _, err := os.Stat(dir); err != nil {
 		t.Skipf("spring-boot-app testdata not found at %s: %v", dir, err)
 	}

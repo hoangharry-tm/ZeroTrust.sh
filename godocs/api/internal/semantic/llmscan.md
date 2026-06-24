@@ -12,17 +12,15 @@ The Scanner receives ranked semantic summaries — never raw source code — and
 
 ReAct loop \(VULSOLVER pattern, max 3 steps\):
 
-- Step 1 \(Reconnaissance\): identify taint flows, auth patterns, IDOR signals.
-- Step 2 \(Exploitation\): model whether identified signals constitute an exploitable flaw.
-- Step 3 \(Verification\): apply progressive constraints to reduce false positives. Semantic exit conditions allow early termination when confidence is high.
+- Step 1 \(T3\): "Does tainted data flow from caller into this surface?"
+- Step 2 \(T4\): "Does this surface propagate taint to any callee?"
+- Step 3 \(T5\): trigger constraint at sink; XGrammar\-2 output schema enforced.
 
-Backbone capability check: before the first surface is processed, a structured JSON probe is sent. If the model fails to return valid JSON within two attempts, the scan downgrades to single\-pass CoD\+SCoT for all surfaces in this run.
+Backbone capability check: before the first surface is processed, a structured JSON probe is sent. If the model fails to return valid JSON, the scan downgrades to single\-pass CoD\+SCoT for all surfaces in this run.
 
-Uncertain verdicts are emitted as SUPPRESSED findings with SuppressReasonUncertain. They are never silently dropped.
+Uncertain verdicts are emitted as SUPPRESSED with SuppressReasonUncertain. Safe verdicts are emitted as SUPPRESSED with SuppressReasonSafe. Neither is silently dropped.
 
 Approach 3 replaces the single LLM with a 3\-agent ensemble: Reconnaissance Agent → Exploitation Agent → Verification Agent \(LangGraph\).
-
-Scan Security Context Store: after each surface is processed, the Scanner writes inferences to the SCS store. The store is queried for accumulated context before analysing each subsequent surface, enabling cross\-surface vulnerability detection \(RepoAudit ICML 2025 memoization pattern\).
 
 ## Index
 
@@ -37,7 +35,7 @@ Scan Security Context Store: after each surface is processed, the Scanner writes
 
 
 <a name="ReActStep"></a>
-## type [ReActStep](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/llmscan/llmscan.go#L50-L59>)
+## type [ReActStep](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/llmscan/llmscan.go#L62-L71>)
 
 ReActStep is one reasoning step in the bounded ReAct loop.
 
@@ -55,7 +53,7 @@ type ReActStep struct {
 ```
 
 <a name="ScanMode"></a>
-## type [ScanMode](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/llmscan/llmscan.go#L40>)
+## type [ScanMode](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/llmscan/llmscan.go#L52>)
 
 ScanMode controls whether the ReAct loop or single\-pass fallback is used.
 
@@ -75,7 +73,7 @@ const (
 ```
 
 <a name="ScanResult"></a>
-## type [ScanResult](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/llmscan/llmscan.go#L62-L79>)
+## type [ScanResult](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/llmscan/llmscan.go#L74-L91>)
 
 ScanResult is the per\-surface output of the LLM Semantic Scan.
 
@@ -101,7 +99,7 @@ type ScanResult struct {
 ```
 
 <a name="Scanner"></a>
-## type [Scanner](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/llmscan/llmscan.go#L82-L87>)
+## type [Scanner](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/llmscan/llmscan.go#L100-L103>)
 
 Scanner runs the bounded ReAct LLM scan over ranked surfaces.
 
@@ -112,73 +110,41 @@ type Scanner struct {
 ```
 
 <a name="New"></a>
-### func [New](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/llmscan/llmscan.go#L94>)
+### func [New](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/llmscan/llmscan.go#L106>)
 
 ```go
 func New(w *worker.Manager) *Scanner
 ```
 
-New returns a Scanner backed by the Python worker. store is the per\-scan SCS store; pass scs.New\(\) from the pipeline orchestrator.
-
-Parameters:
-
-- w: the shared Python worker manager.
+New returns a Scanner backed by the Python worker.
 
 <a name="Scanner.BackboneCheck"></a>
-### func \(\*Scanner\) [BackboneCheck](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/llmscan/llmscan.go#L143>)
+### func \(\*Scanner\) [BackboneCheck](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/llmscan/llmscan.go#L144>)
 
 ```go
 func (s *Scanner) BackboneCheck(ctx context.Context) (ScanMode, error)
 ```
 
-BackboneCheck probes the Python worker to verify the configured model can produce valid structured JSON output. Returns the ScanMode to use for the full scan.
-
-Parameters:
-
-- ctx: cancellation context.
-
-Returns:
-
-- ScanMode: ScanModeReAct if the model passes, ScanModeSinglePass if it fails.
-- error: non\-nil only for worker communication failures \(not JSON parse failures\).
+BackboneCheck probes the Python worker to verify the model can produce valid structured JSON output. Returns ScanModeReAct on success, ScanModeSinglePass on failure. Worker communication errors degrade gracefully to single\-pass.
 
 <a name="Scanner.Scan"></a>
-### func \(\*Scanner\) [Scan](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/llmscan/llmscan.go#L129>)
+### func \(\*Scanner\) [Scan](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/llmscan/llmscan.go#L161>)
 
 ```go
 func (s *Scanner) Scan(ctx context.Context, surfaces []budget.RankedSurface) ([]finding.Finding, error)
 ```
 
-Scan runs the bounded ReAct loop \(or single\-pass fallback\) for each surface and returns normalised findings.
+Scan runs the backbone check once then processes each surface in order. For each surface it queries the SCS store, runs the ReAct loop or single\-pass scan, writes inferences back to the store, and normalises the result to a Finding.
 
-Processing order:
-
-1. Backbone capability check \(one per Scan call, not per surface\).
-2. For each surface \(callee\-first order from budget.Rank\): a. Query SCS store for accumulated context from prior surfaces. b. Run the ReAct loop \(or single\-pass\) via the Python worker. c. Write inferences to the SCS store. d. Normalise the ScanResult into a finding.Finding.
-
-Uncertain surfaces are emitted as SUPPRESSED with SuppressReasonUncertain.
-
-Parameters:
-
-- ctx: cancellation context; honours deadline across all surface scans.
-- surfaces: the ranked surface list from the Token Budget Controller.
-
-Returns:
-
-- \[\]finding.Finding: one finding per surface \(uncertain → SUPPRESSED\).
-- error: non\-nil only for unrecoverable worker communication failures.
+Every surface produces exactly one finding: uncertain → SUPPRESSED\(uncertain\), safe → SUPPRESSED\(safe\), vulnerable → severity derived from confidence.
 
 <a name="Scanner.WithStore"></a>
-### func \(\*Scanner\) [WithStore](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/llmscan/llmscan.go#L104>)
+### func \(\*Scanner\) [WithStore](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/llmscan/llmscan.go#L112>)
 
 ```go
 func (s *Scanner) WithStore(store *scs.Store) *Scanner
 ```
 
-WithStore attaches a Scan Security Context Store to the Scanner. Call this before Scan when cross\-surface vulnerability detection is needed. If not called, the Scanner operates without accumulated context.
-
-Parameters:
-
-- store: the per\-scan SCS store created by the pipeline orchestrator.
+WithStore attaches a Scan Security Context Store to the Scanner. Call this before Scan when cross\-surface vulnerability detection is needed.
 
 Generated by [gomarkdoc](<https://github.com/princjef/gomarkdoc>)

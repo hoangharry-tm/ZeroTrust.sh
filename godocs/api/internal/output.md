@@ -24,7 +24,7 @@ Package output defines the event bus and renderer interface shared by all CLI ou
 
 
 <a name="Emit"></a>
-## func [Emit](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/output/event.go#L62>)
+## func [Emit](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/output/event.go#L76>)
 
 ```go
 func Emit(ch chan<- Event, e Event)
@@ -33,7 +33,7 @@ func Emit(ch chan<- Event, e Event)
 Emit sends e on ch without blocking. If ch is full the event is dropped rather than stalling the pipeline goroutine.
 
 <a name="IsTTY"></a>
-## func [IsTTY](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/output/mode.go#L10>)
+## func [IsTTY](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/output/mode.go#L24>)
 
 ```go
 func IsTTY() bool
@@ -42,7 +42,7 @@ func IsTTY() bool
 IsTTY reports whether os.Stdout is an interactive terminal.
 
 <a name="Event"></a>
-## type [Event](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/output/event.go#L49-L58>)
+## type [Event](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/output/event.go#L63-L72>)
 
 Event is a pipeline notification consumed by a Renderer. Only the fields relevant to Kind are set; the rest are zero values.
 
@@ -60,7 +60,7 @@ type Event struct {
 ```
 
 <a name="EventKind"></a>
-## type [EventKind](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/output/event.go#L13>)
+## type [EventKind](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/output/event.go#L27>)
 
 EventKind identifies what happened in the pipeline.
 
@@ -88,7 +88,7 @@ const (
 ```
 
 <a name="MinimalRenderer"></a>
-## type [MinimalRenderer](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/output/minimal.go#L32-L38>)
+## type [MinimalRenderer](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/output/minimal.go#L46-L52>)
 
 MinimalRenderer writes plain\-text progress and findings to stdout. ANSI colours are emitted only when stdout is a TTY; stripped otherwise, making this safe for CI pipelines, pipes, and file redirection.
 
@@ -115,7 +115,7 @@ type MinimalRenderer struct {
 ```
 
 <a name="NewMinimalRenderer"></a>
-### func [NewMinimalRenderer](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/output/minimal.go#L42>)
+### func [NewMinimalRenderer](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/output/minimal.go#L56>)
 
 ```go
 func NewMinimalRenderer() *MinimalRenderer
@@ -124,7 +124,7 @@ func NewMinimalRenderer() *MinimalRenderer
 NewMinimalRenderer constructs a MinimalRenderer. Color is enabled only when stdout is a real TTY.
 
 <a name="MinimalRenderer.ExitCode"></a>
-### func \(\*MinimalRenderer\) [ExitCode](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/output/minimal.go#L51>)
+### func \(\*MinimalRenderer\) [ExitCode](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/output/minimal.go#L65>)
 
 ```go
 func (r *MinimalRenderer) ExitCode() int
@@ -133,7 +133,7 @@ func (r *MinimalRenderer) ExitCode() int
 ExitCode implements Renderer.
 
 <a name="MinimalRenderer.Render"></a>
-### func \(\*MinimalRenderer\) [Render](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/output/minimal.go#L54>)
+### func \(\*MinimalRenderer\) [Render](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/output/minimal.go#L68>)
 
 ```go
 func (r *MinimalRenderer) Render(ctx context.Context, ch <-chan Event) error
@@ -142,7 +142,7 @@ func (r *MinimalRenderer) Render(ctx context.Context, ch <-chan Event) error
 Render implements Renderer. It blocks until ch is closed or ctx is cancelled.
 
 <a name="Renderer"></a>
-## type [Renderer](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/output/renderer.go#L7-L15>)
+## type [Renderer](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/output/renderer.go#L21-L29>)
 
 Renderer consumes pipeline events and drives the CLI display for one scan. Implementations: MinimalRenderer, WebRenderer.
 
@@ -159,7 +159,7 @@ type Renderer interface {
 ```
 
 <a name="ScanSummary"></a>
-## type [ScanSummary](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/output/event.go#L40-L45>)
+## type [ScanSummary](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/output/event.go#L54-L59>)
 
 ScanSummary is the final scan\-level summary emitted with EventDone.
 
@@ -173,7 +173,7 @@ type ScanSummary struct {
 ```
 
 <a name="StageSummary"></a>
-## type [StageSummary](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/output/event.go#L31-L37>)
+## type [StageSummary](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/output/event.go#L45-L51>)
 
 StageSummary carries the completion statistics for one pipeline stage.
 

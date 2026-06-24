@@ -39,7 +39,7 @@ ig.CommitScan(ctx, result.ProjectID, result.ChangeSet)
 
 
 <a name="Config"></a>
-## type [Config](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/ingestion/ingestion.go#L35-L44>)
+## type [Config](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/ingestion/ingestion.go#L49-L58>)
 
 Config holds the inputs for a single ingestion run.
 
@@ -57,7 +57,7 @@ type Config struct {
 ```
 
 <a name="Ingester"></a>
-## type [Ingester](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/ingestion/ingestion.go#L61-L64>)
+## type [Ingester](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/ingestion/ingestion.go#L75-L78>)
 
 Ingester runs MIV and DI in parallel and merges their results.
 
@@ -68,7 +68,7 @@ type Ingester struct {
 ```
 
 <a name="New"></a>
-### func [New](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/ingestion/ingestion.go#L67>)
+### func [New](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/ingestion/ingestion.go#L81>)
 
 ```go
 func New(indexer *diffindex.Indexer, verifier *miv.Verifier) *Ingester
@@ -77,7 +77,7 @@ func New(indexer *diffindex.Indexer, verifier *miv.Verifier) *Ingester
 New returns an Ingester that uses the given indexer and verifier.
 
 <a name="Ingester.CommitScan"></a>
-### func \(\*Ingester\) [CommitScan](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/ingestion/ingestion.go#L143>)
+### func \(\*Ingester\) [CommitScan](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/ingestion/ingestion.go#L157>)
 
 ```go
 func (ig *Ingester) CommitScan(ctx context.Context, projectID string, cs *diffindex.ChangeSet) error
@@ -94,7 +94,7 @@ Parameters:
 - cs: the ChangeSet from Result.ChangeSet.
 
 <a name="Ingester.Run"></a>
-### func \(\*Ingester\) [Run](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/ingestion/ingestion.go#L84>)
+### func \(\*Ingester\) [Run](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/ingestion/ingestion.go#L98>)
 
 ```go
 func (ig *Ingester) Run(ctx context.Context, cfg Config) (*Result, error)
@@ -115,7 +115,7 @@ Returns:
 - error: non\-nil only if DI fails \(MIV errors are captured in Result.MIV\).
 
 <a name="Result"></a>
-## type [Result](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/ingestion/ingestion.go#L47-L58>)
+## type [Result](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/ingestion/ingestion.go#L61-L72>)
 
 Result is the combined output of a parallel MIV \+ DI run.
 

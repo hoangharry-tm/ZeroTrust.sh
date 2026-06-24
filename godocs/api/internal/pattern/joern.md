@@ -159,7 +159,7 @@ var TaintConfigs = map[Language]TaintConfig{
 ```
 
 <a name="DetectSanitizer"></a>
-## func [DetectSanitizer](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/taint.go#L393>)
+## func [DetectSanitizer](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/taint.go#L407>)
 
 ```go
 func DetectSanitizer(lang Language, name string) bool
@@ -168,7 +168,7 @@ func DetectSanitizer(lang Language, name string) bool
 DetectSanitizer reports whether a function name is a known sanitizer for the given language.
 
 <a name="ExpandModuleScope"></a>
-## func [ExpandModuleScope](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/modules.go#L76>)
+## func [ExpandModuleScope](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/modules.go#L90>)
 
 ```go
 func ExpandModuleScope(modules []WorkingModule, g cpg.Graph, depth int)
@@ -179,7 +179,7 @@ ExpandModuleScope expands each working module's scope to include neighbour files
 Graph may be nil \(e.g. Joern not started\) — in that case scope is the module files themselves.
 
 <a name="FilterScopeByLanguage"></a>
-## func [FilterScopeByLanguage](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/modules.go#L138>)
+## func [FilterScopeByLanguage](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/modules.go#L152>)
 
 ```go
 func FilterScopeByLanguage(files []string) []string
@@ -188,7 +188,7 @@ func FilterScopeByLanguage(files []string) []string
 FilterScopeByLanguage filters a file list to include only files that match one of the supported languages. This reduces the CPG build scope to files that taint analysis can actually process.
 
 <a name="FlattenScope"></a>
-## func [FlattenScope](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/modules.go#L114>)
+## func [FlattenScope](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/modules.go#L128>)
 
 ```go
 func FlattenScope(modules []WorkingModule) []string
@@ -197,7 +197,7 @@ func FlattenScope(modules []WorkingModule) []string
 FlattenScope returns the union of all scope files across all working modules.
 
 <a name="TaintPathToFinding"></a>
-## func [TaintPathToFinding](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/normalise.go#L15>)
+## func [TaintPathToFinding](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/normalise.go#L29>)
 
 ```go
 func TaintPathToFinding(path cpg.TaintPath, lang Language) finding.Finding
@@ -206,7 +206,7 @@ func TaintPathToFinding(path cpg.TaintPath, lang Language) finding.Finding
 TaintPathToFinding converts a Joern taint path into a canonical Finding. The language is used for sink kind → CWE mapping. Returns a HIGH\-confidence finding \(0.75\) for Joern\-detected taint flows.
 
 <a name="TaintPathsToFindings"></a>
-## func [TaintPathsToFindings](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/normalise.go#L102>)
+## func [TaintPathsToFindings](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/normalise.go#L116>)
 
 ```go
 func TaintPathsToFindings(paths []cpg.TaintPath, lang Language) []finding.Finding
@@ -215,7 +215,7 @@ func TaintPathsToFindings(paths []cpg.TaintPath, lang Language) []finding.Findin
 TaintPathsToFindings converts a slice of Joern taint paths into Findings. The ID is computed after conversion using ComputeID.
 
 <a name="VersionSnapshotPath"></a>
-## func [VersionSnapshotPath](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/joern.go#L397>)
+## func [VersionSnapshotPath](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/joern.go#L411>)
 
 ```go
 func VersionSnapshotPath(projectID string) string
@@ -224,7 +224,7 @@ func VersionSnapshotPath(projectID string) string
 VersionSnapshotPath returns the version\-file path for a given project ID. The version file lives beside the CPG snapshot at \~/.zerotrust/\{projectID\}.version.
 
 <a name="BuildConfig"></a>
-## type [BuildConfig](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/cpg.go#L13-L26>)
+## type [BuildConfig](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/cpg.go#L27-L40>)
 
 BuildConfig controls how Joern builds the initial Code Property Graph.
 
@@ -246,7 +246,7 @@ type BuildConfig struct {
 ```
 
 <a name="Client"></a>
-## type [Client](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/joern.go#L120-L146>)
+## type [Client](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/joern.go#L134-L160>)
 
 Client wraps the Joern HTTP server API and optionally manages its subprocess. All exported methods are safe to call concurrently.
 
@@ -257,7 +257,7 @@ type Client struct {
 ```
 
 <a name="New"></a>
-### func [New](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/joern.go#L152>)
+### func [New](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/joern.go#L166>)
 
 ```go
 func New(opts ...Option) (*Client, error)
@@ -268,7 +268,7 @@ New returns a Client configured with the given options. Defaults: serverURL=http
 Returns ErrInvalidServerURL if the resolved URL host is not loopback.
 
 <a name="Client.BuildCPG"></a>
-### func \(\*Client\) [BuildCPG](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/cpg.go#L60>)
+### func \(\*Client\) [BuildCPG](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/cpg.go#L74>)
 
 ```go
 func (c *Client) BuildCPG(ctx context.Context, cfg BuildConfig) error
@@ -284,7 +284,7 @@ Input validation:
 - No path may contain ".." components \(ErrPathTraversal\).
 
 <a name="Client.Graph"></a>
-### func \(\*Client\) [Graph](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/joern.go#L408>)
+### func \(\*Client\) [Graph](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/joern.go#L422>)
 
 ```go
 func (c *Client) Graph() *joernGraph
@@ -293,7 +293,7 @@ func (c *Client) Graph() *joernGraph
 Graph returns a cpg.Graph backed by this Joern server instance. Queries use context.Background\(\); use GraphWithContext for cancellation support. Graph must be called after BuildCPG \(or LoadCPG \+ IncrementalPatch\) completes.
 
 <a name="Client.GraphWithContext"></a>
-### func \(\*Client\) [GraphWithContext](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/joern.go#L415>)
+### func \(\*Client\) [GraphWithContext](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/joern.go#L429>)
 
 ```go
 func (c *Client) GraphWithContext(ctx context.Context) *joernGraph
@@ -302,7 +302,7 @@ func (c *Client) GraphWithContext(ctx context.Context) *joernGraph
 GraphWithContext returns a cpg.Graph that propagates ctx to every Joern query. Use this in production so that scan cancellation \(Ctrl\-C, deadline\) aborts in\-flight CPG queries promptly rather than waiting up to queryTimeout.
 
 <a name="Client.IncrementalPatch"></a>
-### func \(\*Client\) [IncrementalPatch](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/cpg.go#L112>)
+### func \(\*Client\) [IncrementalPatch](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/cpg.go#L126>)
 
 ```go
 func (c *Client) IncrementalPatch(ctx context.Context, cfg IncrementalPatchConfig) error
@@ -313,7 +313,7 @@ IncrementalPatch applies a depth\-bounded BFS patch to the loaded CPG, updating 
 Must be called after LoadCPG. Returns ErrHubModuleDetected if any function in ChangedFunctions has ≥ HubCallerThreshold callers — in that case the caller must invoke BuildCPG for a full rebuild instead.
 
 <a name="Client.LoadCPG"></a>
-### func \(\*Client\) [LoadCPG](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/cpg.go#L172>)
+### func \(\*Client\) [LoadCPG](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/cpg.go#L186>)
 
 ```go
 func (c *Client) LoadCPG(ctx context.Context, srcPath string) error
@@ -322,7 +322,7 @@ func (c *Client) LoadCPG(ctx context.Context, srcPath string) error
 LoadCPG instructs Joern to load a previously serialized CPG snapshot. Must be called before IncrementalPatch on repeat scans.
 
 <a name="Client.Ping"></a>
-### func \(\*Client\) [Ping](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/joern.go#L279>)
+### func \(\*Client\) [Ping](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/joern.go#L293>)
 
 ```go
 func (c *Client) Ping(ctx context.Context) error
@@ -333,7 +333,7 @@ Ping verifies that the Joern HTTP server is reachable and accepting queries. Ret
 Ping sends a trivial "1\+1" expression via POST /query \+ GET /result/\{uuid\}. Joern does not expose a /ready or /health endpoint.
 
 <a name="Client.PreFlagSinks"></a>
-### func \(\*Client\) [PreFlagSinks](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/joern.go#L316>)
+### func \(\*Client\) [PreFlagSinks](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/joern.go#L330>)
 
 ```go
 func (c *Client) PreFlagSinks(ctx context.Context, files []string) error
@@ -344,7 +344,7 @@ PreFlagSinks scans source files for dangerous sink patterns using the language\-
 Scanning is best\-effort: unreadable files and unsupported languages are silently skipped. Results are stored on the Client; PreFlaggedSinks\(\) on the graph reads from the same cache.
 
 <a name="Client.PreFlaggedSinks"></a>
-### func \(\*Client\) [PreFlaggedSinks](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/joern.go#L387>)
+### func \(\*Client\) [PreFlaggedSinks](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/joern.go#L401>)
 
 ```go
 func (c *Client) PreFlaggedSinks() []cpg.TaintSink
@@ -353,7 +353,7 @@ func (c *Client) PreFlaggedSinks() []cpg.TaintSink
 PreFlaggedSinks returns the cached pre\-flagged sink list populated by PreFlagSinks. Safe to call concurrently.
 
 <a name="Client.SaveCPG"></a>
-### func \(\*Client\) [SaveCPG](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/cpg.go#L159>)
+### func \(\*Client\) [SaveCPG](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/cpg.go#L173>)
 
 ```go
 func (c *Client) SaveCPG(ctx context.Context, destPath string) error
@@ -362,7 +362,7 @@ func (c *Client) SaveCPG(ctx context.Context, destPath string) error
 SaveCPG serializes the current in\-memory CPG to destPath for use in subsequent IncrementalPatch calls on repeat scans.
 
 <a name="Client.Start"></a>
-### func \(\*Client\) [Start](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/joern.go#L184>)
+### func \(\*Client\) [Start](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/joern.go#L198>)
 
 ```go
 func (c *Client) Start(ctx context.Context) error
@@ -375,7 +375,7 @@ Start validates port availability before spawning \(ErrPortInUse if occupied\). 
 Callers must call Stop when the client is no longer needed. Returns ErrAlreadyStarted if called a second time without an intervening Stop.
 
 <a name="Client.Stop"></a>
-### func \(\*Client\) [Stop](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/joern.go#L239>)
+### func \(\*Client\) [Stop](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/joern.go#L253>)
 
 ```go
 func (c *Client) Stop(ctx context.Context) error
@@ -386,7 +386,7 @@ Stop sends SIGTERM to the managed subprocess, waits up to the configured stop ti
 Always cleans up internal state so the client can be restarted via Start.
 
 <a name="Client.Version"></a>
-### func \(\*Client\) [Version](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/joern.go#L365>)
+### func \(\*Client\) [Version](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/joern.go#L379>)
 
 ```go
 func (c *Client) Version(ctx context.Context) (string, error)
@@ -395,7 +395,7 @@ func (c *Client) Version(ctx context.Context) (string, error)
 Version queries the Joern server for its semantic version string. The result is cached on the Client after the first successful call.
 
 <a name="IncrementalPatchConfig"></a>
-## type [IncrementalPatchConfig](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/cpg.go#L29-L48>)
+## type [IncrementalPatchConfig](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/cpg.go#L43-L62>)
 
 IncrementalPatchConfig controls the depth\-5 BFS CPG patch for repeat scans.
 
@@ -423,7 +423,7 @@ type IncrementalPatchConfig struct {
 ```
 
 <a name="Language"></a>
-## type [Language](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/taint.go#L11>)
+## type [Language](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/taint.go#L25>)
 
 Language identifies a supported programming language for taint analysis.
 
@@ -443,7 +443,7 @@ const (
 ```
 
 <a name="DetectLanguage"></a>
-### func [DetectLanguage](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/taint.go#L48>)
+### func [DetectLanguage](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/taint.go#L62>)
 
 ```go
 func DetectLanguage(filePath string) (Language, bool)
@@ -452,7 +452,7 @@ func DetectLanguage(filePath string) (Language, bool)
 DetectLanguage returns the Language for a file path based on its extension. The second return value is false for unsupported extensions.
 
 <a name="DetectLanguageFromFiles"></a>
-### func [DetectLanguageFromFiles](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/taint.go#L341>)
+### func [DetectLanguageFromFiles](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/taint.go#L355>)
 
 ```go
 func DetectLanguageFromFiles(files []string) (Language, bool)
@@ -461,7 +461,7 @@ func DetectLanguageFromFiles(files []string) (Language, bool)
 DetectLanguageFromFiles returns the majority Language among the given file set. Unsupported extensions are ignored. Returns \("", false\) when no supported files are present.
 
 <a name="Option"></a>
-## type [Option](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/joern.go#L83>)
+## type [Option](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/joern.go#L97>)
 
 Option configures a Client.
 
@@ -470,7 +470,7 @@ type Option func(*Client)
 ```
 
 <a name="WithBinaryPath"></a>
-### func [WithBinaryPath](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/joern.go#L92>)
+### func [WithBinaryPath](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/joern.go#L106>)
 
 ```go
 func WithBinaryPath(path string) Option
@@ -479,7 +479,7 @@ func WithBinaryPath(path string) Option
 WithBinaryPath sets the path to the joern\-server binary used by Start. Defaults to "joern\-server" \(resolved via PATH\).
 
 <a name="WithBuildTimeout"></a>
-### func [WithBuildTimeout](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/joern.go#L105>)
+### func [WithBuildTimeout](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/joern.go#L119>)
 
 ```go
 func WithBuildTimeout(d time.Duration) Option
@@ -488,7 +488,7 @@ func WithBuildTimeout(d time.Duration) Option
 WithBuildTimeout sets the maximum duration for a full CPG build. Defaults to 120 s.
 
 <a name="WithHost"></a>
-### func [WithHost](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/joern.go#L96>)
+### func [WithHost](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/joern.go#L110>)
 
 ```go
 func WithHost(host string) Option
@@ -497,7 +497,7 @@ func WithHost(host string) Option
 WithHost sets the interface that joern\-server binds to. Must be a loopback address; defaults to 127.0.0.1.
 
 <a name="WithPingRetries"></a>
-### func [WithPingRetries](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/joern.go#L111>)
+### func [WithPingRetries](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/joern.go#L125>)
 
 ```go
 func WithPingRetries(n int) Option
@@ -506,7 +506,7 @@ func WithPingRetries(n int) Option
 WithPingRetries sets how many times Ping retries before returning ErrJoernUnreachable. Each attempt waits 500 ms. Defaults to 12 \(total 6 s\). Note: on cold start, the first successful attempt may block \~30 s internally \(Joern REPL initialization\) before returning — this counts as one retry.
 
 <a name="WithPort"></a>
-### func [WithPort](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/joern.go#L99>)
+### func [WithPort](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/joern.go#L113>)
 
 ```go
 func WithPort(port int) Option
@@ -515,7 +515,7 @@ func WithPort(port int) Option
 WithPort sets the TCP port for the subprocess. Defaults to 8080.
 
 <a name="WithQueryTimeout"></a>
-### func [WithQueryTimeout](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/joern.go#L102>)
+### func [WithQueryTimeout](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/joern.go#L116>)
 
 ```go
 func WithQueryTimeout(d time.Duration) Option
@@ -524,7 +524,7 @@ func WithQueryTimeout(d time.Duration) Option
 WithQueryTimeout sets the per\-query HTTP timeout. Defaults to 30 s.
 
 <a name="WithServerURL"></a>
-### func [WithServerURL](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/joern.go#L88>)
+### func [WithServerURL](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/joern.go#L102>)
 
 ```go
 func WithServerURL(u string) Option
@@ -533,7 +533,7 @@ func WithServerURL(u string) Option
 WithServerURL sets the base URL of the Joern HTTP server. The host must be localhost, 127.0.0.1, or ::1; any other host causes New to return ErrInvalidServerURL.
 
 <a name="WithSubprocessStderr"></a>
-### func [WithSubprocessStderr](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/joern.go#L116>)
+### func [WithSubprocessStderr](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/joern.go#L130>)
 
 ```go
 func WithSubprocessStderr(w io.Writer) Option
@@ -542,7 +542,7 @@ func WithSubprocessStderr(w io.Writer) Option
 WithSubprocessStderr routes the Joern JVM's stderr to w \(default: io.Discard\). All CPG data arrives via the HTTP API; the JVM's own output is startup classpath noise. Pass os.Stderr here when debugging Joern startup failures.
 
 <a name="SanitizerDef"></a>
-## type [SanitizerDef](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/taint.go#L34-L36>)
+## type [SanitizerDef](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/taint.go#L48-L50>)
 
 SanitizerDef describes a validation / encoding function pattern.
 
@@ -553,7 +553,7 @@ type SanitizerDef struct {
 ```
 
 <a name="ScanMode"></a>
-## type [ScanMode](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/modules.go#L12>)
+## type [ScanMode](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/modules.go#L26>)
 
 ScanMode controls the module segmentation scope.
 
@@ -572,7 +572,7 @@ const (
 ```
 
 <a name="SinkDef"></a>
-## type [SinkDef](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/taint.go#L27-L31>)
+## type [SinkDef](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/taint.go#L41-L45>)
 
 SinkDef describes a dangerous data\-consumption point.
 
@@ -585,7 +585,7 @@ type SinkDef struct {
 ```
 
 <a name="SinkDefForCall"></a>
-### func [SinkDefForCall](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/taint.go#L364>)
+### func [SinkDefForCall](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/taint.go#L378>)
 
 ```go
 func SinkDefForCall(lang Language, callName string) (SinkDef, bool)
@@ -594,7 +594,7 @@ func SinkDefForCall(lang Language, callName string) (SinkDef, bool)
 SinkDefForCall matches a CALL node name against the language's sink definitions. Returns the matched SinkDef and true, or SinkDef\{\} and false if no match.
 
 <a name="SourceDef"></a>
-## type [SourceDef](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/taint.go#L21-L24>)
+## type [SourceDef](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/taint.go#L35-L38>)
 
 SourceDef describes an untrusted\-data entry\-point pattern.
 
@@ -606,7 +606,7 @@ type SourceDef struct {
 ```
 
 <a name="SourceDefForCall"></a>
-### func [SourceDefForCall](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/taint.go#L379>)
+### func [SourceDefForCall](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/taint.go#L393>)
 
 ```go
 func SourceDefForCall(lang Language, callName string) (SourceDef, bool)
@@ -615,7 +615,7 @@ func SourceDefForCall(lang Language, callName string) (SourceDef, bool)
 SourceDefForCall matches a CALL node name against the language's source definitions. Returns the matched SourceDef and true, or SourceDef\{\} and false if no match.
 
 <a name="TaintConfig"></a>
-## type [TaintConfig](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/taint.go#L39-L44>)
+## type [TaintConfig](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/taint.go#L53-L58>)
 
 TaintConfig holds the complete taint configuration for one language.
 
@@ -629,7 +629,7 @@ type TaintConfig struct {
 ```
 
 <a name="WorkingModule"></a>
-## type [WorkingModule](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/modules.go#L22-L30>)
+## type [WorkingModule](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/modules.go#L36-L44>)
 
 WorkingModule represents a detected working module — a directory containing changed source files, plus its expanded neighbour scope.
 
@@ -646,7 +646,7 @@ type WorkingModule struct {
 ```
 
 <a name="DetectWorkingModules"></a>
-### func [DetectWorkingModules](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/modules.go#L41>)
+### func [DetectWorkingModules](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/joern/modules.go#L55>)
 
 ```go
 func DetectWorkingModules(changedFiles []string) []WorkingModule

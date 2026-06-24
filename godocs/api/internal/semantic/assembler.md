@@ -21,15 +21,44 @@ Surfaces flagged LabelSafe by the classifier with high confidence do not reach t
 
 ## Index
 
+- [Constants](<#constants>)
+- [func Batch\(contexts \[\]CallChainContext\) \[\]\[\]CallChainContext](<#Batch>)
 - [type Assembler](<#Assembler>)
   - [func New\(graph cpg.Graph, maxDepth int\) \*Assembler](<#New>)
   - [func \(a \*Assembler\) Assemble\(ctx context.Context, surfaces \[\]enrichment.EnrichedSurface\) \(\[\]CallChain, error\)](<#Assembler.Assemble>)
+  - [func \(a \*Assembler\) InjectCPGFields\(ctx context.Context, cc \*CallChainContext\) error](<#Assembler.InjectCPGFields>)
+- [type AuthGuardSchema](<#AuthGuardSchema>)
 - [type CallChain](<#CallChain>)
+- [type CallChainContext](<#CallChainContext>)
+  - [func FromCallChain\(cc CallChain\) CallChainContext](<#FromCallChain>)
+- [type CheckLocation](<#CheckLocation>)
 - [type FunctionContext](<#FunctionContext>)
+- [type LogicFlawSchema](<#LogicFlawSchema>)
+- [type TaintFlowSchema](<#TaintFlowSchema>)
+- [type UnionSchema](<#UnionSchema>)
 
+
+## Constants
+
+<a name="BatchSize"></a>BatchSize is the maximum number of surfaces per LLM prompt batch. Amortises model\-load and context\-window overhead; matches the summarizer's Python worker batch size.
+
+```go
+const BatchSize = 5
+```
+
+<a name="Batch"></a>
+## func [Batch](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/assembler/batch.go#L28>)
+
+```go
+func Batch(contexts []CallChainContext) [][]CallChainContext
+```
+
+Batch splits contexts into groups of at most BatchSize for batch inference. Each group becomes one prompt payload sent to the Python worker. The last group may be smaller than BatchSize.
+
+The input slice is not copied — each sub\-slice shares the backing array. Callers must not modify contexts concurrently with the returned batches.
 
 <a name="Assembler"></a>
-## type [Assembler](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/assembler/assembler.go#L66-L71>)
+## type [Assembler](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/assembler/assembler.go#L88-L93>)
 
 Assembler traces call chains from the CPG for uncertain surfaces.
 
@@ -40,7 +69,7 @@ type Assembler struct {
 ```
 
 <a name="New"></a>
-### func [New](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/assembler/assembler.go#L79>)
+### func [New](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/assembler/assembler.go#L101>)
 
 ```go
 func New(graph cpg.Graph, maxDepth int) *Assembler
@@ -54,7 +83,7 @@ Parameters:
 - maxDepth: maximum call chain depth \(token budget constraint; default 3\).
 
 <a name="Assembler.Assemble"></a>
-### func \(\*Assembler\) [Assemble](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/assembler/assembler.go#L101>)
+### func \(\*Assembler\) [Assemble](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/assembler/assembler.go#L123>)
 
 ```go
 func (a *Assembler) Assemble(ctx context.Context, surfaces []enrichment.EnrichedSurface) ([]CallChain, error)
@@ -62,11 +91,7 @@ func (a *Assembler) Assemble(ctx context.Context, surfaces []enrichment.Enriched
 
 Assemble builds call chains for the given surfaces in callee\-first order.
 
-For each surface:
-
-1. Query the CPG for caller functions up to maxDepth hops.
-2. For each function in the chain, extract Parameters, CallsMade, TaintSourceParams \(PDG\), and SanitizerCalls.
-3. Return the chain ordered callee\-first.
+For each surface, traverses callees depth\-first up to maxDepth hops. Functions are appended in post\-order so the deepest callee appears at index 0 and the surface function appears last. This ordering satisfies the SCSS requirement: callee inferences are written to the store before the caller is processed.
 
 Parameters:
 
@@ -78,8 +103,33 @@ Returns:
 - \[\]CallChain: one call chain per input surface, in the same order.
 - error: non\-nil if CPG queries fail.
 
+<a name="Assembler.InjectCPGFields"></a>
+### func \(\*Assembler\) [InjectCPGFields](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/assembler/inject.go#L41>)
+
+```go
+func (a *Assembler) InjectCPGFields(ctx context.Context, cc *CallChainContext) error
+```
+
+InjectCPGFields populates TaintSourceParams, SanitizerCalls, and AuthAnnotations for every frame in cc using CPG edge queries, then clears Code so raw source never reaches the LLM reasoning payload.
+
+Must be called after Assemble and before the context is serialised for the LLM.
+
+<a name="AuthGuardSchema"></a>
+## type [AuthGuardSchema](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/assembler/schema.go#L59-L64>)
+
+AuthGuardSchema captures the authorization check status for a function. CheckLocation distinguishes real auth gaps from framework\-level controls, reducing false positives on annotated endpoints.
+
+```go
+type AuthGuardSchema struct {
+    // CheckPresent is true when an authorization check was detected.
+    CheckPresent bool `json:"check_present"`
+    // CheckLocation describes where the check is performed.
+    CheckLocation CheckLocation `json:"check_location"`
+}
+```
+
 <a name="CallChain"></a>
-## type [CallChain](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/assembler/assembler.go#L54-L63>)
+## type [CallChain](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/assembler/assembler.go#L76-L85>)
 
 CallChain is the ordered call chain assembled for one uncertain surface. Functions are ordered callee\-first \(bottom\-up\): index 0 is the deepest callee, the last element is the entry\-point caller closest to the external input.
 
@@ -96,8 +146,63 @@ type CallChain struct {
 }
 ```
 
+<a name="CallChainContext"></a>
+## type [CallChainContext](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/assembler/context.go#L24-L34>)
+
+CallChainContext is the assembled multi\-function context for one surface, used by the batch assembler \(T4\) and the LLM Semantic Scan. It carries the full caller → surface → callee chain with per\-frame depth annotations.
+
+Frames are ordered callee\-first \(index 0 = deepest callee reached; last index = surface node at depth 0\). This mirrors CallChain.Functions ordering and satisfies the SCSS callee\-before\-caller write requirement.
+
+```go
+type CallChainContext struct {
+    // SurfaceID matches the enrichment.EnrichedSurface.ID.
+    SurfaceID string
+    // Frames holds the call chain in callee-first order (deepest callee first).
+    // Each frame carries its Depth relative to the surface (surface = 0).
+    Frames []FunctionContext
+    // Depth is the maximum traversal depth achieved across all frames.
+    Depth int
+    // Truncated is true when maxDepth was reached before all callees were explored.
+    Truncated bool
+}
+```
+
+<a name="FromCallChain"></a>
+### func [FromCallChain](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/assembler/context.go#L37>)
+
+```go
+func FromCallChain(cc CallChain) CallChainContext
+```
+
+FromCallChain converts a CallChain into a CallChainContext for downstream consumers.
+
+<a name="CheckLocation"></a>
+## type [CheckLocation](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/assembler/schema.go#L29>)
+
+CheckLocation classifies where \(or whether\) an authorization check occurs. Shared by AuthGuardSchema and LogicFlawSchema. Distinguishes real auth gaps from framework\-controlled access \(LLMxCPG USENIX 2025, VULSOLVER arXiv 2025\).
+
+```go
+type CheckLocation string
+```
+
+<a name="CheckFrameworkAnnotation"></a>
+
+```go
+const (
+    // CheckFrameworkAnnotation means access control is enforced by a framework
+    // annotation or decorator (e.g. @PreAuthorize, @login_required, middleware chain).
+    CheckFrameworkAnnotation CheckLocation = "framework_annotation"
+    // CheckExplicitCode means an explicit conditional (if/guard) performs the check.
+    CheckExplicitCode CheckLocation = "explicit_code"
+    // CheckMiddleware means the check is in middleware/interceptor before this function.
+    CheckMiddleware CheckLocation = "middleware"
+    // CheckUnknown means no check was detected.
+    CheckUnknown CheckLocation = "unknown"
+)
+```
+
 <a name="FunctionContext"></a>
-## type [FunctionContext](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/assembler/assembler.go#L28-L49>)
+## type [FunctionContext](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/assembler/assembler.go#L43-L71>)
 
 FunctionContext holds the CPG\-derived context for one function in the call chain.
 
@@ -111,6 +216,10 @@ type FunctionContext struct {
     File string
     // Line is the 1-based start line of the function definition.
     Line int
+    // LineEnd is the 1-based end line; 0 if not available from the CPG.
+    LineEnd int
+    // Depth is the hop count from the surface node (surface = 0, direct callee = 1, …).
+    Depth int
     // Parameters is the ordered list of parameter names for this function.
     Parameters []string
     // CallsMade is the list of function names directly called from this function.
@@ -123,6 +232,64 @@ type FunctionContext struct {
     TaintSourceParams []string
     // SanitizerCalls lists calls to functions identified as sanitizers on the taint path.
     SanitizerCalls []string
+    // AuthAnnotations lists framework-level authorization annotations or guard calls
+    // detected on this function (e.g. "@PreAuthorize", "requireAuth"). Populated by InjectCPGFields.
+    AuthAnnotations []string
+}
+```
+
+<a name="LogicFlawSchema"></a>
+## type [LogicFlawSchema](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/assembler/schema.go#L68-L75>)
+
+LogicFlawSchema captures resource ID and authorization data for IDOR detection. Populated for surfaces flagged as IDOR candidates.
+
+```go
+type LogicFlawSchema struct {
+    // ResourceIDSource is the parameter or variable name carrying the external resource ID.
+    ResourceIDSource string `json:"resource_id_source"`
+    // DBSink is the database or storage call the resource ID flows into.
+    DBSink string `json:"db_sink"`
+    // CheckLocation describes where (if anywhere) an ownership check occurs.
+    CheckLocation CheckLocation `json:"check_location"`
+}
+```
+
+<a name="TaintFlowSchema"></a>
+## type [TaintFlowSchema](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/assembler/schema.go#L44-L54>)
+
+TaintFlowSchema captures untrusted data propagation through a function.
+
+```go
+type TaintFlowSchema struct {
+    // UntrustedSources lists parameter names or call sites that introduce untrusted data.
+    UntrustedSources []string `json:"untrusted_sources"`
+    // SanitizerNodes lists call sites that sanitize or validate the tainted data.
+    SanitizerNodes []string `json:"sanitizer_nodes"`
+    // SinkType is the kind of dangerous sink the tainted data flows into
+    // (e.g. "sql", "command", "template"); empty if no sink is reached.
+    SinkType string `json:"sink_type"`
+    // TaintPropagates is true when tainted data reaches a sink without sanitization.
+    TaintPropagates bool `json:"taint_propagates"`
+}
+```
+
+<a name="UnionSchema"></a>
+## type [UnionSchema](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/assembler/schema.go#L82-L93>)
+
+UnionSchema is the XGrammar\-2 TagDispatch union covering all three vulnerability classes. A single LLM inference call populates all three sub\-schemas simultaneously; the TagDispatch discriminator tells the grammar engine which class is primary. Neither the Go engine nor the Python worker need to recompile the grammar to switch between vulnerability classes.
+
+```go
+type UnionSchema struct {
+    // Tag is the TagDispatch discriminator set by the LLM ("taint_flow", "auth_guard",
+    // or "logic_flaw"). The primary finding class has Tag set to its name; the others
+    // are still populated but treated as supplementary evidence.
+    Tag string `json:"tag"`
+    // TaintFlow describes untrusted data propagation.
+    TaintFlow TaintFlowSchema `json:"taint_flow"`
+    // AuthGuard describes authorization check presence and location.
+    AuthGuard AuthGuardSchema `json:"auth_guard"`
+    // LogicFlaw describes resource ID flow and ownership check status.
+    LogicFlaw LogicFlawSchema `json:"logic_flaw"`
 }
 ```
 

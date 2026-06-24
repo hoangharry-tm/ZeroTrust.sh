@@ -44,7 +44,7 @@ const HighConfidenceThreshold = 0.90
 ```
 
 <a name="ApplyResults"></a>
-## func [ApplyResults](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/verifier/verifier.go#L208>)
+## func [ApplyResults](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/verifier/verifier.go#L222>)
 
 ```go
 func ApplyResults(findings []finding.Finding, results []Result) []finding.Finding
@@ -61,7 +61,7 @@ Mapping:
 The returned slice has the same length and order as findings. If the lengths diverge \(caller bug\), findings is returned unchanged.
 
 <a name="ASCConfig"></a>
-## type [ASCConfig](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/verifier/verifier.go#L78-L85>)
+## type [ASCConfig](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/verifier/verifier.go#L92-L99>)
 
 ASCConfig controls Adaptive Self\-Consistency resampling.
 
@@ -77,7 +77,7 @@ type ASCConfig struct {
 ```
 
 <a name="Result"></a>
-## type [Result](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/verifier/verifier.go#L63-L75>)
+## type [Result](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/verifier/verifier.go#L77-L89>)
 
 Result carries the verifier output for one finding.
 
@@ -98,7 +98,7 @@ type Result struct {
 ```
 
 <a name="Verdict"></a>
-## type [Verdict](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/verifier/verifier.go#L50>)
+## type [Verdict](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/verifier/verifier.go#L64>)
 
 Verdict is the LLM Verifier classification for a single finding.
 
@@ -121,7 +121,7 @@ const (
 ```
 
 <a name="Verifier"></a>
-## type [Verifier](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/verifier/verifier.go#L88-L92>)
+## type [Verifier](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/verifier/verifier.go#L102-L106>)
 
 Verifier applies LLM reasoning to filter false positives from pattern findings.
 
@@ -132,7 +132,7 @@ type Verifier struct {
 ```
 
 <a name="New"></a>
-### func [New](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/verifier/verifier.go#L96>)
+### func [New](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/verifier/verifier.go#L110>)
 
 ```go
 func New(w *worker.Manager, logger *slog.Logger) *Verifier
@@ -141,7 +141,7 @@ func New(w *worker.Manager, logger *slog.Logger) *Verifier
 New returns a Verifier backed by w with default ASC settings. If logger is nil, slog.Default\(\) is used.
 
 <a name="NewWithASC"></a>
-### func [NewWithASC](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/verifier/verifier.go#L109>)
+### func [NewWithASC](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/verifier/verifier.go#L123>)
 
 ```go
 func NewWithASC(w *worker.Manager, asc ASCConfig, logger *slog.Logger) *Verifier
@@ -150,7 +150,7 @@ func NewWithASC(w *worker.Manager, asc ASCConfig, logger *slog.Logger) *Verifier
 NewWithASC returns a Verifier with custom ASC configuration. If logger is nil, slog.Default\(\) is used.
 
 <a name="Verifier.Verify"></a>
-### func \(\*Verifier\) [Verify](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/verifier/verifier.go#L126>)
+### func \(\*Verifier\) [Verify](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/pattern/verifier/verifier.go#L140>)
 
 ```go
 func (v *Verifier) Verify(ctx context.Context, findings []finding.Finding) ([]Result, error)

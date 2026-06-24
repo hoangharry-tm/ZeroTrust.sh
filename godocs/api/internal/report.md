@@ -18,7 +18,7 @@ Package report generates the self\-contained HTML vulnerability dashboard from a
 
 
 <a name="FileGroup"></a>
-## type [FileGroup](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/report/report.go#L33-L37>)
+## type [FileGroup](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/report/report.go#L47-L51>)
 
 FileGroup is a pre\-computed \(file, count\) pair used by the sidebar file list.
 
@@ -31,7 +31,7 @@ type FileGroup struct {
 ```
 
 <a name="Generator"></a>
-## type [Generator](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/report/report.go#L177-L179>)
+## type [Generator](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/report/report.go#L191-L193>)
 
 Generator produces the HTML report from a scored finding set.
 
@@ -42,7 +42,7 @@ type Generator struct {
 ```
 
 <a name="New"></a>
-### func [New](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/report/report.go#L182>)
+### func [New](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/report/report.go#L196>)
 
 ```go
 func New(outputPath string) *Generator
@@ -51,7 +51,7 @@ func New(outputPath string) *Generator
 New returns a Generator that writes its output to outputPath.
 
 <a name="Generator.Render"></a>
-### func \(\*Generator\) [Render](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/report/report.go#L188>)
+### func \(\*Generator\) [Render](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/report/report.go#L202>)
 
 ```go
 func (g *Generator) Render(w io.Writer, info ScanInfo, findings []finding.Finding) error
@@ -60,7 +60,7 @@ func (g *Generator) Render(w io.Writer, info ScanInfo, findings []finding.Findin
 Render writes the self\-contained HTML report to w. Findings are sorted by severity \(BLOCK first\) before rendering.
 
 <a name="ScanInfo"></a>
-## type [ScanInfo](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/report/report.go#L22-L30>)
+## type [ScanInfo](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/report/report.go#L36-L44>)
 
 ScanInfo holds per\-scan metadata rendered in the report header.
 

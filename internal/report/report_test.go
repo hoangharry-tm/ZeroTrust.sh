@@ -1,4 +1,4 @@
-// Copyright 2026 hoangharry-tm
+// Copyright 2026 Minh Hoang Ton
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -390,10 +390,12 @@ func TestRenderEmptyFindings(t *testing.T) {
 }
 
 func TestRenderEscapesUserContent(t *testing.T) {
+	payload := `<script>alert('xss')</script>`
 	f := finding.Finding{
 		SeverityLabel: finding.SeverityHigh,
-		Justification: `<script>alert('xss')</script>`,
-		Path:          "evil.py",
+		Justification: payload,
+		Path:          payload,
+		MatchedCode:   payload,
 		SourcePath:    finding.SourcePattern,
 		Confidence:    0.9,
 	}
@@ -402,9 +404,56 @@ func TestRenderEscapesUserContent(t *testing.T) {
 	if err := g.Render(&buf, ScanInfo{ProjectName: "xss-test", ScanMode: "Default"}, []finding.Finding{f}); err != nil {
 		t.Fatalf("Render error: %v", err)
 	}
-	// html/template must escape the raw script tag
+	// html/template must contextually escape all attacker-controlled strings.
 	if strings.Contains(buf.String(), "<script>alert") {
-		t.Error("rendered HTML must not contain unescaped <script> tag")
+		t.Error("rendered HTML must not contain unescaped <script> tag in any field")
+	}
+}
+
+func TestRenderContainsCSPHeader(t *testing.T) {
+	var buf bytes.Buffer
+	g := New("")
+	if err := g.Render(&buf, ScanInfo{ProjectName: "csp-test", ScanMode: "Default"}, nil); err != nil {
+		t.Fatalf("Render error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "Content-Security-Policy") {
+		t.Error("rendered HTML must include a Content-Security-Policy meta tag")
+	}
+}
+
+func TestDiffLinesParsesTypes(t *testing.T) {
+	fn := templateFuncs["diffLines"].(func(string) []diffLine)
+	patch := "@@ -1,3 +1,3 @@\n-old line\n+new line\n context"
+	got := fn(patch)
+	if len(got) != 4 {
+		t.Fatalf("expected 4 lines, got %d", len(got))
+	}
+	if got[0].Class != " hunk" || got[0].Sign != "@" {
+		t.Errorf("hunk line wrong: %+v", got[0])
+	}
+	if got[1].Class != " del" || got[1].Content != "old line" {
+		t.Errorf("del line wrong: %+v", got[1])
+	}
+	if got[2].Class != " add" || got[2].Content != "new line" {
+		t.Errorf("add line wrong: %+v", got[2])
+	}
+	if got[3].Class != "" || got[3].Sign != " " {
+		t.Errorf("context line wrong: %+v", got[3])
+	}
+}
+
+func TestExtractDiffFencedBlock(t *testing.T) {
+	raw := "Here is the fix:\n```diff\n--- a/foo.go\n+++ b/foo.go\n@@ -1 +1 @@\n```"
+	got := extractDiff(raw)
+	if !strings.HasPrefix(got, "---") {
+		t.Errorf("expected diff starting with ---, got %q", got)
+	}
+}
+
+func TestExtractDiffBarePrefix(t *testing.T) {
+	raw := "--- a/foo.go\n+++ b/foo.go\n@@ -1 +1 @@"
+	if got := extractDiff(raw); got != raw {
+		t.Errorf("bare diff should be returned as-is, got %q", got)
 	}
 }
 

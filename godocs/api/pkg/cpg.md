@@ -24,7 +24,7 @@ Package cpg defines the shared Code Property Graph interface consumed by both th
 
 
 <a name="CallGraph"></a>
-## type [CallGraph](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/cpg/cpg.go#L79>)
+## type [CallGraph](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/cpg/cpg.go#L93>)
 
 CallGraph maps each function identifier to the identifiers of functions it calls.
 
@@ -33,7 +33,7 @@ type CallGraph map[string][]string
 ```
 
 <a name="Edge"></a>
-## type [Edge](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/cpg/cpg.go#L69-L76>)
+## type [Edge](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/cpg/cpg.go#L83-L90>)
 
 Edge is a directed relationship between two CPG nodes.
 
@@ -49,7 +49,7 @@ type Edge struct {
 ```
 
 <a name="EdgeType"></a>
-## type [EdgeType](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/cpg/cpg.go#L23>)
+## type [EdgeType](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/cpg/cpg.go#L37>)
 
 EdgeType classifies a directed relationship between two CPG nodes.
 
@@ -70,7 +70,7 @@ const (
 ```
 
 <a name="Graph"></a>
-## type [Graph](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/cpg/cpg.go#L136-L171>)
+## type [Graph](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/cpg/cpg.go#L150-L185>)
 
 Graph is the read interface shared by both detection paths. The Joern HTTP client \(internal/pattern/joern\) is the only implementation.
 
@@ -116,7 +116,7 @@ type Graph interface {
 ```
 
 <a name="IncrementalPatchConfig"></a>
-## type [IncrementalPatchConfig](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/cpg/cpg.go#L120-L129>)
+## type [IncrementalPatchConfig](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/cpg/cpg.go#L134-L143>)
 
 IncrementalPatchConfig controls the depth\-5 BFS CPG patch for repeat scans. Depth 5 is the taint\-correctness bound from Li et al. \(ICSE 2024\) and Effendi et al. \(SOAP/PLDI 2025\). Hub\-module fallback triggers when any changed function has ≥50 callers.
 
@@ -134,7 +134,7 @@ type IncrementalPatchConfig struct {
 ```
 
 <a name="Node"></a>
-## type [Node](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/cpg/cpg.go#L51-L66>)
+## type [Node](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/cpg/cpg.go#L65-L80>)
 
 Node is a single vertex in the Code Property Graph.
 
@@ -158,7 +158,7 @@ type Node struct {
 ```
 
 <a name="NodeType"></a>
-## type [NodeType](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/cpg/cpg.go#L7>)
+## type [NodeType](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/cpg/cpg.go#L21>)
 
 NodeType classifies a CPG vertex by its structural role.
 
@@ -183,7 +183,7 @@ const (
 ```
 
 <a name="SinkKind"></a>
-## type [SinkKind](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/cpg/cpg.go#L36>)
+## type [SinkKind](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/cpg/cpg.go#L50>)
 
 SinkKind categorises a dangerous sink node found during pre\-flagging. Tree\-sitter pre\-flags these before the CPG build so they are always in scope.
 
@@ -207,7 +207,7 @@ const (
 ```
 
 <a name="TaintPath"></a>
-## type [TaintPath](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/cpg/cpg.go#L104-L114>)
+## type [TaintPath](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/cpg/cpg.go#L118-L128>)
 
 TaintPath is a single source\-to\-sink data\-flow path returned by taint analysis.
 
@@ -226,7 +226,7 @@ type TaintPath struct {
 ```
 
 <a name="TaintSink"></a>
-## type [TaintSink](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/cpg/cpg.go#L93-L101>)
+## type [TaintSink](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/cpg/cpg.go#L107-L115>)
 
 TaintSink describes a dangerous data\-consumption point.
 
@@ -243,7 +243,7 @@ type TaintSink struct {
 ```
 
 <a name="TaintSource"></a>
-## type [TaintSource](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/cpg/cpg.go#L82-L90>)
+## type [TaintSource](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/cpg/cpg.go#L96-L104>)
 
 TaintSource describes an untrusted data entry point.
 

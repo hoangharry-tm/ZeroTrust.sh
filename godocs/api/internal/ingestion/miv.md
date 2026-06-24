@@ -47,7 +47,7 @@ var ErrNotGGUF = errors.New("not a GGUF file")
 ```
 
 <a name="RegistryEntry"></a>
-## type [RegistryEntry](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/ingestion/miv/miv.go#L88-L97>)
+## type [RegistryEntry](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/ingestion/miv/miv.go#L102-L111>)
 
 RegistryEntry is one record in the signed JSON model hash registry.
 
@@ -76,7 +76,7 @@ type RegistryEntry struct {
 ```
 
 <a name="Result"></a>
-## type [Result](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/ingestion/miv/miv.go#L65-L76>)
+## type [Result](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/ingestion/miv/miv.go#L79-L90>)
 
 Result is returned by Verify.
 
@@ -96,7 +96,7 @@ type Result struct {
 ```
 
 <a name="Status"></a>
-## type [Status](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/ingestion/miv/miv.go#L52>)
+## type [Status](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/ingestion/miv/miv.go#L66>)
 
 Status is the tiered verification outcome.
 
@@ -119,7 +119,7 @@ const (
 ```
 
 <a name="Verifier"></a>
-## type [Verifier](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/ingestion/miv/miv.go#L100-L106>)
+## type [Verifier](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/ingestion/miv/miv.go#L114-L120>)
 
 Verifier hashes the GGUF model file and compares it against the signed registry.
 
@@ -130,7 +130,7 @@ type Verifier struct {
 ```
 
 <a name="New"></a>
-### func [New](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/ingestion/miv/miv.go#L116>)
+### func [New](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/ingestion/miv/miv.go#L130>)
 
 ```go
 func New(registryPath, publicKeyPath string, logger *slog.Logger) *Verifier
@@ -145,7 +145,7 @@ Parameters:
 - logger: structured logger for verification lifecycle events.
 
 <a name="Verifier.LoadRegistry"></a>
-### func \(\*Verifier\) [LoadRegistry](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/ingestion/miv/registry.go#L44>)
+### func \(\*Verifier\) [LoadRegistry](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/ingestion/miv/registry.go#L58>)
 
 ```go
 func (v *Verifier) LoadRegistry(ctx context.Context) ([]RegistryEntry, error)
@@ -170,7 +170,7 @@ Returns:
 - error: non\-nil if the file is unreadable or the ECDSA signature fails.
 
 <a name="Verifier.Verify"></a>
-### func \(\*Verifier\) [Verify](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/ingestion/miv/miv.go#L145>)
+### func \(\*Verifier\) [Verify](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/ingestion/miv/miv.go#L159>)
 
 ```go
 func (v *Verifier) Verify(ctx context.Context, modelPath string) (*Result, error)

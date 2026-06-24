@@ -1,6 +1,7 @@
 BINARY        := zerotrust
 BUILD_DIR     := build
 MODULE        := github.com/hoangharry-tm/zerotrust
+GO_PKGS       := ./cmd/... ./internal/... ./pkg/...
 GOTESTSUM     := $(shell go env GOPATH)/bin/gotestsum
 # Engine image registry — override for local dev forks
 DOCKER_REGISTRY := ghcr.io/hoangharry-tm
@@ -12,14 +13,14 @@ JOERN_VERSION := v4.0.550
 # Homebrew installs as "joern" (uses --server flag mode, not a separate joern-server binary).
 JOERN_BIN     := $(shell command -v joern 2>/dev/null || echo "$(HOME)/bin/joern/joern")
 
-.PHONY: build test test-rules test-integration joern-check lint worker-install demo clean docker-build docker-push
+.PHONY: build test test-rules test-integration joern-check lint worker-install demo demo-report clean docker-build docker-push
 
 build:
 	@mkdir -p $(BUILD_DIR)
 	go build -o $(BUILD_DIR)/$(BINARY) ./cmd/zerotrust
 
 test:
-	$(GOTESTSUM) --format testdox --format-icons codicons --format-hide-empty-pkg -- ./...
+	$(GOTESTSUM) --format testdox --format-icons codicons --format-hide-empty-pkg -- $(GO_PKGS)
 
 test-rules:
 	@echo "Running OpenGrep rule tests..."
@@ -38,13 +39,16 @@ joern-check:
 	@echo "Joern pinned version: $(JOERN_VERSION)"
 
 lint:
-	golangci-lint run ./...
+	golangci-lint run $(GO_PKGS)
 
 worker-install:
 	cd worker && uv sync --extra dev
 
 demo:
 	@./scripts/pipeline/run_demo.sh
+
+demo-report:
+	go run ./cmd/zerotrust --mock --report $(BUILD_DIR)/report.html
 
 docker-build:
 	@mkdir -p $(BUILD_DIR)

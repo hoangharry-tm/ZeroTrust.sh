@@ -1,4 +1,4 @@
-// Copyright 2026 hoangharry-tm
+// Copyright 2026 Minh Hoang Ton
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -39,6 +39,21 @@
 package budget
 
 import "github.com/hoangharry-tm/zerotrust/internal/semantic/summarizer"
+
+// Input bundles a semantic summary with the ranking metadata that the Summarizer
+// stage cannot carry: CVSS score, classifier confidence, and call-graph depth.
+// Callers construct Inputs from the classifier.ClassifiedSurface and summarizer.Summary.
+type Input struct {
+	// Summary is the structured semantic output from the Summarizer stage.
+	Summary summarizer.Summary
+	// CVSSScore is the highest CVSS v3 score among CVE matches for this surface (0.0–10.0).
+	CVSSScore float64
+	// ClassifierConfidence is the UniXcoder confidence for the winning label (0.0–1.0).
+	ClassifierConfidence float64
+	// CallGraphDepth is the hop count from the nearest external-input node (≥ 1).
+	// Surfaces with depth 0 (unknown) are treated as depth 1 by the ranker.
+	CallGraphDepth int
+}
 
 // RankedSurface is a summarized surface with its computed priority score.
 // Passed to the LLM Semantic Scan in descending priority order.
@@ -93,58 +108,17 @@ func New(tokenCap int, w1, w2, w3 float64) *Controller {
 	return &Controller{tokenCap: tokenCap, w1: w1, w2: w2, w3: w3}
 }
 
-// Rank sorts summaries by priority (descending) and partitions them into ranked
+// Rank sorts inputs by priority (descending) and partitions them into ranked
 // (fits within token cap) and exhausted (exceeds cap) slices.
 //
 // The caller must emit a SUPPRESSED finding with SuppressReasonBudgetExhausted
 // for each entry in the exhausted slice — they must never be silently dropped.
-//
-// Parameters:
-//   - summaries: the full list of semantic summaries from the Summarizer stage.
-//
-// Returns:
-//   - ranked: surfaces that fit within tokenCap, ordered by descending priority.
-//   - exhausted: surfaces that would exceed tokenCap, in the original order.
-func (c *Controller) Rank(summaries []summarizer.Summary) (ranked []RankedSurface, exhausted []summarizer.Summary) {
-	// implemented in G3.M3.4
-	return nil, nil
+func (c *Controller) Rank(inputs []Input) (ranked []RankedSurface, exhausted []Input) {
+	ranked, exhausted, _ = c.rank(inputs)
+	return
 }
 
-// RankWithStats is identical to Rank but also returns a Stats summary describing
-// the partitioning decision. Use this when the scan report should include
-// token budget utilisation metadata.
-//
-// Parameters:
-//   - summaries: the full list of semantic summaries from the Summarizer stage.
-//
-// Returns:
-//   - ranked: surfaces within the token cap.
-//   - exhausted: surfaces beyond the cap.
-//   - stats: partitioning statistics.
-func (c *Controller) RankWithStats(summaries []summarizer.Summary) (ranked []RankedSurface, exhausted []summarizer.Summary, stats Stats) {
-	// implemented in G3.M3.4
-	return nil, nil, Stats{}
-}
-
-// estimateTokens returns the estimated LLM prompt token cost for one summary.
-// The estimate is based on field string lengths multiplied by a tokens-per-char
-// approximation (~0.3 tokens/char for English technical text).
-//
-// Parameters:
-//   - s: the summary whose token cost is to be estimated.
-func estimateTokens(s summarizer.Summary) int {
-	// implemented in G3.M3.4
-	return 0
-}
-
-// computePriority applies the ranking formula to a single surface.
-//
-// Parameters:
-//   - cvss: normalised CVSS score (cvss_raw / 10.0).
-//   - classifierConf: the UniXcoder classifier confidence (0.0–1.0).
-//   - callGraphDepth: hop count from the nearest external-input node (≥ 1).
-//   - w1, w2, w3: the Controller's ranking weights.
-func computePriority(cvss, classifierConf float64, callGraphDepth int, w1, w2, w3 float64) float64 {
-	// implemented in G3.M3.4
-	return 0
+// RankWithStats is identical to Rank but also returns a Stats summary.
+func (c *Controller) RankWithStats(inputs []Input) (ranked []RankedSurface, exhausted []Input, stats Stats) {
+	return c.rank(inputs)
 }

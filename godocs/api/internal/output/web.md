@@ -27,7 +27,7 @@ The server listens on a random free port and shuts down cleanly after the pipeli
 
 
 <a name="WebRenderer"></a>
-## type [WebRenderer](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/output/web/renderer.go#L34-L36>)
+## type [WebRenderer](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/output/web/renderer.go#L48-L50>)
 
 WebRenderer implements output.Renderer by serving the live HTML dashboard.
 
@@ -38,7 +38,7 @@ type WebRenderer struct {
 ```
 
 <a name="NewRenderer"></a>
-### func [NewRenderer](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/output/web/renderer.go#L39>)
+### func [NewRenderer](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/output/web/renderer.go#L53>)
 
 ```go
 func NewRenderer() *WebRenderer
@@ -47,7 +47,7 @@ func NewRenderer() *WebRenderer
 NewRenderer returns a WebRenderer that selects a random free port at Render time.
 
 <a name="WebRenderer.ExitCode"></a>
-### func \(\*WebRenderer\) [ExitCode](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/output/web/renderer.go#L44>)
+### func \(\*WebRenderer\) [ExitCode](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/output/web/renderer.go#L58>)
 
 ```go
 func (r *WebRenderer) ExitCode() int
@@ -56,7 +56,7 @@ func (r *WebRenderer) ExitCode() int
 ExitCode implements output.Renderer.
 
 <a name="WebRenderer.Render"></a>
-### func \(\*WebRenderer\) [Render](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/output/web/renderer.go#L48>)
+### func \(\*WebRenderer\) [Render](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/output/web/renderer.go#L62>)
 
 ```go
 func (r *WebRenderer) Render(ctx context.Context, ch <-chan output.Event) error

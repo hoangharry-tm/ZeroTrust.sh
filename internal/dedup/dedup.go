@@ -1,4 +1,4 @@
-// Copyright 2026 hoangharry-tm
+// Copyright 2026 Minh Hoang Ton
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -40,13 +40,16 @@
 package dedup
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"math"
 	"path/filepath"
 	"strings"
 
 	"github.com/hoangharry-tm/zerotrust/internal/finding"
+	"github.com/hoangharry-tm/zerotrust/internal/worker"
 )
 
 // Strategy identifies which dedup gate resolved a duplicate pair.
@@ -84,31 +87,56 @@ type Stats struct {
 	AutoSuppressedCount int
 }
 
-// Layer deduplicates and scores the merged finding set from both detection paths.
-type Layer struct{}
+// embeddingThreshold is the cosine similarity above which two findings are
+// considered duplicates by Gate 3 (MiniLM-L6-v2 embedding).
+const embeddingThreshold = 0.95
 
-// New returns a Layer ready to process findings.
+// astEditThreshold is the token-sequence similarity above which Gate 4
+// (AST edit distance) classifies two findings as duplicates.
+const astEditThreshold = 0.85
+
+// embeddingNearMiss is the lower bound of the "near-miss" range that triggers
+// Gate 4 escalation when Gate 3 similarity is below embeddingThreshold.
+const embeddingNearMiss = 0.85
+
+// Layer deduplicates and scores the merged finding set from both detection paths.
+type Layer struct {
+	// w is the Python worker used for Gate 3 (embedding) and Gate 4 (AST edit).
+	// nil → gates 3 and 4 are skipped.
+	w *worker.Manager
+	// root is the project root used to load .zerotrust-suppressions.yaml.
+	// Empty string → sidecar not loaded.
+	root string
+}
+
+// New returns a Layer ready to process findings (Gates 3+4 skipped; no sidecar).
 func New() *Layer { return &Layer{} }
 
-// Process deduplicates findings through Gates 1 and 2, applies cross-path
-// confidence boost, derives SeverityLabel, and auto-suppresses test/framework
-// findings.
-//
-// Gates 3 (embedding) and 4 (AST edit distance) are stubs until G4.M4.1.
+// NewWithRoot returns a Layer that loads the .zerotrust-suppressions.yaml sidecar
+// from root on each Process call.
+func NewWithRoot(root string) *Layer { return &Layer{root: root} }
+
+// NewWithWorker returns a Layer that uses w for Gate 3 (embedding similarity)
+// and Gate 4 (AST edit distance), and loads the sidecar from root.
+func NewWithWorker(w *worker.Manager, root string) *Layer { return &Layer{w: w, root: root} }
+
+// Process deduplicates findings through all active gates, applies cross-path
+// confidence boost, SSVC sourcing, and severity derivation.
 //
 // Parameters:
+//   - ctx: used for SSVC network calls and (if worker present) embedding IPC.
 //   - findings: merged finding list from both paths (Path A + Path B).
-func (l *Layer) Process(findings []finding.Finding) ([]finding.Finding, error) {
-	out, _, _, err := l.process(findings)
+func (l *Layer) Process(ctx context.Context, findings []finding.Finding) ([]finding.Finding, error) {
+	out, _, _, err := l.process(ctx, findings)
 	return out, err
 }
 
 // ProcessWithStats is identical to Process but also returns dedup statistics.
-func (l *Layer) ProcessWithStats(findings []finding.Finding) ([]finding.Finding, []MergeRecord, Stats, error) {
-	return l.process(findings)
+func (l *Layer) ProcessWithStats(ctx context.Context, findings []finding.Finding) ([]finding.Finding, []MergeRecord, Stats, error) {
+	return l.process(ctx, findings)
 }
 
-func (l *Layer) process(input []finding.Finding) ([]finding.Finding, []MergeRecord, Stats, error) {
+func (l *Layer) process(ctx context.Context, input []finding.Finding) ([]finding.Finding, []MergeRecord, Stats, error) {
 	stats := Stats{InputCount: len(input)}
 	var records []MergeRecord
 
@@ -151,11 +179,27 @@ func (l *Layer) process(input []finding.Finding) ([]finding.Finding, []MergeReco
 		}
 	}
 
-	// ── Cross-path boost + severity derivation ────────────────────────────────
-	out := make([]finding.Finding, 0, len(survivors2))
-	for _, f := range survivors2 {
+	// ── Gate 3: embedding cosine similarity (MiniLM-L6-v2) ───────────────────
+	survivors3, recs3, mergeCount3, nearMissPairs := l.gate3(ctx, survivors2)
+	records = append(records, recs3...)
+	stats.MergeCount += mergeCount3
+
+	// ── Gate 4: AST token edit distance (last resort; near-miss pairs only) ──
+	survivors4, recs4, mergeCount4 := l.gate4(ctx, survivors3, nearMissPairs)
+	records = append(records, recs4...)
+	stats.MergeCount += mergeCount4
+
+	// ── SSVC sourcing + cross-path boost + severity derivation ────────────────
+	sc := LoadSidecar(l.root)
+
+	out := make([]finding.Finding, 0, len(survivors4))
+	for _, f := range survivors4 {
+		f = DeriveSSVC(ctx, f)
 		f = applyBoostAndScore(f)
 		f = AutoSuppress(f)
+		if f.SeverityLabel != finding.SeveritySuppressed {
+			f = sc.Apply(f)
+		}
 		if f.SeverityLabel == finding.SeveritySuppressed {
 			stats.AutoSuppressedCount++
 		}
@@ -164,6 +208,158 @@ func (l *Layer) process(input []finding.Finding) ([]finding.Finding, []MergeReco
 
 	stats.OutputCount = len(out)
 	return out, records, stats, nil
+}
+
+// gate3 runs embedding cosine similarity on findings with MatchedCode.
+// Returns: survivors after gate 3, merge records, merge count, and near-miss
+// index pairs (0.85 ≤ sim < 0.95) that gate 4 should evaluate.
+func (l *Layer) gate3(ctx context.Context, survivors []finding.Finding) (
+	[]finding.Finding, []MergeRecord, int, [][2]int,
+) {
+	if l.w == nil || len(survivors) == 0 {
+		return survivors, nil, 0, nil
+	}
+
+	// Collect codes for findings that have MatchedCode.
+	codeIdx := make([]int, 0, len(survivors)) // idx into survivors for each code
+	codes := make([]string, 0, len(survivors))
+	for i, f := range survivors {
+		if f.MatchedCode != "" {
+			codeIdx = append(codeIdx, i)
+			codes = append(codes, f.MatchedCode)
+		}
+	}
+	if len(codes) == 0 {
+		return survivors, nil, 0, nil
+	}
+
+	vecs, err := l.w.Embed(ctx, codes)
+	if err != nil || len(vecs) != len(codes) {
+		// Best-effort: skip gate 3 on worker error.
+		return survivors, nil, 0, nil
+	}
+
+	// Pairwise cosine similarity — O(N²) on gate-2 survivors (expected N < 50).
+	merged := make([]bool, len(survivors))
+	var records []MergeRecord
+	var mergeCount int
+	var nearMiss [][2]int // indices into survivors
+
+	for a := 0; a < len(codeIdx); a++ {
+		if merged[codeIdx[a]] {
+			continue
+		}
+		for b := a + 1; b < len(codeIdx); b++ {
+			if merged[codeIdx[b]] {
+				continue
+			}
+			sim := cosineSimilarity(vecs[a], vecs[b])
+			si, sj := codeIdx[a], codeIdx[b]
+			switch {
+			case sim >= embeddingThreshold:
+				m, rec := merge(survivors[si], survivors[sj], StrategyEmbedding)
+				survivors[si] = m
+				records = append(records, rec)
+				merged[sj] = true
+				mergeCount++
+			case sim >= embeddingNearMiss:
+				nearMiss = append(nearMiss, [2]int{si, sj})
+			}
+		}
+	}
+
+	out := make([]finding.Finding, 0, len(survivors))
+	for i, f := range survivors {
+		if !merged[i] {
+			out = append(out, f)
+		}
+	}
+	return out, records, mergeCount, nearMiss
+}
+
+// gate4 evaluates near-miss pairs (identified by gate3) using AST token edit distance.
+// Indices in nearMiss refer to the original survivors slice before gate3 filtering;
+// gate4 receives the post-gate3 survivors and a position map to handle shifts.
+func (l *Layer) gate4(ctx context.Context, survivors []finding.Finding, nearMiss [][2]int) (
+	[]finding.Finding, []MergeRecord, int,
+) {
+	if l.w == nil || len(nearMiss) == 0 {
+		return survivors, nil, 0
+	}
+
+	merged := make([]bool, len(survivors))
+	var records []MergeRecord
+	var mergeCount int
+
+	// Full pairwise on post-gate3 survivors.
+	// Gate4 only runs when nearMiss is non-empty (~5% of scans), so the O(N²)
+	// cost over the already-small survivor set is acceptable.
+	for i := 0; i < len(survivors); i++ {
+		if merged[i] || survivors[i].MatchedCode == "" {
+			continue
+		}
+		for j := i + 1; j < len(survivors); j++ {
+			if merged[j] || survivors[j].MatchedCode == "" {
+				continue
+			}
+			lang := langFromPath(survivors[i].Path)
+			sim, err := l.w.ASTEditSimilarity(ctx, survivors[i].MatchedCode, survivors[j].MatchedCode, lang)
+			if err != nil {
+				continue
+			}
+			if sim >= astEditThreshold {
+				m, rec := merge(survivors[i], survivors[j], StrategyEditDistance)
+				survivors[i] = m
+				records = append(records, rec)
+				merged[j] = true
+				mergeCount++
+			}
+		}
+	}
+
+	out := make([]finding.Finding, 0, len(survivors))
+	for i, f := range survivors {
+		if !merged[i] {
+			out = append(out, f)
+		}
+	}
+	return out, records, mergeCount
+}
+
+// cosineSimilarity returns the cosine similarity between two float64 vectors.
+func cosineSimilarity(a, b []float64) float64 {
+	if len(a) != len(b) || len(a) == 0 {
+		return 0
+	}
+	var dot, na, nb float64
+	for i := range a {
+		dot += a[i] * b[i]
+		na += a[i] * a[i]
+		nb += b[i] * b[i]
+	}
+	denom := math.Sqrt(na) * math.Sqrt(nb)
+	if denom == 0 {
+		return 0
+	}
+	return dot / denom
+}
+
+// langFromPath returns the tree-sitter language name for a file path.
+func langFromPath(path string) string {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".py":
+		return "python"
+	case ".java":
+		return "java"
+	case ".go":
+		return "go"
+	case ".js", ".mjs":
+		return "javascript"
+	case ".ts", ".tsx":
+		return "typescript"
+	default:
+		return "python" // ponytail: fallback; tree-sitter-languages will error gracefully
+	}
 }
 
 // gate1Key returns the Gate 1 dedup key for f.
@@ -212,12 +408,39 @@ func merge(a, b finding.Finding, strategy Strategy) (finding.Finding, MergeRecor
 	return winner, rec
 }
 
-// applyBoostAndScore applies the cross-path +15 pp boost when SourcePath == BOTH,
-// then derives SeverityLabel from the (possibly boosted) Confidence.
+// applyBoostAndScore applies scoring adjustments in order:
+//  1. Cross-path +15 pp boost (SourcePath == BOTH).
+//  2. CVE CVSS floor: if f.CVSS > 0, confidence = max(cvss/10.0, confidence).
+//  3. SSVC boost: Active exploitation +0.10; Automatable=Yes +0.05; capped at 1.0.
+//  4. Path A bypass MEDIUM floor: PATTERN findings cannot fall below 0.60.
+//  5. Derive SeverityLabel from final confidence.
 func applyBoostAndScore(f finding.Finding) finding.Finding {
-	if f.SourcePath == finding.SourceBoth {
+	// 1. Cross-path boost (+15 pp, capped at 1.0; skipped when already BLOCK).
+	if f.SourcePath == finding.SourceBoth && f.Confidence < 0.92 {
 		f.Confidence = min(f.Confidence+0.15, 1.0)
 	}
+
+	// 2. CVE CVSS floor.
+	if f.CVSS > 0 {
+		floor := f.CVSS / 10.0
+		if floor > f.Confidence {
+			f.Confidence = floor
+		}
+	}
+
+	// 3. SSVC boost.
+	if f.SSVC.Exploitation == "Active" {
+		f.Confidence = min(f.Confidence+0.10, 1.0)
+	}
+	if f.SSVC.Automatable == "Yes" {
+		f.Confidence = min(f.Confidence+0.05, 1.0)
+	}
+
+	// 4. Path A bypass MEDIUM floor.
+	if f.SourcePath == finding.SourcePattern && f.Confidence < 0.60 {
+		f.Confidence = 0.60
+	}
+
 	f.SeverityLabel = DeriveSeverityLabel(f.Confidence)
 	return f
 }
@@ -272,15 +495,8 @@ func AutoSuppress(f finding.Finding) finding.Finding {
 		}
 	}
 
-	return f
-}
-
-// DeriveSSVC populates the SSVC dimensions on a finding using CVE lookup
-// tables (CISA KEV, EPSS, NVD CVSS, CWE automatable/impact maps).
-// Stubs until G4.M4.1 when Trivy enrichment is integrated.
-func DeriveSSVC(f finding.Finding) finding.Finding {
-	// implemented in G4.M4.1
-	return f
+	// Framework-safe path patterns (Django migrations, Spring Security config, etc.).
+	return applyFrameworkSafe(f)
 }
 
 // DeriveSeverityLabel maps a Confidence score to the corresponding SeverityLabel

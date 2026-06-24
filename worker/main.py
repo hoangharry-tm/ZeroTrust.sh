@@ -13,7 +13,7 @@ import logging
 import sys
 from typing import Any
 
-from handlers import classify, llm_scan, llm_verify, summarize
+from handlers import ast_edit, classify, embed, llm_scan, llm_verify, summarize
 
 logging.basicConfig(
     level=logging.INFO,
@@ -27,6 +27,8 @@ _HANDLERS = {
     "classify": classify.handle,
     "summarize": summarize.handle,
     "llm_scan": llm_scan.handle,
+    "embed": embed.handle,
+    "ast_edit": ast_edit.handle,
 }
 
 

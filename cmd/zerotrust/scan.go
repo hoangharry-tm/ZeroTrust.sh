@@ -1,4 +1,4 @@
-// Copyright 2026 hoangharry-tm
+// Copyright 2026 Minh Hoang Ton
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -218,7 +218,7 @@ func newPipeline(ctx context.Context, cfg ScanConfig) (*pipeline, error) {
 	store := scs.New()
 
 	// Output
-	dd := dedup.New()
+	dd := dedup.NewWithRoot(cfg.Target)
 	pg := patch.New(cfg.Target)
 	rg := report.New(cfg.ReportPath)
 
@@ -409,7 +409,7 @@ func (p *pipeline) run(ctx context.Context, events chan<- output.Event) error {
 
 	// ── 4. DEDUP ──────────────────────────────────────────────────────────────
 	output.Emit(events, output.Event{Kind: output.EventStageStart, Stage: "dedup"})
-	scored, err := p.dd.Process(allFindings)
+	scored, err := p.dd.Process(ctx, allFindings)
 	if err != nil {
 		return fmt.Errorf("dedup: %w", err)
 	}

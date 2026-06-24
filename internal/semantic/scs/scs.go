@@ -1,4 +1,4 @@
-// Copyright 2026 hoangharry-tm
+// Copyright 2026 Minh Hoang Ton
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -33,7 +33,9 @@
 package scs
 
 import (
+	"cmp"
 	"context"
+	"slices"
 	"sync"
 )
 
@@ -138,13 +140,32 @@ func (s *Store) RegisterNeighbours(surfaceID string, neighbourIDs []string) {
 
 // Get retrieves accumulated inferences relevant to the given query.
 // Results include inferences for the surface itself and all registered neighbours.
+// If NeighbourIDs is empty the store uses its registered CPG-neighbour graph.
 // Inferences are ordered by descending Confidence; MaxResults is honoured if > 0.
-func (s *Store) Get(ctx context.Context, q Query) (*Result, error) {
+func (s *Store) Get(_ context.Context, q Query) (*Result, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	_ = q
-	// implemented in G3.M3.4
-	return &Result{}, nil
+
+	neighbours := q.NeighbourIDs
+	if len(neighbours) == 0 {
+		neighbours = s.neighbours[q.SurfaceID]
+	}
+
+	// pre-size: surface inferences + one bucket per neighbour (rough estimate)
+	infs := make([]Inference, 0, len(s.byID[q.SurfaceID])+len(neighbours)*2)
+	infs = append(infs, s.byID[q.SurfaceID]...)
+	for _, nID := range neighbours {
+		infs = append(infs, s.byID[nID]...)
+	}
+
+	slices.SortFunc(infs, func(a, b Inference) int {
+		return cmp.Compare(b.Confidence, a.Confidence) // descending
+	})
+
+	if q.MaxResults > 0 && len(infs) > q.MaxResults {
+		infs = infs[:q.MaxResults]
+	}
+	return &Result{Inferences: infs}, nil
 }
 
 // Snapshot returns a read-only copy of all inferences for debugging and test assertions.

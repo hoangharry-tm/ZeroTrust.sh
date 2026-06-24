@@ -34,7 +34,9 @@ Classifier: vulnerable  → Escalate=true,  EscalateReason="vulnerable" (→ LLM
 
 ## Index
 
+- [Constants](<#constants>)
 - [func IsSupported\(lang string\) bool](<#IsSupported>)
+- [type ClassifiedSurface](<#ClassifiedSurface>)
 - [type EscalateReason](<#EscalateReason>)
 - [type Gate](<#Gate>)
   - [func New\(w \*worker.Manager, logger \*slog.Logger\) \*Gate](<#New>)
@@ -42,10 +44,27 @@ Classifier: vulnerable  → Escalate=true,  EscalateReason="vulnerable" (→ LLM
   - [func \(g \*Gate\) Classify\(ctx context.Context, surfaces \[\]enrichment.EnrichedSurface\) \(\[\]Result, error\)](<#Gate.Classify>)
 - [type Label](<#Label>)
 - [type Result](<#Result>)
+- [type RouteResult](<#RouteResult>)
+  - [func Route\(surfaces \[\]ClassifiedSurface\) RouteResult](<#Route>)
+  - [func RouteAndLog\(surfaces \[\]ClassifiedSurface, logger \*slog.Logger\) RouteResult](<#RouteAndLog>)
 
+
+## Constants
+
+<a name="ThresholdSafe"></a>ThresholdSafe is the minimum confidence required for a "safe" verdict to dismiss a surface without LLM escalation. Below this the verdict is treated as "uncertain" and escalates to the LLM tier \(high\-recall guarantee\). A\-18: conservative until CVEFixes multi\-language benchmark is complete.
+
+```go
+const ThresholdSafe = 0.20
+```
+
+<a name="ThresholdVulnerable"></a>ThresholdVulnerable is the minimum confidence at which a classifier verdict of "vulnerable" is accepted without down\-grading to "uncertain". A\-18: conservative until CVEFixes multi\-language benchmark is complete.
+
+```go
+const ThresholdVulnerable = 0.80
+```
 
 <a name="IsSupported"></a>
-## func [IsSupported](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/classifier/classifier.go#L94>)
+## func [IsSupported](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/classifier/classifier.go#L119>)
 
 ```go
 func IsSupported(lang string) bool
@@ -53,8 +72,25 @@ func IsSupported(lang string) bool
 
 IsSupported reports whether lang is handled by the UniXcoder classifier. Unsupported languages bypass the classifier and route directly to the LLM tier. lang is normalised to lowercase before the lookup.
 
+<a name="ClassifiedSurface"></a>
+## type [ClassifiedSurface](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/classifier/router.go#L27-L35>)
+
+ClassifiedSurface pairs an EnrichedSurface result with the classifier verdict.
+
+```go
+type ClassifiedSurface struct {
+    // Result is the classifier output for this surface.
+    Result
+    // File is the source file path (copied from the surface for routing decisions).
+    File string
+    // BypassedClassifier is true when the classifier was skipped entirely because
+    // the source language is not supported (Rust, Kotlin, Swift, C#).
+    BypassedClassifier bool
+}
+```
+
 <a name="EscalateReason"></a>
-## type [EscalateReason](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/classifier/classifier.go#L65>)
+## type [EscalateReason](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/classifier/classifier.go#L79>)
 
 EscalateReason describes why a surface must proceed past the classifier gate.
 
@@ -78,7 +114,7 @@ const (
 ```
 
 <a name="Gate"></a>
-## type [Gate](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/classifier/classifier.go#L114-L118>)
+## type [Gate](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/classifier/classifier.go#L139-L143>)
 
 Gate applies the UniXcoder classifier to a batch of enriched surfaces.
 
@@ -89,7 +125,7 @@ type Gate struct {
 ```
 
 <a name="New"></a>
-### func [New](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/classifier/classifier.go#L124>)
+### func [New](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/classifier/classifier.go#L149>)
 
 ```go
 func New(w *worker.Manager, logger *slog.Logger) *Gate
@@ -98,7 +134,7 @@ func New(w *worker.Manager, logger *slog.Logger) *Gate
 New returns a Gate with the default escalation threshold of 0.80. In high\-recall mode, only surfaces classified with confidence ≥ 0.80 as safe exit Path B; everything else escalates to the LLM tier. If logger is nil, slog.Default\(\) is used.
 
 <a name="NewWithThreshold"></a>
-### func [NewWithThreshold](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/classifier/classifier.go#L133>)
+### func [NewWithThreshold](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/classifier/classifier.go#L158>)
 
 ```go
 func NewWithThreshold(w *worker.Manager, threshold float64, logger *slog.Logger) *Gate
@@ -107,7 +143,7 @@ func NewWithThreshold(w *worker.Manager, threshold float64, logger *slog.Logger)
 NewWithThreshold returns a Gate with a custom escalation threshold. If logger is nil, slog.Default\(\) is used.
 
 <a name="Gate.Classify"></a>
-### func \(\*Gate\) [Classify](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/classifier/classifier.go#L186>)
+### func \(\*Gate\) [Classify](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/classifier/classifier.go#L211>)
 
 ```go
 func (g *Gate) Classify(ctx context.Context, surfaces []enrichment.EnrichedSurface) ([]Result, error)
@@ -129,7 +165,7 @@ After classifier verdict:
 Supported and unsupported language surfaces are dispatched concurrently: supported surfaces go to the Python worker in one batch; unsupported surfaces receive their result immediately without an IPC round\-trip.
 
 <a name="Label"></a>
-## type [Label](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/classifier/classifier.go#L50>)
+## type [Label](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/classifier/classifier.go#L64>)
 
 Label is the 3\-band classification output from UniXcoder.
 
@@ -154,7 +190,7 @@ const (
 ```
 
 <a name="Result"></a>
-## type [Result](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/classifier/classifier.go#L100-L111>)
+## type [Result](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/classifier/classifier.go#L125-L136>)
 
 Result is the classifier output for one surface.
 
@@ -172,5 +208,50 @@ type Result struct {
     EscalateReason EscalateReason
 }
 ```
+
+<a name="RouteResult"></a>
+## type [RouteResult](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/classifier/router.go#L38-L48>)
+
+RouteResult holds the three destination buckets returned by Route.
+
+```go
+type RouteResult struct {
+    // ToDedup receives surfaces classified as vulnerable with high confidence.
+    // These bypass the Assembler and go directly to Dedup.
+    ToDedup []ClassifiedSurface
+    // ToAssembler receives uncertain, IDOR, and unsupported-language surfaces.
+    // These proceed to the Call Chain Assembler + LLM semantic scan.
+    ToAssembler []ClassifiedSurface
+    // Dismissed receives surfaces classified as safe with high confidence.
+    // These exit Path B without further cost.
+    Dismissed []ClassifiedSurface
+}
+```
+
+<a name="Route"></a>
+### func [Route](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/classifier/router.go#L112>)
+
+```go
+func Route(surfaces []ClassifiedSurface) RouteResult
+```
+
+Route partitions classified surfaces into three destination buckets.
+
+Routing rules \(evaluated in priority order\):
+
+1. IDOR candidate → ToAssembler with EscalateReason "idor\_candidate", regardless of classifier verdict or file extension.
+2. Unsupported language extension \(.rs, .kt, .swift, .cs\) → ToAssembler with BypassedClassifier=true, regardless of classifier verdict.
+3. LabelVulnerable → ToDedup \(classifier confident; Assembler adds no value\).
+4. LabelSafe, confidence ≥ ThresholdVulnerable → Dismissed.
+5. LabelUncertain or low\-confidence safe → ToAssembler.
+
+<a name="RouteAndLog"></a>
+### func [RouteAndLog](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/classifier/router.go#L69>)
+
+```go
+func RouteAndLog(surfaces []ClassifiedSurface, logger *slog.Logger) RouteResult
+```
+
+RouteAndLog calls Route then logs funnel stats via logger. If the fraction of surfaces reaching the LLM tier \(ToDedup \+ ToAssembler\) exceeds 25%, it logs a warning — the pipeline is not hard\-failed. If logger is nil, slog.Default\(\) is used.
 
 Generated by [gomarkdoc](<https://github.com/princjef/gomarkdoc>)

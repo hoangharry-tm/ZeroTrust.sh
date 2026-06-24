@@ -6,6 +6,8 @@
 import "github.com/hoangharry-tm/zerotrust/internal/semantic/targeting"
 ```
 
+IDOR heuristic based on the BOLAZ/BolaRay zero\-trust resource ID model. Reference: Rotem Bar et al., "BolaRay: Automated Detection of BOLA Vulnerabilities via Property Graphs", CCS 2024. P\-API sources \+ C\-API anchors \+ storage sinks.
+
 Package targeting implements Path B Tier 1 Heuristic Targeting.
 
 The Targeter queries the Joern CPG for language\-agnostic surface selection, targeting external\-input nodes and auth\-boundary nodes. Typically \~95% of files are eliminated at this tier \(design target; pending CVEFixes benchmark\).
@@ -18,6 +20,8 @@ Design reference: BolaRay \(CCS 2024\) for zero\-trust resource ID model.
 
 ## Index
 
+- [type IDORConfig](<#IDORConfig>)
+  - [func DefaultIDORConfig\(\) IDORConfig](<#DefaultIDORConfig>)
 - [type Surface](<#Surface>)
 - [type SurfaceKind](<#SurfaceKind>)
 - [type Targeter](<#Targeter>)
@@ -27,8 +31,36 @@ Design reference: BolaRay \(CCS 2024\) for zero\-trust resource ID model.
   - [func \(t \*Targeter\) SelectSurfaces\(ctx context.Context\) \(\[\]Surface, error\)](<#Targeter.SelectSurfaces>)
 
 
+<a name="IDORConfig"></a>
+## type [IDORConfig](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/targeting/idor.go#L30-L40>)
+
+IDORConfig defines the P\-API sources and C\-API anchors used by the BOLAZ zero\-trust resource ID heuristic. Configurable so callers can extend patterns without recompiling.
+
+```go
+type IDORConfig struct {
+    // PAPISources are call-name substrings that introduce an external resource ID
+    // (HTTP path params, query params, request body field accessors).
+    PAPISources []string
+    // CAPIAnchors are call-name substrings that constitute an ownership check
+    // (session user ID, JWT sub-claim, @AuthenticationPrincipal, constant literals).
+    CAPIAnchors []string
+    // StorageSinks are call-name substrings for object-fetch operations
+    // (DB query, cache lookup, file access).
+    StorageSinks []string
+}
+```
+
+<a name="DefaultIDORConfig"></a>
+### func [DefaultIDORConfig](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/targeting/idor.go#L43>)
+
+```go
+func DefaultIDORConfig() IDORConfig
+```
+
+DefaultIDORConfig returns the built\-in P\-API / C\-API / sink patterns.
+
 <a name="Surface"></a>
-## type [Surface](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/targeting/targeting.go#L43-L63>)
+## type [Surface](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/targeting/targeting.go#L57-L77>)
 
 Surface is a code location selected by Heuristic Targeting for deeper analysis.
 
@@ -57,7 +89,7 @@ type Surface struct {
 ```
 
 <a name="SurfaceKind"></a>
-## type [SurfaceKind](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/targeting/targeting.go#L26>)
+## type [SurfaceKind](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/targeting/targeting.go#L40>)
 
 SurfaceKind classifies why a surface was selected by Heuristic Targeting.
 
@@ -84,7 +116,7 @@ const (
 ```
 
 <a name="Targeter"></a>
-## type [Targeter](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/targeting/targeting.go#L66-L68>)
+## type [Targeter](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/targeting/targeting.go#L80-L82>)
 
 Targeter selects analysis surfaces from the CPG.
 
@@ -95,7 +127,7 @@ type Targeter struct {
 ```
 
 <a name="New"></a>
-### func [New](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/targeting/targeting.go#L72>)
+### func [New](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/targeting/targeting.go#L86>)
 
 ```go
 func New(graph cpg.Graph) *Targeter
@@ -104,7 +136,7 @@ func New(graph cpg.Graph) *Targeter
 New returns a Targeter reading from graph. graph must be fully built \(BuildCPG completed\) before SelectSurfaces is called.
 
 <a name="Targeter.IsAuthBoundaryNode"></a>
-### func \(\*Targeter\) [IsAuthBoundaryNode](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/targeting/targeting.go#L118>)
+### func \(\*Targeter\) [IsAuthBoundaryNode](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/targeting/targeting.go#L132>)
 
 ```go
 func (t *Targeter) IsAuthBoundaryNode(ctx context.Context, node cpg.Node) (bool, error)
@@ -117,7 +149,7 @@ Parameters:
 - node: the CPG node to classify.
 
 <a name="Targeter.IsExternalInputNode"></a>
-### func \(\*Targeter\) [IsExternalInputNode](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/targeting/targeting.go#L107>)
+### func \(\*Targeter\) [IsExternalInputNode](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/targeting/targeting.go#L121>)
 
 ```go
 func (t *Targeter) IsExternalInputNode(ctx context.Context, node cpg.Node) (bool, error)
@@ -130,7 +162,7 @@ Parameters:
 - node: the CPG node to classify.
 
 <a name="Targeter.SelectSurfaces"></a>
-### func \(\*Targeter\) [SelectSurfaces](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/targeting/targeting.go#L97>)
+### func \(\*Targeter\) [SelectSurfaces](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/targeting/targeting.go#L111>)
 
 ```go
 func (t *Targeter) SelectSurfaces(ctx context.Context) ([]Surface, error)

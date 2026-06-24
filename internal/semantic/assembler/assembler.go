@@ -1,4 +1,4 @@
-// Copyright 2026 hoangharry-tm
+// Copyright 2026 Minh Hoang Ton
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -33,6 +33,7 @@ package assembler
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/hoangharry-tm/zerotrust/internal/semantic/enrichment"
 	"github.com/hoangharry-tm/zerotrust/pkg/cpg"
@@ -48,6 +49,10 @@ type FunctionContext struct {
 	File string
 	// Line is the 1-based start line of the function definition.
 	Line int
+	// LineEnd is the 1-based end line; 0 if not available from the CPG.
+	LineEnd int
+	// Depth is the hop count from the surface node (surface = 0, direct callee = 1, …).
+	Depth int
 	// Parameters is the ordered list of parameter names for this function.
 	Parameters []string
 	// CallsMade is the list of function names directly called from this function.
@@ -60,6 +65,9 @@ type FunctionContext struct {
 	TaintSourceParams []string
 	// SanitizerCalls lists calls to functions identified as sanitizers on the taint path.
 	SanitizerCalls []string
+	// AuthAnnotations lists framework-level authorization annotations or guard calls
+	// detected on this function (e.g. "@PreAuthorize", "requireAuth"). Populated by InjectCPGFields.
+	AuthAnnotations []string
 }
 
 // CallChain is the ordered call chain assembled for one uncertain surface.
@@ -99,11 +107,11 @@ func New(graph cpg.Graph, maxDepth int) *Assembler {
 
 // Assemble builds call chains for the given surfaces in callee-first order.
 //
-// For each surface:
-//  1. Query the CPG for caller functions up to maxDepth hops.
-//  2. For each function in the chain, extract Parameters, CallsMade,
-//     TaintSourceParams (PDG), and SanitizerCalls.
-//  3. Return the chain ordered callee-first.
+// For each surface, traverses callees depth-first up to maxDepth hops.
+// Functions are appended in post-order so the deepest callee appears at index 0
+// and the surface function appears last. This ordering satisfies the SCSS
+// requirement: callee inferences are written to the store before the caller
+// is processed.
 //
 // Parameters:
 //   - ctx: cancellation context.
@@ -113,17 +121,78 @@ func New(graph cpg.Graph, maxDepth int) *Assembler {
 //   - []CallChain: one call chain per input surface, in the same order.
 //   - error: non-nil if CPG queries fail.
 func (a *Assembler) Assemble(ctx context.Context, surfaces []enrichment.EnrichedSurface) ([]CallChain, error) {
-	// implemented in G3.M3.3
-	return nil, nil
+	result := make([]CallChain, 0, len(surfaces))
+	for _, s := range surfaces {
+		chain, err := a.assembleOne(ctx, s)
+		if err != nil {
+			return nil, fmt.Errorf("assemble surface %s: %w", s.ID, err)
+		}
+		result = append(result, chain)
+	}
+	return result, nil
 }
 
-// buildFunctionContext queries the CPG for a single function node and constructs
-// its FunctionContext, including parameters, call edges, and taint metadata.
-//
-// Parameters:
-//   - ctx: cancellation context.
-//   - nodeID: the Joern CPG METHOD node identifier.
-func (a *Assembler) buildFunctionContext(ctx context.Context, nodeID string) (FunctionContext, error) {
-	// implemented in G3.M3.3
-	return FunctionContext{}, nil
+// assembleOne builds the callee-first call chain for a single surface.
+func (a *Assembler) assembleOne(ctx context.Context, s enrichment.EnrichedSurface) (CallChain, error) {
+	root := cpg.Node{ID: s.ID, Name: s.FunctionName, File: s.File}
+	frames := make([]FunctionContext, 0, a.maxDepth+1)
+	visited := make(map[string]bool)
+	truncated, err := a.dfsCallees(ctx, root, 0, &frames, visited)
+	if err != nil {
+		return CallChain{}, err
+	}
+	maxDepth := 0
+	for _, f := range frames {
+		if f.Depth > maxDepth {
+			maxDepth = f.Depth
+		}
+	}
+	return CallChain{
+		SurfaceID: s.ID,
+		Functions: frames,
+		Depth:     maxDepth,
+		Truncated: truncated,
+	}, nil
+}
+
+// dfsCallees traverses callees depth-first and appends frames in post-order
+// (deepest callee first, then the node itself). Returns true if truncated by maxDepth.
+func (a *Assembler) dfsCallees(ctx context.Context, node cpg.Node, depth int, frames *[]FunctionContext, visited map[string]bool) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if depth > a.maxDepth {
+		return true, nil
+	}
+	visited[node.ID] = true
+
+	callees, err := a.graph.GetCallees(node.ID)
+	if err != nil {
+		return false, fmt.Errorf("get callees %s: %w", node.ID, err)
+	}
+
+	callsMade := make([]string, 0, len(callees))
+	truncated := false
+	for _, callee := range callees {
+		callsMade = append(callsMade, callee.Name)
+		if visited[callee.ID] {
+			continue
+		}
+		t, err := a.dfsCallees(ctx, callee, depth+1, frames, visited)
+		if err != nil {
+			return false, err
+		}
+		truncated = truncated || t
+	}
+
+	*frames = append(*frames, FunctionContext{
+		NodeID:    node.ID,
+		Name:      node.Name,
+		File:      node.File,
+		Line:      node.Line,
+		Depth:     depth,
+		Code:      node.Code,
+		CallsMade: callsMade,
+	})
+	return truncated, nil
 }

@@ -1,4 +1,4 @@
-// Copyright 2026 hoangharry-tm
+// Copyright 2026 Minh Hoang Ton
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -77,6 +77,10 @@ const (
 	MsgSummarize MessageType = "summarize"
 	// MsgLLMScan routes to the LLM Semantic Scan handler.
 	MsgLLMScan MessageType = "llm_scan"
+	// MsgEmbed routes to the MiniLM-L6-v2 embedding handler (dedup Gate 3).
+	MsgEmbed MessageType = "embed"
+	// MsgASTEdit routes to the AST token edit-distance handler (dedup Gate 4).
+	MsgASTEdit MessageType = "ast_edit"
 	// MsgPing is a built-in health check; the worker responds immediately.
 	MsgPing MessageType = "ping"
 	// MsgShutdown requests a clean worker process exit.
@@ -167,6 +171,28 @@ type ClassifySurfaceResult struct {
 	SurfaceID  string  `json:"surface_id"`
 	Label      string  `json:"label"`
 	Confidence float64 `json:"confidence"`
+}
+
+// EmbedPayload is the JSON payload for MsgEmbed requests.
+type EmbedPayload struct {
+	Codes []string `json:"codes"`
+}
+
+// EmbedResult is the JSON result for MsgEmbed responses.
+type EmbedResult struct {
+	Embeddings [][]float64 `json:"embeddings"`
+}
+
+// ASTEditPayload is the JSON payload for MsgASTEdit requests.
+type ASTEditPayload struct {
+	Code1    string `json:"code1"`
+	Code2    string `json:"code2"`
+	Language string `json:"language,omitempty"`
+}
+
+// ASTEditResult is the JSON result for MsgASTEdit responses.
+type ASTEditResult struct {
+	Similarity float64 `json:"similarity"`
 }
 
 // SummarizePayload is the JSON payload for MsgSummarize requests.
@@ -515,6 +541,43 @@ func (m *Manager) Classify(ctx context.Context, surfaces []ClassifySurface) (Cla
 		return ClassifyResult{}, fmt.Errorf("worker: classify: unmarshal result: %w", err)
 	}
 	return cr, nil
+}
+
+// Embed sends code snippets to the Python worker for MiniLM-L6-v2 embedding.
+// Returns one float64 vector per input snippet. Returns nil when codes is empty.
+func (m *Manager) Embed(ctx context.Context, codes []string) ([][]float64, error) {
+	if len(codes) == 0 {
+		return nil, nil
+	}
+	resp, err := m.Call(ctx, MsgEmbed, EmbedPayload{Codes: codes})
+	if err != nil {
+		return nil, fmt.Errorf("worker: embed: %w", err)
+	}
+	if resp.Status == ResponseError {
+		return nil, fmt.Errorf("worker: embed: %s", resp.Error)
+	}
+	var er EmbedResult
+	if err := json.Unmarshal(resp.Result, &er); err != nil {
+		return nil, fmt.Errorf("worker: embed: unmarshal: %w", err)
+	}
+	return er.Embeddings, nil
+}
+
+// ASTEditSimilarity returns a similarity score in [0, 1] between two code snippets
+// using token-sequence Levenshtein distance on tree-sitter AST leaves.
+func (m *Manager) ASTEditSimilarity(ctx context.Context, code1, code2, language string) (float64, error) {
+	resp, err := m.Call(ctx, MsgASTEdit, ASTEditPayload{Code1: code1, Code2: code2, Language: language})
+	if err != nil {
+		return 0, fmt.Errorf("worker: ast_edit: %w", err)
+	}
+	if resp.Status == ResponseError {
+		return 0, fmt.Errorf("worker: ast_edit: %s", resp.Error)
+	}
+	var ar ASTEditResult
+	if err := json.Unmarshal(resp.Result, &ar); err != nil {
+		return 0, fmt.Errorf("worker: ast_edit: unmarshal: %w", err)
+	}
+	return ar.Similarity, nil
 }
 
 func (m *Manager) newID() string {

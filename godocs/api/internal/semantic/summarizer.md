@@ -28,33 +28,15 @@ Approach 3 replaces the 3B model with a 0.5–1B model fine\-tuned on CVEFixes C
 
 ## Index
 
-- [type AuthGuardSummary](<#AuthGuardSummary>)
 - [type BatchRequest](<#BatchRequest>)
-- [type CheckLocation](<#CheckLocation>)
-- [type LogicFlawSummary](<#LogicFlawSummary>)
 - [type Summarizer](<#Summarizer>)
   - [func New\(w \*worker.Manager\) \*Summarizer](<#New>)
   - [func \(s \*Summarizer\) Summarize\(ctx context.Context, chains \[\]assembler.CallChain\) \(\[\]Summary, error\)](<#Summarizer.Summarize>)
 - [type Summary](<#Summary>)
-- [type TaintFlowSummary](<#TaintFlowSummary>)
 
-
-<a name="AuthGuardSummary"></a>
-## type [AuthGuardSummary](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/summarizer/summarizer.go#L67-L72>)
-
-AuthGuardSummary captures the authorization check status for a function. CheckLocation distinguishes real auth gaps from framework\-level controls, reducing false positives on annotated endpoints.
-
-```go
-type AuthGuardSummary struct {
-    // CheckPresent is true when an authorization check was detected.
-    CheckPresent bool `json:"check_present"`
-    // CheckLocation describes where the check is performed.
-    CheckLocation CheckLocation `json:"check_location"`
-}
-```
 
 <a name="BatchRequest"></a>
-## type [BatchRequest](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/summarizer/summarizer.go#L102-L105>)
+## type [BatchRequest](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/summarizer/summarizer.go#L66-L69>)
 
 BatchRequest is a single IPC payload sent to the Python worker's summarize handler. Up to 5 call chains are batched per request to amortise IPC overhead.
 
@@ -65,49 +47,8 @@ type BatchRequest struct {
 }
 ```
 
-<a name="CheckLocation"></a>
-## type [CheckLocation](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/summarizer/summarizer.go#L37>)
-
-CheckLocation classifies where \(or whether\) an authorization check occurs. Used in both AuthGuardSummary and LogicFlawSummary to distinguish real auth gaps from framework\-controlled access \(LLMxCPG USENIX 2025\).
-
-```go
-type CheckLocation string
-```
-
-<a name="CheckFrameworkAnnotation"></a>
-
-```go
-const (
-    // CheckFrameworkAnnotation means access control is enforced by a framework
-    // annotation or decorator (e.g. @PreAuthorize, @login_required, middleware chain).
-    CheckFrameworkAnnotation CheckLocation = "framework_annotation"
-    // CheckExplicitCode means an explicit conditional (if/guard) performs the check.
-    CheckExplicitCode CheckLocation = "explicit_code"
-    // CheckMiddleware means the check is in middleware/interceptor before this function.
-    CheckMiddleware CheckLocation = "middleware"
-    // CheckUnknown means no check was detected.
-    CheckUnknown CheckLocation = "unknown"
-)
-```
-
-<a name="LogicFlawSummary"></a>
-## type [LogicFlawSummary](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/summarizer/summarizer.go#L76-L83>)
-
-LogicFlawSummary captures resource ID and authorization data for IDOR detection. Populated for surfaces flagged as IDOR candidates.
-
-```go
-type LogicFlawSummary struct {
-    // ResourceIDSource is the parameter or variable name carrying the external resource ID.
-    ResourceIDSource string `json:"resource_id_source"`
-    // DBSink is the database or storage call the resource ID flows into.
-    DBSink string `json:"db_sink"`
-    // CheckLocation describes where (if anywhere) an ownership check occurs.
-    CheckLocation CheckLocation `json:"check_location"`
-}
-```
-
 <a name="Summarizer"></a>
-## type [Summarizer](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/summarizer/summarizer.go#L108-L113>)
+## type [Summarizer](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/summarizer/summarizer.go#L72-L77>)
 
 Summarizer transforms call chains into semantic summaries via the Python worker.
 
@@ -118,7 +59,7 @@ type Summarizer struct {
 ```
 
 <a name="New"></a>
-### func [New](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/summarizer/summarizer.go#L119>)
+### func [New](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/summarizer/summarizer.go#L83>)
 
 ```go
 func New(w *worker.Manager) *Summarizer
@@ -131,7 +72,7 @@ Parameters:
 - w: the shared Python worker manager.
 
 <a name="Summarizer.Summarize"></a>
-### func \(\*Summarizer\) [Summarize](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/summarizer/summarizer.go#L137>)
+### func \(\*Summarizer\) [Summarize](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/summarizer/summarizer.go#L101>)
 
 ```go
 func (s *Summarizer) Summarize(ctx context.Context, chains []assembler.CallChain) ([]Summary, error)
@@ -152,9 +93,9 @@ Returns:
 - error: non\-nil only for worker communication failures.
 
 <a name="Summary"></a>
-## type [Summary](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/summarizer/summarizer.go#L87-L98>)
+## type [Summary](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/summarizer/summarizer.go#L51-L62>)
 
-Summary is the XGrammar\-2\-constrained union output for one function in a call chain. All three vulnerability classes are populated in a single LLM inference pass.
+Summary is the XGrammar\-2\-constrained union output for one function in a call chain. All three vulnerability classes are populated in a single LLM inference pass. Schema types are defined in assembler.UnionSchema; aliases used here for readability.
 
 ```go
 type Summary struct {
@@ -163,30 +104,11 @@ type Summary struct {
     // SurfaceID matches the assembler.CallChain.SurfaceID.
     SurfaceID string
     // TaintFlow describes untrusted data propagation.
-    TaintFlow TaintFlowSummary
+    TaintFlow assembler.TaintFlowSchema
     // AuthGuard describes authorization check presence and location.
-    AuthGuard AuthGuardSummary
+    AuthGuard assembler.AuthGuardSchema
     // LogicFlaw describes resource ID flow and ownership check status.
-    LogicFlaw LogicFlawSummary
-}
-```
-
-<a name="TaintFlowSummary"></a>
-## type [TaintFlowSummary](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/summarizer/summarizer.go#L52-L62>)
-
-TaintFlowSummary captures untrusted data propagation through a function.
-
-```go
-type TaintFlowSummary struct {
-    // UntrustedSources lists parameter names or call sites that introduce untrusted data.
-    UntrustedSources []string `json:"untrusted_sources"`
-    // SanitizerNodes lists call sites that sanitize or validate the tainted data.
-    SanitizerNodes []string `json:"sanitizer_nodes"`
-    // SinkType is the kind of dangerous sink the tainted data flows into
-    // (e.g. "sql", "command", "template"); empty if no sink is reached.
-    SinkType string `json:"sink_type"`
-    // TaintPropagates is true when tainted data reaches a sink without sanitization.
-    TaintPropagates bool `json:"taint_propagates"`
+    LogicFlaw assembler.LogicFlawSchema
 }
 ```
 

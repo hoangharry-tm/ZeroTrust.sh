@@ -1,4 +1,4 @@
-// Copyright 2026 hoangharry-tm
+// Copyright 2026 Minh Hoang Ton
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -40,75 +40,27 @@ package summarizer
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 
 	"github.com/hoangharry-tm/zerotrust/internal/semantic/assembler"
 	"github.com/hoangharry-tm/zerotrust/internal/worker"
 )
 
-// CheckLocation classifies where (or whether) an authorization check occurs.
-// Used in both AuthGuardSummary and LogicFlawSummary to distinguish real auth
-// gaps from framework-controlled access (LLMxCPG USENIX 2025).
-type CheckLocation string
-
-const (
-	// CheckFrameworkAnnotation means access control is enforced by a framework
-	// annotation or decorator (e.g. @PreAuthorize, @login_required, middleware chain).
-	CheckFrameworkAnnotation CheckLocation = "framework_annotation"
-	// CheckExplicitCode means an explicit conditional (if/guard) performs the check.
-	CheckExplicitCode CheckLocation = "explicit_code"
-	// CheckMiddleware means the check is in middleware/interceptor before this function.
-	CheckMiddleware CheckLocation = "middleware"
-	// CheckUnknown means no check was detected.
-	CheckUnknown CheckLocation = "unknown"
-)
-
-// TaintFlowSummary captures untrusted data propagation through a function.
-type TaintFlowSummary struct {
-	// UntrustedSources lists parameter names or call sites that introduce untrusted data.
-	UntrustedSources []string `json:"untrusted_sources"`
-	// SanitizerNodes lists call sites that sanitize or validate the tainted data.
-	SanitizerNodes []string `json:"sanitizer_nodes"`
-	// SinkType is the kind of dangerous sink the tainted data flows into
-	// (e.g. "sql", "command", "template"); empty if no sink is reached.
-	SinkType string `json:"sink_type"`
-	// TaintPropagates is true when tainted data reaches a sink without sanitization.
-	TaintPropagates bool `json:"taint_propagates"`
-}
-
-// AuthGuardSummary captures the authorization check status for a function.
-// CheckLocation distinguishes real auth gaps from framework-level controls,
-// reducing false positives on annotated endpoints.
-type AuthGuardSummary struct {
-	// CheckPresent is true when an authorization check was detected.
-	CheckPresent bool `json:"check_present"`
-	// CheckLocation describes where the check is performed.
-	CheckLocation CheckLocation `json:"check_location"`
-}
-
-// LogicFlawSummary captures resource ID and authorization data for IDOR detection.
-// Populated for surfaces flagged as IDOR candidates.
-type LogicFlawSummary struct {
-	// ResourceIDSource is the parameter or variable name carrying the external resource ID.
-	ResourceIDSource string `json:"resource_id_source"`
-	// DBSink is the database or storage call the resource ID flows into.
-	DBSink string `json:"db_sink"`
-	// CheckLocation describes where (if anywhere) an ownership check occurs.
-	CheckLocation CheckLocation `json:"check_location"`
-}
-
 // Summary is the XGrammar-2-constrained union output for one function in a call chain.
 // All three vulnerability classes are populated in a single LLM inference pass.
+// Schema types are defined in assembler.UnionSchema; aliases used here for readability.
 type Summary struct {
 	// FunctionID matches the assembler.FunctionContext.NodeID.
 	FunctionID string
 	// SurfaceID matches the assembler.CallChain.SurfaceID.
 	SurfaceID string
 	// TaintFlow describes untrusted data propagation.
-	TaintFlow TaintFlowSummary
+	TaintFlow assembler.TaintFlowSchema
 	// AuthGuard describes authorization check presence and location.
-	AuthGuard AuthGuardSummary
+	AuthGuard assembler.AuthGuardSchema
 	// LogicFlaw describes resource ID flow and ownership check status.
-	LogicFlaw LogicFlawSummary
+	LogicFlaw assembler.LogicFlawSchema
 }
 
 // BatchRequest is a single IPC payload sent to the Python worker's summarize handler.
@@ -149,17 +101,35 @@ func New(w *worker.Manager) *Summarizer {
 //     Multiple summaries may correspond to the same SurfaceID (one per function in chain).
 //   - error: non-nil only for worker communication failures.
 func (s *Summarizer) Summarize(ctx context.Context, chains []assembler.CallChain) ([]Summary, error) {
-	// implemented in G3.M3.3
-	return nil, nil
+	var out []Summary
+	for i := 0; i < len(chains); i += s.batchSize {
+		end := i + s.batchSize
+		if end > len(chains) {
+			end = len(chains)
+		}
+		batch, err := s.summarizeBatch(ctx, chains[i:end])
+		if err != nil {
+			return nil, fmt.Errorf("summarize batch %d: %w", i/s.batchSize, err)
+		}
+		out = append(out, batch...)
+	}
+	return out, nil
 }
 
 // summarizeBatch sends one BatchRequest to the Python worker and decodes the result.
-// It is called internally by Summarize after splitting chains into batchSize groups.
-//
-// Parameters:
-//   - ctx: cancellation context.
-//   - batch: up to batchSize call chains to summarize in one worker request.
 func (s *Summarizer) summarizeBatch(ctx context.Context, batch []assembler.CallChain) ([]Summary, error) {
-	// implemented in G3.M3.3
-	return nil, nil
+	req := BatchRequest{Chains: batch}
+	resp, err := s.w.Call(ctx, worker.MsgSummarize, req)
+	if err != nil {
+		return nil, fmt.Errorf("worker call: %w", err)
+	}
+	if resp.Status == worker.ResponseError {
+		return nil, fmt.Errorf("worker error: %s", resp.Error)
+	}
+
+	var summaries []Summary
+	if err := json.Unmarshal(resp.Result, &summaries); err != nil {
+		return nil, fmt.Errorf("decode summaries: %w", err)
+	}
+	return summaries, nil
 }

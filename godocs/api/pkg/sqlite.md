@@ -48,7 +48,7 @@ The database file is created with mode 0600. WAL journal mode and foreign\-key e
 
 
 <a name="CPGCacheRow"></a>
-## type [CPGCacheRow](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite_findings.go#L53-L59>)
+## type [CPGCacheRow](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite_findings.go#L67-L73>)
 
 CPGCacheRow is one row from the cpg\_cache table.
 
@@ -63,7 +63,7 @@ type CPGCacheRow struct {
 ```
 
 <a name="DB"></a>
-## type [DB](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite.go#L27-L29>)
+## type [DB](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite.go#L41-L43>)
 
 DB wraps a SQLite connection and owns schema migrations.
 
@@ -74,7 +74,7 @@ type DB struct {
 ```
 
 <a name="Open"></a>
-### func [Open](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite.go#L50>)
+### func [Open](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite.go#L64>)
 
 ```go
 func Open(path string) (*DB, error)
@@ -83,7 +83,7 @@ func Open(path string) (*DB, error)
 Open opens or creates the SQLite database at path, enforces 0600 permissions, applies connection\-level PRAGMAs for safety and performance, and runs any pending schema migrations.
 
 <a name="DB.AddSuppression"></a>
-### func \(\*DB\) [AddSuppression](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite.go#L158>)
+### func \(\*DB\) [AddSuppression](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite.go#L177>)
 
 ```go
 func (db *DB) AddSuppression(ctx context.Context, row SuppressionRow) error
@@ -92,7 +92,7 @@ func (db *DB) AddSuppression(ctx context.Context, row SuppressionRow) error
 AddSuppression records a new suppression decision. Idempotent.
 
 <a name="DB.Close"></a>
-### func \(\*DB\) [Close](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite.go#L81>)
+### func \(\*DB\) [Close](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite.go#L95>)
 
 ```go
 func (db *DB) Close() error
@@ -101,7 +101,7 @@ func (db *DB) Close() error
 Close releases the database connection. WAL checkpoint runs on close.
 
 <a name="DB.Conn"></a>
-### func \(\*DB\) [Conn](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite.go#L78>)
+### func \(\*DB\) [Conn](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite.go#L92>)
 
 ```go
 func (db *DB) Conn() *sql.DB
@@ -110,7 +110,7 @@ func (db *DB) Conn() *sql.DB
 Conn exposes the underlying \*sql.DB for callers that need raw query access. Prefer the typed helpers where possible.
 
 <a name="DB.CountFindingsByRun"></a>
-### func \(\*DB\) [CountFindingsByRun](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite_findings.go#L222>)
+### func \(\*DB\) [CountFindingsByRun](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite_findings.go#L236>)
 
 ```go
 func (db *DB) CountFindingsByRun(ctx context.Context, runID string) (map[string]int, error)
@@ -119,7 +119,7 @@ func (db *DB) CountFindingsByRun(ctx context.Context, runID string) (map[string]
 CountFindingsByRun returns a severity → count map for all findings in runID.
 
 <a name="DB.CreateScanRun"></a>
-### func \(\*DB\) [CreateScanRun](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite_findings.go#L103>)
+### func \(\*DB\) [CreateScanRun](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite_findings.go#L117>)
 
 ```go
 func (db *DB) CreateScanRun(ctx context.Context, row ScanRunRow) error
@@ -128,7 +128,7 @@ func (db *DB) CreateScanRun(ctx context.Context, row ScanRunRow) error
 CreateScanRun inserts a new scan\_run row with status="running".
 
 <a name="DB.DeleteScanState"></a>
-### func \(\*DB\) [DeleteScanState](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite.go#L134>)
+### func \(\*DB\) [DeleteScanState](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite.go#L151>)
 
 ```go
 func (db *DB) DeleteScanState(ctx context.Context, projectID, filePath string) error
@@ -137,7 +137,7 @@ func (db *DB) DeleteScanState(ctx context.Context, projectID, filePath string) e
 DeleteScanState removes the state row for \(projectID, filePath\).
 
 <a name="DB.FinalizeScanRun"></a>
-### func \(\*DB\) [FinalizeScanRun](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite_findings.go#L126>)
+### func \(\*DB\) [FinalizeScanRun](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite_findings.go#L140>)
 
 ```go
 func (db *DB) FinalizeScanRun(ctx context.Context, runID string, finishedAt int64, filesScanned, findingsTotal int) error
@@ -146,7 +146,7 @@ func (db *DB) FinalizeScanRun(ctx context.Context, runID string, finishedAt int6
 FinalizeScanRun marks a scan run complete and records the final counts.
 
 <a name="DB.GetCPGCache"></a>
-### func \(\*DB\) [GetCPGCache](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite_findings.go#L271>)
+### func \(\*DB\) [GetCPGCache](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite_findings.go#L285>)
 
 ```go
 func (db *DB) GetCPGCache(ctx context.Context, projectID string) (*CPGCacheRow, error)
@@ -155,7 +155,7 @@ func (db *DB) GetCPGCache(ctx context.Context, projectID string) (*CPGCacheRow, 
 GetCPGCache returns the CPG cache row for projectID, or sql.ErrNoRows if absent.
 
 <a name="DB.GetProject"></a>
-### func \(\*DB\) [GetProject](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite_findings.go#L88>)
+### func \(\*DB\) [GetProject](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite_findings.go#L102>)
 
 ```go
 func (db *DB) GetProject(ctx context.Context, projectID string) (*ProjectRow, error)
@@ -164,7 +164,7 @@ func (db *DB) GetProject(ctx context.Context, projectID string) (*ProjectRow, er
 GetProject returns the project row for projectID, or sql.ErrNoRows if absent.
 
 <a name="DB.GetScanState"></a>
-### func \(\*DB\) [GetScanState](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite.go#L87>)
+### func \(\*DB\) [GetScanState](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite.go#L101>)
 
 ```go
 func (db *DB) GetScanState(ctx context.Context, projectID, filePath string) (*ScanStateRow, error)
@@ -173,7 +173,7 @@ func (db *DB) GetScanState(ctx context.Context, projectID, filePath string) (*Sc
 GetScanState returns the cached state row for \(projectID, filePath\). Returns sql.ErrNoRows if no prior scan entry exists for the file.
 
 <a name="DB.IsSuppressed"></a>
-### func \(\*DB\) [IsSuppressed](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite.go#L145>)
+### func \(\*DB\) [IsSuppressed](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite.go#L163>)
 
 ```go
 func (db *DB) IsSuppressed(ctx context.Context, projectID, findingID string) (bool, error)
@@ -182,7 +182,7 @@ func (db *DB) IsSuppressed(ctx context.Context, projectID, findingID string) (bo
 IsSuppressed reports whether findingID is in the suppressions table for projectID.
 
 <a name="DB.ListFindings"></a>
-### func \(\*DB\) [ListFindings](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite_findings.go#L186>)
+### func \(\*DB\) [ListFindings](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite_findings.go#L200>)
 
 ```go
 func (db *DB) ListFindings(ctx context.Context, projectID string) ([]FindingRow, error)
@@ -191,7 +191,7 @@ func (db *DB) ListFindings(ctx context.Context, projectID string) ([]FindingRow,
 ListFindings returns all findings for projectID, newest first.
 
 <a name="DB.ListScanState"></a>
-### func \(\*DB\) [ListScanState](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite.go#L111>)
+### func \(\*DB\) [ListScanState](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite.go#L127>)
 
 ```go
 func (db *DB) ListScanState(ctx context.Context, projectID string) ([]ScanStateRow, error)
@@ -200,7 +200,7 @@ func (db *DB) ListScanState(ctx context.Context, projectID string) ([]ScanStateR
 ListScanState returns all cached state rows for the given projectID.
 
 <a name="DB.ListSuppressions"></a>
-### func \(\*DB\) [ListSuppressions](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite.go#L174>)
+### func \(\*DB\) [ListSuppressions](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite.go#L194>)
 
 ```go
 func (db *DB) ListSuppressions(ctx context.Context, projectID string) ([]SuppressionRow, error)
@@ -209,7 +209,7 @@ func (db *DB) ListSuppressions(ctx context.Context, projectID string) ([]Suppres
 ListSuppressions returns all suppression rows for the given projectID.
 
 <a name="DB.UpsertCPGCache"></a>
-### func \(\*DB\) [UpsertCPGCache](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite_findings.go#L250>)
+### func \(\*DB\) [UpsertCPGCache](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite_findings.go#L264>)
 
 ```go
 func (db *DB) UpsertCPGCache(ctx context.Context, row CPGCacheRow) error
@@ -218,7 +218,7 @@ func (db *DB) UpsertCPGCache(ctx context.Context, row CPGCacheRow) error
 UpsertCPGCache inserts or replaces the CPG cache row for a project.
 
 <a name="DB.UpsertFinding"></a>
-### func \(\*DB\) [UpsertFinding](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite_findings.go#L151>)
+### func \(\*DB\) [UpsertFinding](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite_findings.go#L165>)
 
 ```go
 func (db *DB) UpsertFinding(ctx context.Context, row FindingRow) error
@@ -227,7 +227,7 @@ func (db *DB) UpsertFinding(ctx context.Context, row FindingRow) error
 UpsertFinding inserts a new finding or updates an existing one. On conflict \(same finding\_id\), run\_id, severity, confidence, justification, suppress\_reason, and last\_seen\_at are updated; first\_seen\_at is preserved.
 
 <a name="DB.UpsertProject"></a>
-### func \(\*DB\) [UpsertProject](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite_findings.go#L65>)
+### func \(\*DB\) [UpsertProject](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite_findings.go#L79>)
 
 ```go
 func (db *DB) UpsertProject(ctx context.Context, row ProjectRow) error
@@ -236,7 +236,7 @@ func (db *DB) UpsertProject(ctx context.Context, row ProjectRow) error
 UpsertProject inserts or updates a project row. If the project already exists, only last\_scanned\_at and primary\_language are updated.
 
 <a name="DB.UpsertScanState"></a>
-### func \(\*DB\) [UpsertScanState](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite.go#L101>)
+### func \(\*DB\) [UpsertScanState](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite.go#L116>)
 
 ```go
 func (db *DB) UpsertScanState(ctx context.Context, row ScanStateRow) error
@@ -245,7 +245,7 @@ func (db *DB) UpsertScanState(ctx context.Context, row ScanStateRow) error
 UpsertScanState inserts or replaces the scan state row for one file.
 
 <a name="FindingRow"></a>
-## type [FindingRow](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite_findings.go#L33-L50>)
+## type [FindingRow](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite_findings.go#L47-L64>)
 
 FindingRow is one row from the findings table.
 
@@ -271,7 +271,7 @@ type FindingRow struct {
 ```
 
 <a name="ProjectRow"></a>
-## type [ProjectRow](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite_findings.go#L12-L18>)
+## type [ProjectRow](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite_findings.go#L26-L32>)
 
 ProjectRow is one row from the projects table.
 
@@ -286,7 +286,7 @@ type ProjectRow struct {
 ```
 
 <a name="ScanRunRow"></a>
-## type [ScanRunRow](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite_findings.go#L21-L30>)
+## type [ScanRunRow](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite_findings.go#L35-L44>)
 
 ScanRunRow is one row from the scan\_runs table.
 
@@ -304,7 +304,7 @@ type ScanRunRow struct {
 ```
 
 <a name="ScanStateRow"></a>
-## type [ScanStateRow](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite.go#L32-L37>)
+## type [ScanStateRow](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite.go#L46-L51>)
 
 ScanStateRow is one row from the scan\_state table.
 
@@ -318,7 +318,7 @@ type ScanStateRow struct {
 ```
 
 <a name="SuppressionRow"></a>
-## type [SuppressionRow](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite.go#L40-L45>)
+## type [SuppressionRow](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/pkg/sqlite/sqlite.go#L54-L59>)
 
 SuppressionRow is one row from the suppressions table.
 

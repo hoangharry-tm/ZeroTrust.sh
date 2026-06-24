@@ -1,4 +1,4 @@
-// Copyright 2026 hoangharry-tm
+// Copyright 2026 Minh Hoang Ton
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -26,4 +26,4 @@ package zerotrust
 // gomarkdoc reads Go doc comments and writes one .md file per package.
 // The version used is the one pinned in go.mod via tools.go.
 //
-//go:generate sh scripts/gendoc.sh
+//go:generate sh scripts/pipeline/gendoc.sh

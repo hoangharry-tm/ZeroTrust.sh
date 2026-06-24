@@ -27,7 +27,7 @@ PatchEval reliability note: zero\-shot patch correctness is not guaranteed. The 
 
 
 <a name="Generator"></a>
-## type [Generator](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/patch/patch.go#L69-L73>)
+## type [Generator](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/patch/patch.go#L83-L87>)
 
 Generator produces patch suggestions for a finding set.
 
@@ -47,7 +47,7 @@ type Generator struct {
 ```
 
 <a name="New"></a>
-### func [New](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/patch/patch.go#L76>)
+### func [New](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/patch/patch.go#L90>)
 
 ```go
 func New(projectRoot string) *Generator
@@ -56,7 +56,7 @@ func New(projectRoot string) *Generator
 New returns a Generator operating against files under projectRoot.
 
 <a name="Generator.Generate"></a>
-### func \(\*Generator\) [Generate](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/patch/patch.go#L90>)
+### func \(\*Generator\) [Generate](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/patch/patch.go#L104>)
 
 ```go
 func (g *Generator) Generate(ctx context.Context, findings []finding.Finding) ([]Patch, error)
@@ -75,7 +75,7 @@ Returns:
 - error: non\-nil only for unrecoverable infrastructure failures \(e.g. projectRoot unreadable\).
 
 <a name="Generator.Validate"></a>
-### func \(\*Generator\) [Validate](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/patch/patch.go#L101>)
+### func \(\*Generator\) [Validate](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/patch/patch.go#L115>)
 
 ```go
 func (g *Generator) Validate(relPath, unifiedDiff string) error
@@ -89,7 +89,7 @@ Parameters:
 - unifiedDiff: the diff string to validate.
 
 <a name="Patch"></a>
-## type [Patch](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/patch/patch.go#L49-L58>)
+## type [Patch](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/patch/patch.go#L63-L72>)
 
 Patch is the patch suggestion for a single finding.
 
@@ -117,7 +117,7 @@ type Patch struct {
 ```
 
 <a name="Status"></a>
-## type [Status](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/patch/patch.go#L27>)
+## type [Status](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/patch/patch.go#L41>)
 
 Status describes whether a patch was generated and if it validated cleanly.
 

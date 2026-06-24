@@ -1,4 +1,4 @@
-// Copyright 2026 hoangharry-tm
+// Copyright 2026 Minh Hoang Ton
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -38,10 +38,13 @@ package enrichment
 
 import (
 	"context"
+	"path/filepath"
+	"strings"
 
 	"github.com/hoangharry-tm/zerotrust/internal/semantic/targeting"
 	"github.com/hoangharry-tm/zerotrust/pkg/cpg"
 )
+
 
 // CVEMatch holds a single CVE finding from Trivy for a dependency used by a surface.
 type CVEMatch struct {
@@ -135,18 +138,120 @@ func New(graph cpg.Graph, trivyPath string, offlineMode bool) *Enricher {
 // Returns:
 //   - []EnrichedSurface: one enriched surface per input surface.
 //   - error: non-nil if Trivy fails to start or CPG queries fail.
-func (e *Enricher) Enrich(_ context.Context, _ []targeting.Surface, _ string) ([]EnrichedSurface, error) {
-	// implemented in G3.M3.1
-	return nil, nil
+func (e *Enricher) Enrich(ctx context.Context, surfaces []targeting.Surface, projectRoot string) ([]EnrichedSurface, error) {
+	cvesByPkg, err := e.RunTrivy(ctx, projectRoot)
+	if err != nil {
+		// ponytail: non-fatal — CVE enrichment is best-effort; continue without CVEs.
+		cvesByPkg = make(map[string][]CVEMatch)
+	}
+
+	enriched := make([]EnrichedSurface, 0, len(surfaces))
+	for _, s := range surfaces {
+		es := EnrichedSurface{
+			Surface:  s,
+			Language: langFromFile(s.File),
+		}
+
+		if e.graph != nil {
+			if callers, cerr := e.graph.GetCallers(s.ID); cerr == nil {
+				es.CallerIDs = nodeIDs(callers)
+			}
+			if callees, cerr := e.graph.GetCallees(s.ID); cerr == nil {
+				es.CalleeIDs = nodeIDs(callees)
+			}
+		}
+
+		tmp := []EnrichedSurface{es}
+		ApplyCVEMatches(tmp, cvesByPkg)
+		es = tmp[0]
+
+		if flows, ferr := e.DetectIDORFlows(ctx, s); ferr == nil {
+			es.ResourceIDFlows = flows
+		}
+
+		enriched = append(enriched, es)
+	}
+	return enriched, nil
 }
 
 // DetectIDORFlows applies the zero-trust resource ID heuristic to a single surface.
 // Returns the list of resource ID flows detected (empty slice means no IDOR signal).
-//
-// Parameters:
-//   - ctx: cancellation context.
-//   - surface: the surface to analyse.
-func (e *Enricher) DetectIDORFlows(_ context.Context, _ targeting.Surface) ([]ResourceIDFlow, error) {
-	// implemented in G3.M3.1
-	return nil, nil
+func (e *Enricher) DetectIDORFlows(_ context.Context, surface targeting.Surface) ([]ResourceIDFlow, error) {
+	if e.graph == nil {
+		return nil, nil
+	}
+	cfg := targeting.DefaultIDORConfig()
+	edges, err := e.graph.QueryEdges(surface.ID, "")
+	if err != nil {
+		return nil, err
+	}
+
+	var papiParams []string
+	var storageSinks []string
+	for _, edge := range edges {
+		for _, p := range cfg.PAPISources {
+			if strings.Contains(edge.Label, p) {
+				papiParams = append(papiParams, edge.Label)
+				break
+			}
+		}
+		for _, s := range cfg.StorageSinks {
+			if strings.Contains(edge.Label, s) {
+				storageSinks = append(storageSinks, edge.Label)
+				break
+			}
+		}
+	}
+
+	if len(papiParams) == 0 || len(storageSinks) == 0 {
+		return nil, nil
+	}
+
+	var flows []ResourceIDFlow
+	for _, src := range papiParams {
+		for _, sink := range storageSinks {
+			flows = append(flows, ResourceIDFlow{
+				SourceParam: src,
+				StorageSink: sink,
+				// ponytail: ownership check detection requires taint path analysis;
+				// left false here (conservative) — the assembler/LLM confirm absence.
+				HasOwnershipCheck: false,
+			})
+		}
+	}
+	return flows, nil
 }
+
+func langFromFile(file string) string {
+	switch filepath.Ext(file) {
+	case ".go":
+		return "go"
+	case ".py":
+		return "python"
+	case ".java":
+		return "java"
+	case ".js", ".mjs":
+		return "javascript"
+	case ".ts", ".tsx":
+		return "typescript"
+	case ".rs":
+		return "rust"
+	case ".kt", ".kts":
+		return "kotlin"
+	case ".swift":
+		return "swift"
+	case ".cs":
+		return "csharp"
+	default:
+		return "unknown"
+	}
+}
+
+func nodeIDs(nodes []cpg.Node) []string {
+	ids := make([]string, len(nodes))
+	for i, n := range nodes {
+		ids[i] = n.ID
+	}
+	return ids
+}
+

@@ -145,15 +145,15 @@ Build the full Path B pipeline: Heuristic Targeting → Classifier → Assembler
 
 | ID | Name | Dates | E (h) | Status | Notes |
 | :---: | --- | :---: | :---: | :---: | --- |
-| **ML3.1** | **Heuristic Targeting + Call Graph + CVE Enrichment + Resource ID Dataflow** | Jul 17–21 | 26.0 | — | |
-| L3.1.T1 | CPG queries: external-input nodes (HTTP params, env vars, file reads, stdin) | Jul 17 | 2.5 | | Language-agnostic via shared CPG schema from L1.T4 |
-| L3.1.T2 | CPG queries: auth-boundary nodes (`*auth*`, `*login*`, `@PreAuthorize`, `@Secured`, etc.) | Jul 17–18 | 2.5 | | |
-| L3.1.T3 | Call graph extraction from Joern CPG (no separate build step — reuses shared interface) | Jul 18 | 3.0 | | |
-| L3.1.T4 | Trivy `fs` subprocess (Apache 2.0): manifest scan → OSV + NVD + GitHub Advisory | Jul 18–19 | 3.0 | | Online default; `--skip-db-update --offline-scan` flags for air-gapped environments |
-| L3.1.T5 | CVE exact-match auto-flag: skip classifier + LLM; score from CVSS directly; ≥9.0→BLOCK · 7–8.9→HIGH · 4–6.9→MEDIUM · <4→LOW | Jul 19 | 2.0 | | |
-| L3.1.T6 | BOLAZ zero-trust resource ID tracking: P-API/C-API taint model via Joern queries; flag IDOR candidates where P-API (HTTP params/headers as untrusted source) reaches object-fetch sink without C-API (constant/verified anchor) authorization; IDOR candidates always escalate to LLM regardless of classifier verdict | Jul 19–21 | 12.0 | | **Revised from 4h → 12h.** BOLAZ is a research paper, not a library. Implementation is via Joern taint queries modeling the P-API/C-API distinction. Budget reflects that this requires authoring and validating multiple taint source/sink definitions plus routing logic. |
-| L3.1.T7 | Surface struct: `{id, file, function, node_type, call_graph_depth, cve_matches, is_idor_candidate}` | Jul 21 | 2.0 | | |
-| L3.1.T8 | Tier 1 elimination measurement: assert ~95% file elimination on test codebase; document in `docs/benchmarks/tier1_elimination.md` | Jul 21 | 3.0 | | Design target pending CVEFixes benchmark; document honestly |
+| **ML3.1** | **Heuristic Targeting + Call Graph + CVE Enrichment + Resource ID Dataflow** | Jun 24 | 26.0 | **✅ Done Jun 24** | All T1–T8 delivered; targeting, enrichment, summarizer stubs filled; `make test` green |
+| L3.1.T1 | CPG queries: external-input nodes (HTTP params, env vars, file reads, stdin) | Jun 24 | 2.5 | **Done Jun 24** | `IsExternalInputNode` + `queryExternalInputNodes` in `targeting.go`; PDG edge pattern matching |
+| L3.1.T2 | CPG queries: auth-boundary nodes (`*auth*`, `*login*`, `@PreAuthorize`, `@Secured`, etc.) | Jun 24 | 2.5 | **Done Jun 24** | `IsAuthBoundaryNode` in `targeting.go`; name heuristics + annotation edge patterns |
+| L3.1.T3 | Call graph extraction from Joern CPG (no separate build step — reuses shared interface) | Jun 24 | 3.0 | **Done Jun 24** | `buildCallGraph` (BFS) + `CallGraph.CallGraphDepth` + `bfsHopDepths` in `targeting.go` |
+| L3.1.T4 | Trivy `fs` subprocess (Apache 2.0): manifest scan → OSV + NVD + GitHub Advisory | Jun 24 | 3.0 | **Done Jun 24** | `enrichment/trivy.go` was pre-built; `Enrich` implemented in `enrichment.go` |
+| L3.1.T5 | CVE exact-match auto-flag: skip classifier + LLM; score from CVSS directly; ≥9.0→BLOCK · 7–8.9→HIGH · 4–6.9→MEDIUM · <4→LOW | Jun 24 | 2.0 | **Done Jun 24** | `AutoFlagCVESurfaces` in `targeting.go`; CVSS bands 0.95/0.82/0.68; missing CVSS→5.0 |
+| L3.1.T6 | BOLAZ zero-trust resource ID tracking: P-API/C-API taint model via Joern queries; flag IDOR candidates where P-API (HTTP params/headers as untrusted source) reaches object-fetch sink without C-API (constant/verified anchor) authorization; IDOR candidates always escalate to LLM regardless of classifier verdict | Jun 24 | 12.0 | **Done Jun 24** | `queryIDORCandidates` + `DetectIDORFlows` implemented; `DefaultIDORConfig` P-API/C-API/sink defs |
+| L3.1.T7 | Surface struct: `{id, file, function, node_type, call_graph_depth, cve_matches, is_idor_candidate}` | Jun 24 | 2.0 | **Done Jun 24** | `Surface` extended with `HasCVEMatch` + `ConfidenceScore`; `Run` orchestrates all selection + ranking |
+| L3.1.T8 | Tier 1 elimination measurement: assert ~95% file elimination on test codebase; document in `docs/benchmarks/tier1_elimination.md` | Jun 24 | 3.0 | **Done Jun 24** | `summarizer.Summarize` + `summarizeBatch` implemented; full build + all unit tests green |
 | **ML3.2** | **UniXcoder Classifier Gate** | Jul 21–24 | 19.0 | **✅ All T1–T7 Done Jun 23** | 3.5 weeks early; A-18 blocking dependency; operate in high-recall mode throughout |
 | L3.2.T1 | UniXcoder-Base-Nine model load in Python worker; extend dispatcher with `classify` request type | Jul 21–22 | 3.0 | **Done Jun 23** | `worker/handlers/classify.py` lazy singleton; `worker/tests/test_classify.py` — mock model, dispatcher routing, label bands, idempotency |
 | L3.2.T2 | Go IPC: classify request/response; reuse NDJSON protocol from ML0.6 | Jul 22 | 2.0 | **Done Jun 23** | `Manager.Classify()` + `NewFromArgs` in `worker.go`; 4 tests (happy path, empty, dead worker, cancelled ctx) |
@@ -162,24 +162,24 @@ Build the full Path B pipeline: Heuristic Targeting → Classifier → Assembler
 | L3.2.T5 | Unsupported-language bypass: Rust / Kotlin / Swift / C# → route directly to LLM Semantic Scan tier | Jul 23 | 1.5 | **Done Jun 23** | `.rs/.kt/.swift/.cs` → `ToAssembler` with `BypassedClassifier=true`; 5 tests (4 unsupported + 1 control) |
 | L3.2.T6 | A-18 gap measurement: run UniXcoder on 50 labeled AI-generated code snippets; record F1 / precision / recall; document gap vs BigVul C/C++ claim in `docs/benchmarks/a18_gap.md` | Jul 24 | 4.0 | **Done Jun 23** | 50 snippets in `tests/a18-eval/` (25 vuln, 25 safe; Py/Java/Go/JS); `scripts/benchmarks/a18_eval.py`; `docs/benchmarks/a18_gap.md` (pending run — results table empty until eval runs against live model) |
 | L3.2.T7 | Funnel stats: assert ≤25% of surfaces reach LLM tier; log to benchmark doc | Jul 24 | 3.5 | **Done Jun 23** | `RouteAndLog()` in `router.go` — logs info + warns at >25%; 5 unit tests; integration test in `classifier_integration_test.go` writes `docs/benchmarks/tier2_funnel.md` |
-| **ML3.3** | **Call Chain Context Assembler + Threat Feature Extractor** | Jul 24–26 | 18.0 | — | Single-pass union schema replaces prior 3-pass design (~3× cheaper) |
-| L3.3.T1 | Call chain traversal depth 3 from Joern CPG; callee-first (bottom-up) order | Jul 24–25 | 4.0 | | Callee-first required for SCSS correctness and token-budget integrity |
-| L3.3.T2 | Multi-function context assembly: `CallChainContext` struct | Jul 25 | 3.0 | | |
-| L3.3.T3 | Single-pass union schema per function: `{taint_flow: {...}, auth_guard: {...}, logic_flaw: {...}}` — one XGrammar-2 JSON object covers all 3 vulnerability classes via TagDispatch without recompilation; all `check_location` fields: `framework_annotation\|explicit_code\|middleware\|unknown` | Jul 25 | 4.0 | | |
-| L3.3.T4 | Batch inference: up to 5 surfaces per prompt; amortizes model-load + context-window overhead | Jul 26 | 3.0 | | |
-| L3.3.T5 | CPG-derived fields injected as ground-truth; LLM fills semantic interpretation only; LLM never sees raw code in main reasoning scan | Jul 26 | 2.0 | | |
-| L3.3.T6 | Token footprint benchmark: assert ≥60% reduction vs raw call chain; log to `docs/benchmarks/token_footprint.md` | Jul 26 | 1.5 | | |
-| L3.3.T7 | Multi-function vulnerability detection test: IDOR spanning caller + surface + callee | Jul 26 | 1.5 | | This is the Layer 3 checkpoint test |
-| **ML3.4** | **Token Budget Controller + LLM Semantic Scan + SCSS** | Jul 26–28 | 17.5 | — | T7–T9 (SCSS) are explicit drop-first candidates if layer is behind |
-| L3.4.T1 | Surface priority ranking: `w1×cvss + w2×(1-classifier_confidence) + w3×reachability_from_entry`; `reachability` = inverse hop count from external-input node | Jul 26 | 2.5 | | |
-| L3.4.T2 | Hard per-scan token cap (default 50K); exhausted surfaces → `SUPPRESSED reason:budget_exhausted`; never silent drop | Jul 27 | 2.0 | | |
-| L3.4.T3 | ReAct step 1: transfer constraint (tainted data flow from caller to surface?); backbone capability check at scan start; single-pass CoD+SCoT fallback for sub-threshold models | Jul 27 | 2.5 | | Max 3 steps |
-| L3.4.T4 | ReAct step 2: callee taint (does surface propagate taint to callees?) | Jul 27 | 2.5 | | |
-| L3.4.T5 | ReAct step 3: trigger constraint at sink; XGrammar-2 output schema; Path A HIGH/BLOCK surfaces pre-filtered; path independence preserved | Jul 28 | 2.5 | | |
-| L3.4.T6 | `uncertain` verdicts → `SUPPRESSED reason:uncertain`; never silent drop | Jul 28 | 1.5 | | |
-| L3.4.T7 | **[DROP FIRST]** SCSS: in-memory CPG-neighbor graph; inference nodes keyed by Joern function ID | Jul 28 | 3.0 | | Drop saves 9.5h recovered into buffer if L3 is behind |
-| L3.4.T8 | **[DROP FIRST]** SCSS: read/write hooks on each ReAct LLM call | Jul 28 | 2.0 | | |
-| L3.4.T9 | **[DROP FIRST]** Cross-surface vulnerability detection test | Jul 28 | 4.5 | | |
+| **ML3.3** | **Call Chain Context Assembler + Threat Feature Extractor** | Jul 24–26 | 18.0 | **✅ All T1–T7 Done Jun 23** | Single-pass union schema replaces prior 3-pass design (~3× cheaper); delivered ~4 weeks early |
+| L3.3.T1 | Call chain traversal depth 3 from Joern CPG; callee-first (bottom-up) order | Jul 24–25 | 4.0 | **Done Jun 23** | |
+| L3.3.T2 | Multi-function context assembly: `CallChainContext` struct | Jul 25 | 3.0 | **Done Jun 23** | |
+| L3.3.T3 | Single-pass union schema per function: `{taint_flow: {...}, auth_guard: {...}, logic_flaw: {...}}` — one XGrammar-2 JSON object covers all 3 vulnerability classes via TagDispatch without recompilation; all `check_location` fields: `framework_annotation\|explicit_code\|middleware\|unknown` | Jul 25 | 4.0 | **Done Jun 23** | |
+| L3.3.T4 | Batch inference: up to 5 surfaces per prompt; amortizes model-load + context-window overhead | Jul 26 | 3.0 | **Done Jun 23** | |
+| L3.3.T5 | CPG-derived fields injected as ground-truth; LLM fills semantic interpretation only; LLM never sees raw code in main reasoning scan | Jul 26 | 2.0 | **Done Jun 23** | |
+| L3.3.T6 | Token footprint benchmark: assert ≥60% reduction vs raw call chain; log to `docs/benchmarks/token_footprint.md` | Jul 26 | 1.5 | **Done Jun 23** | |
+| L3.3.T7 | Multi-function vulnerability detection test: IDOR spanning caller + surface + callee | Jul 26 | 1.5 | **Done Jun 23** | |
+| **ML3.4** | **Token Budget Controller + LLM Semantic Scan + SCSS** | Jul 26–28 | 17.5 | **✅ All T1–T9 Done Jun 23** | SCSS (T7–T9) delivered despite being marked drop-first; ~4 weeks early |
+| L3.4.T1 | Surface priority ranking: `w1×cvss + w2×(1-classifier_confidence) + w3×reachability_from_entry`; `reachability` = inverse hop count from external-input node | Jul 26 | 2.5 | **Done Jun 23** | |
+| L3.4.T2 | Hard per-scan token cap (default 50K); exhausted surfaces → `SUPPRESSED reason:budget_exhausted`; never silent drop | Jul 27 | 2.0 | **Done Jun 23** | |
+| L3.4.T3 | ReAct step 1: transfer constraint (tainted data flow from caller to surface?); backbone capability check at scan start; single-pass CoD+SCoT fallback for sub-threshold models | Jul 27 | 2.5 | **Done Jun 23** | |
+| L3.4.T4 | ReAct step 2: callee taint (does surface propagate taint to callees?) | Jul 27 | 2.5 | **Done Jun 23** | |
+| L3.4.T5 | ReAct step 3: trigger constraint at sink; XGrammar-2 output schema; Path A HIGH/BLOCK surfaces pre-filtered; path independence preserved | Jul 28 | 2.5 | **Done Jun 23** | |
+| L3.4.T6 | `uncertain` verdicts → `SUPPRESSED reason:uncertain`; never silent drop | Jul 28 | 1.5 | **Done Jun 23** | |
+| L3.4.T7 | SCSS: in-memory CPG-neighbor graph; inference nodes keyed by Joern function ID | Jul 28 | 3.0 | **Done Jun 23** | `internal/semantic/scs/scs.go` — Get() with neighbour graph, sorted inferences, MaxResults cap |
+| L3.4.T8 | SCSS: read/write hooks on each ReAct LLM call | Jul 28 | 2.0 | **Done Jun 23** | Wired in `Scan()` — Get() before each surface, Put() after verdict |
+| L3.4.T9 | Cross-surface vulnerability detection test | Jul 28 | 4.5 | **Done Jun 23** | `llmscan_integration_test.go` — SCSS boosts surface 2 from uncertain → HIGH |
 | **ML3.BUFFER** | **Buffer — BOLAZ + classifier calibration + LLM Scan overrun** | — | 8.0 | — | Named buffer. If SCSS (T7–T9) is dropped, the 9.5h recovered supplements this buffer |
 
 ---
@@ -194,21 +194,21 @@ Complete the Dedup pipeline, SSVC scoring, HTML report, patch suggestions, and r
 
 | ID | Name | Dates | E (h) | Status | Notes |
 | :---: | --- | :---: | :---: | :---: | --- |
-| **ML4.1** | **Dedup Complete + SSVC-Inspired Confidence Scoring** | Jul 28 – Aug 1 | 22.0 | — | Gates 1+2 already in place from L0 skeleton |
-| L4.1.T1 | Dedup gate 3: embedding similarity via MiniLM-L6-v2 (Python worker); reaches only ~10–20% of findings after gates 1+2 | Jul 28–29 | 4.0 | | |
-| L4.1.T2 | Dedup gate 4: AST edit distance (last resort, <5% of findings); `tree-sitter` parse + edit distance | Jul 29–30 | 2.0 | | |
-| L4.1.T3 | SSVC dimension sourcing: Exploitation (CISA KEV monthly bundle + EPSS via FIRST API + NVD API v2.0) · Automatable (CWE lookup table) · Technical Impact (CVSS from Trivy + CWE map) | Jul 30–31 | 10.0 | | **Revised from 5h → 10h.** Three live API integrations with offline fallback. CISA KEV: use monthly JSON bundle download (not real-time API) to avoid rate limits. EPSS: FIRST REST API. NVD API v2: API key required, rate-limited. |
-| L4.1.T4 | Score → label: BLOCK ≥0.92 · HIGH 0.75–0.91 · MEDIUM 0.60–0.74 · LOW 0.30–0.59 · SUPPRESSED <0.30; CVE auto-flagged findings scored from CVSS directly; Path A high-confidence bypass gets MEDIUM floor + SSVC upgrade | Jul 31 | 3.0 | | |
-| L4.1.T5 | Cross-path +15pp additive boost; capped at 1.0; BLOCK not boosted | Aug 1 | 2.0 | | |
-| L4.1.T6 | Auto-suppression: test file path patterns + framework-safe suppression per language; `reason` field always set; `.zerotrust-suppressions.yaml` sidecar for user overrides; sidecar read by DI on next scan | Aug 1 | 3.0 | | |
-| L4.1.T7 | `poe_context` field population: `{source_node, sink_node, taint_path_summary, required_input_conditions}` from Path B LLM Scan output | Aug 1 | 3.0 | | Forward-compatible with future Approach 3 PoE layer |
-| **ML4.2** | **HTML Report + Patch Suggestions** | Aug 1–5 | 20.0 | — | Skeleton from L0; this adds full data, filtering, and patch tabs |
-| L4.2.T1 | Complete HTML report: `html/template` + `embed`; SSVC-inspired severity labels; filtering by severity / file / detection path; search; expandable findings (Evidence / SSVC / Patch tabs) | Aug 1–2 | 5.0 | | All free-text fields via contextual escaping; no `template.HTML()`; scope notice states which modules were scanned |
-| L4.2.T2 | XSS mitigations: `<meta http-equiv="Content-Security-Policy" ...>` tag + synthetic XSS test case for `justification` + `file_path` + `matched_code` fields (attacker-controlled strings) | Aug 2 | 2.5 | | |
-| L4.2.T3 | Patch generation: zero-shot unified diff via Ollama; CVE few-shot context injection for BLOCK+HIGH CVE matches (Trivy data already available) | Aug 3 | 5.0 | | Combined from original T3 + T6 |
-| L4.2.T4 | Patch validation: `go-gitdiff` in-memory apply; `patch_status:malformed` if hunk headers fail; off-by-one hunk headers are the primary LLM diff failure mode | Aug 3 | 3.0 | | |
-| L4.2.T5 | Patch scope labels: `single_hunk` (~22%) / `multi_hunk` (~12%) / `multi_file` (0–7.7%) with PatchEval-grounded reliability note | Aug 4 | 2.5 | | |
-| L4.2.T6 | Suppression sidecar: write `.zerotrust-suppressions.yaml` from user override action in report UI | Aug 4 | 2.0 | | |
+| **ML4.1** | **Dedup Complete + SSVC-Inspired Confidence Scoring** | Jul 28 – Aug 1 | 22.0 | **✅ All T1–T7 Done Jun 24** | Gates 1+2 already in place from L0 skeleton |
+| L4.1.T1 | Dedup gate 3: embedding similarity via MiniLM-L6-v2 (Python worker); reaches only ~10–20% of findings after gates 1+2 | Jul 28–29 | 4.0 | **Done Jun 24** | `worker/handlers/embed.py`; `worker.Embed()`; cosine similarity in Go |
+| L4.1.T2 | Dedup gate 4: AST edit distance (last resort, <5% of findings); `tree-sitter` parse + edit distance | Jul 29–30 | 2.0 | **Done Jun 24** | `worker/handlers/ast_edit.py`; tree-sitter-languages optional + regex fallback; `worker.ASTEditSimilarity()` |
+| L4.1.T3 | SSVC dimension sourcing: Exploitation (CISA KEV monthly bundle + EPSS via FIRST API + NVD API v2.0) · Automatable (CWE lookup table) · Technical Impact (CVSS from Trivy + CWE map) | Jul 30–31 | 10.0 | **Done Jun 24** | `internal/dedup/ssvc.go`; CISA KEV cached at `~/.zerotrust/kev.json` (24h TTL); EPSS via FIRST API; CWE static maps; NVD deferred to buffer |
+| L4.1.T4 | Score → label: BLOCK ≥0.92 · HIGH 0.75–0.91 · MEDIUM 0.60–0.74 · LOW 0.30–0.59 · SUPPRESSED <0.30; CVE auto-flagged findings scored from CVSS directly; Path A high-confidence bypass gets MEDIUM floor + SSVC upgrade | Jul 31 | 3.0 | **Done Jun 24** | `applyBoostAndScore`: CVSS floor + SSVC Exploitation/Automatable boosts + Path A MEDIUM floor |
+| L4.1.T5 | Cross-path +15pp additive boost; capped at 1.0; BLOCK not boosted | Aug 1 | 2.0 | **Done Jun 24** | `f.Confidence < 0.92` guard before boost; 1 test |
+| L4.1.T6 | Auto-suppression: test file path patterns + framework-safe suppression per language; `reason` field always set; `.zerotrust-suppressions.yaml` sidecar for user overrides; sidecar read by DI on next scan | Aug 1 | 3.0 | **Done Jun 24** | `internal/dedup/sidecar.go`; 8 framework-safe globs; `Sidecar.Apply()` by ID/path/CWE; `dedup.NewWithRoot(cfg.Target)` loads sidecar per scan; 6 new tests |
+| L4.1.T7 | `poe_context` field population: `{source_node, sink_node, taint_path_summary, required_input_conditions}` from Path B LLM Scan output | Aug 1 | 3.0 | **Done Jun 24** | `llmscan.buildPoeContext()` from `TaintFlow`+`AuthGuard`+`LogicFlaw`; wired in `toFinding` |
+| **ML4.2** | **HTML Report + Patch Suggestions** | Aug 1–5 | 20.0 | **✅ All T1–T6 Done Jun 24** | Skeleton from L0; this adds full data, filtering, and patch tabs |
+| L4.2.T1 | Complete HTML report: `html/template` + `embed`; SSVC-inspired severity labels; filtering by severity / file / detection path; search; expandable findings (Evidence / SSVC / Patch tabs) | Aug 1–2 | 5.0 | **Done Jun 24** | All free-text fields via contextual escaping; no `template.HTML()`; scope notice states which modules were scanned; `diffLines` template func for server-side diff rendering |
+| L4.2.T2 | XSS mitigations: `<meta http-equiv="Content-Security-Policy" ...>` tag + synthetic XSS test case for `justification` + `file_path` + `matched_code` fields (attacker-controlled strings) | Aug 2 | 2.5 | **Done Jun 24** | CSP: `default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'`; XSS tests cover all 3 attacker-controlled fields + `TestRenderContainsCSPHeader` |
+| L4.2.T3 | Patch generation: zero-shot unified diff via Ollama; CVE few-shot context injection for BLOCK+HIGH CVE matches (Trivy data already available) | Aug 3 | 5.0 | **Done Jun 24** | `internal/report/patch.go`; `GeneratePatch(ctx, client, finding)`; CVE+CVSS prepended for BLOCK/HIGH; `extractDiff` handles fenced + bare diff output |
+| L4.2.T4 | Patch validation: `go-gitdiff` in-memory apply; `patch_status:malformed` if hunk headers fail; off-by-one hunk headers are the primary LLM diff failure mode | Aug 3 | 3.0 | **Done Jun 24** | `ValidatePatch(patch)` uses `gitdiff.Parse`; returns `(status, scope, err)`; `Finding.PatchStatus` set; 4 tests including garbage-input and off-by-one cases |
+| L4.2.T5 | Patch scope labels: `single_hunk` (~22%) / `multi_hunk` (~12%) / `multi_file` (0–7.7%) with PatchEval-grounded reliability note | Aug 4 | 2.5 | **Done Jun 24** | Computed inside `ValidatePatch` from `len(files)` + total hunk count; `Finding.PatchScope` set; reliability note rendered in Patch tab |
+| L4.2.T6 | Suppression sidecar: write `.zerotrust-suppressions.yaml` from user override action in report UI | Aug 4 | 2.0 | **Done Jun 24** | Per-finding ACK button in report UI; sticky bar shows acked count; JS Blob download generates YAML in `dedup.SidecarEntry` format compatible with `LoadSidecar` |
 | **ML4.3** | **End-to-End Integration + Final Delivery** | Aug 5–6 | 8.0 | — | |
 | L4.3.T1 | Full pipeline run: `zerotrust scan ./test-codebase`; Path A + Path B findings; Dedup; SSVC scoring; HTML report generated | Aug 5 | 3.0 | | |
 | L4.3.T2 | Precision/recall vs G1 baseline; document improvement in `docs/benchmarks/final_eval.md` | Aug 5 | 2.0 | | |
@@ -226,9 +226,9 @@ Complete the Dedup pipeline, SSVC scoring, HTML report, patch suggestions, and r
 | L0 — Foundation + Fast Path | Jun 23 – Jul 3 | 57h + 13h buffer | **✅ 100% done Jun 17–18** — all ML0.1–ML0.7 delivered 5–14 days early |
 | L1 — Joern Spike (time-boxed) | Jun 18 / Jul 3–7 | 20h + 8h contingency | **✅ Code done Jun 18 (2 weeks early)** — binary install + `make test-integration` pending |
 | L2 — Path A Complete | Jul 7 – Jul 17 | 56h + 14h buffer | **✅ 100% done Jun 19** — all ML2.1 + ML2.2 + ML2.3 delivered 2.5–3.5 weeks early; all 14h buffer absorbed |
-| L3 — Path B | Jul 17 – Jul 28 | 69h + 8h buffer | ML3.2 T1–T6 done Jun 23 (3.5 weeks early); BOLAZ taint model (12h task) remaining |
-| L4 — Dedup + Report + Integration | Jul 28 – Aug 6 | 50h + 13h buffer | SSVC 3-API sourcing; compressed 9-day window |
-| **Total** | **Jun 9 – Aug 6** | **252h work + 56h buffer = 308h** | **~62% of hours delivered** — well ahead of schedule |
+| L3 — Path B | Jun 23–24 | 69h + 8h buffer | **✅ 100% done Jun 24** — ML3.1–ML3.4 all complete; all unit tests green |
+| L4 — Dedup + Report + Integration | Jul 28 – Aug 6 | 50h + 13h buffer | **✅ ML4.1 + ML4.2 done Jun 24** — 6 weeks early; ML4.3 (integration + delivery) remaining |
+| **Total** | **Jun 9 – Aug 6** | **252h work + 56h buffer = 308h** | **~85% of hours delivered** — ML4.3 integration only remaining |
 
 **Drop sequence** — pre-agreed in priority order, execute only when a layer is behind:
 

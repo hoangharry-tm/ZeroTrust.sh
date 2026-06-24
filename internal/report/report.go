@@ -1,4 +1,4 @@
-// Copyright 2026 hoangharry-tm
+// Copyright 2026 Minh Hoang Ton
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -86,6 +86,13 @@ type codeLine struct {
 	Highlight bool // true for the primary finding line
 }
 
+// diffLine is a single rendered line in a unified-diff block.
+type diffLine struct {
+	Class   string // " add", " del", " hunk", or ""
+	Sign    string // "+", "-", "@", or " "
+	Content string
+}
+
 // templateFuncs are the custom functions available in the template.
 var templateFuncs = template.FuncMap{
 	// not inverts a boolean — used for {{ if not .Findings }}.
@@ -161,6 +168,27 @@ var templateFuncs = template.FuncMap{
 		default:
 			return ""
 		}
+	},
+
+	// diffLines parses a unified diff string into diffLine values for the template.
+	"diffLines": func(patch string) []diffLine {
+		raw := strings.Split(strings.TrimRight(patch, "\n"), "\n")
+		lines := make([]diffLine, 0, len(raw))
+		for _, l := range raw {
+			var dl diffLine
+			switch {
+			case strings.HasPrefix(l, "@@"):
+				dl = diffLine{Class: " hunk", Sign: "@", Content: l}
+			case strings.HasPrefix(l, "+"):
+				dl = diffLine{Class: " add", Sign: "+", Content: l[1:]}
+			case strings.HasPrefix(l, "-"):
+				dl = diffLine{Class: " del", Sign: "-", Content: l[1:]}
+			default:
+				dl = diffLine{Sign: " ", Content: l}
+			}
+			lines = append(lines, dl)
+		}
+		return lines
 	},
 
 	// codeLines splits MatchedCode into numbered codeLine values.
