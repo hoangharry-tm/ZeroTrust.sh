@@ -236,9 +236,9 @@ func TestBuildCPG_RejectsPathTraversal(t *testing.T) {
 }
 
 func TestBuildCPG_SendsImportCodeQuery(t *testing.T) {
-	var gotQuery string
+	var queries []string
 	srv := mockServer(t, func(q string) (string, bool) {
-		gotQuery = q
+		queries = append(queries, q)
 		return `""`, true
 	})
 	c := newTestClient(t, srv)
@@ -246,27 +246,28 @@ func TestBuildCPG_SendsImportCodeQuery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildCPG() = %v", err)
 	}
-	if gotQuery == "" {
-		t.Error("BuildCPG: no query sent to server")
+	if len(queries) == 0 {
+		t.Fatal("BuildCPG: no query sent to server")
 	}
-	// Query must reference importCode and the path.
+	// First query must reference importCode and the path.
+	first := queries[0]
 	for _, want := range []string{"importCode", "/project/src"} {
-		if !strings.Contains(gotQuery, want) {
-			t.Errorf("BuildCPG query %q missing %q", gotQuery, want)
+		if !strings.Contains(first, want) {
+			t.Errorf("BuildCPG first query %q missing %q", first, want)
 		}
 	}
 }
 
 func TestBuildCPG_WithLanguageOverride(t *testing.T) {
-	var gotQuery string
-	srv := mockServer(t, func(q string) (string, bool) { gotQuery = q; return `""`, true })
+	var queries []string
+	srv := mockServer(t, func(q string) (string, bool) { queries = append(queries, q); return `""`, true })
 	c := newTestClient(t, srv)
 	_ = c.BuildCPG(context.Background(), BuildConfig{
 		Paths:    []string{"/project/src"},
 		Language: "JAVASRC",
 	})
-	if !strings.Contains(gotQuery, "JAVASRC") {
-		t.Errorf("BuildCPG with language: query %q missing JAVASRC", gotQuery)
+	if len(queries) == 0 || !strings.Contains(queries[0], "JAVASRC") {
+		t.Errorf("BuildCPG with language: first query %v missing JAVASRC", queries)
 	}
 }
 
@@ -314,6 +315,29 @@ func TestDoQuery_ServerReportsFailure(t *testing.T) {
 	_, err := c.doQuery(context.Background(), "bad query")
 	if err == nil {
 		t.Error("doQuery: expected error for success=false with stderr, got nil")
+	}
+}
+
+func TestIsJoernConsoleError(t *testing.T) {
+	if !isJoernConsoleError("io.joern.console.Error: No CPG loaded") {
+		t.Error("expected true for console.Error prefix")
+	}
+	if !isJoernConsoleError("io.joern.console.ConsoleException: foo") {
+		t.Error("expected true for ConsoleException prefix")
+	}
+	if isJoernConsoleError(`[{"id":"1"}]`) {
+		t.Error("expected false for valid JSON")
+	}
+}
+
+func TestDoQuery_ConsoleError(t *testing.T) {
+	// Joern returns success=true but stdout is a console error — doQuery must error.
+	errMsg := "io.joern.console.Error: No CPG loaded for project test"
+	srv := mockServer(t, func(_ string) (string, bool) { return errMsg, true })
+	c := newTestClient(t, srv)
+	_, err := c.doQuery(context.Background(), "cpg.method.size")
+	if err == nil {
+		t.Fatal("doQuery: expected error for console error stdout, got nil")
 	}
 }
 
@@ -376,6 +400,10 @@ func TestParseStdout(t *testing.T) {
 		{"REPL annotation", `res0: String = "[{\"id\":\"1\"}]"`, `[{"id":"1"}]`},
 		{"Scala string literal", `"[{\"id\":\"1\"}]"`, `[{"id":"1"}]`},
 		{"trailing whitespace", `  [{"id":"1"}]  `, `[{"id":"1"}]`},
+		// Console-error strings have no = separator; parseStdout must return them as-is
+		// so isJoernConsoleError can detect them in fetchResult.
+		{"console Error passthrough", `io.joern.console.Error: No CPG loaded`, `io.joern.console.Error: No CPG loaded`},
+		{"ConsoleException passthrough", `io.joern.console.ConsoleException: bad`, `io.joern.console.ConsoleException: bad`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

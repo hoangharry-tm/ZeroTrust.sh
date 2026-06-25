@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -69,7 +70,12 @@ func (c *Client) doQuery(ctx context.Context, query string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return c.fetchResult(ctx, uuid)
+	raw, err := c.fetchResult(ctx, uuid)
+	if err != nil {
+		return nil, err
+	}
+	slog.Debug("joern: doQuery raw result", "stdout", truncate(raw, 512))
+	return raw, nil
 }
 
 // postQuery submits the query and returns its UUID.
@@ -198,8 +204,23 @@ func (c *Client) fetchResult(ctx context.Context, uuid string) ([]byte, error) {
 			}
 		}
 
-		return []byte(parseStdout(qr.Stdout)), nil
+		stdout := parseStdout(qr.Stdout)
+		if isJoernConsoleError(stdout) {
+			return nil, fmt.Errorf("joern: console error: %s", truncate([]byte(stdout), 512))
+		}
+		return []byte(stdout), nil
 	}
+}
+
+// isJoernConsoleError reports whether s is a Joern REPL error message that
+// should be surfaced as an error rather than passed through as valid output.
+//
+// Joern's HTTP API returns success=true even when the query fails internally
+// (e.g. missing goastgen binary, no CPG loaded). These are detected by their
+// Scala exception prefix rather than the HTTP-level success field.
+func isJoernConsoleError(s string) bool {
+	return strings.HasPrefix(s, "io.joern.console.Error:") ||
+		strings.HasPrefix(s, "io.joern.console.ConsoleException:")
 }
 
 // doQueryPing sends a trivial query to verify the server is alive and accepting

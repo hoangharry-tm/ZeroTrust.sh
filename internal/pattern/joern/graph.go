@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/hoangharry-tm/zerotrust/internal/tuning"
@@ -339,6 +340,7 @@ func (g *joernGraph) PreFlaggedSinks() ([]cpg.TaintSink, error) {
 func parseNodes(raw []byte) ([]cpg.Node, error) {
 	var jns []joernNode
 	if err := json.Unmarshal(raw, &jns); err != nil {
+		slog.Debug("joern: parseNodes raw input", "raw", string(raw))
 		return nil, fmt.Errorf("%w: parse nodes: %w", ErrMalformedResponse, err)
 	}
 	nodes := make([]cpg.Node, len(jns))
