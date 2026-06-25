@@ -195,24 +195,6 @@ flowchart LR
 | ⚪ **LOW** | Best practice violation, low risk |
 | 🟢 **SUPPRESSED** | Budget-exhausted — not silent drop |
 
-## Current Status
-
-| Milestone | Window | Status |
-|---|---|---|
-| G1 — OpenGrep PoC | Jun 9–20 | ✅ **Complete** |
-| L0 — Foundation + Fast Path | Jun 17–23 | ✅ **Complete** (6–11 days early) |
-| L1 — Joern Spike | Jul 3–7 | 🔲 Upcoming |
-| L2 — Path A Complete | Jul 7–17 | 🔲 Upcoming |
-| L3 — Path B | Jul 17–28 | 🔲 Upcoming |
-| L4 — Dedup + Report + Integration | Jul 28 – Aug 6 | 🔲 Upcoming |
-
-**G1 delivered:** 42 rules (PY-001→010 · JV-001→009 · GN-001→007 · AG-005→016), Go instrscan, Spring Boot test codebase with 12 findings across 10 rule variants, 0 FP on clean controls.
-
-**L0 delivered:** Go CLI binary, MIV with cosign/Sigstore Rekor verification, Differential Indexer with SQLite state cache, OpenGrep + ast-grep + instrscan wrappers, Python worker IPC, Finding channel, live HTML dashboard via SSE.
-
-> [!CAUTION]
-> Public testing release deadline: **August 6, 2026**.
-
 ## Language Coverage
 
 <details>
