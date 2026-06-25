@@ -7,8 +7,11 @@ Skips heavy model load when sentence-transformers is unavailable.
 
 from __future__ import annotations
 
+import logging
 import threading
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 _SentenceTransformer: type | None = None
 try:
@@ -34,7 +37,9 @@ def _get_model() -> Any:
                 raise RuntimeError(
                     "sentence-transformers not installed; Gate 3 embedding unavailable"
                 )
+            logger.debug("embed: loading SentenceTransformer (model=%s)", _MODEL_NAME)
             _model = _SentenceTransformer(_MODEL_NAME)
+            logger.info("embed: model loaded (model=%s)", _MODEL_NAME)
     return _model
 
 
@@ -49,7 +54,10 @@ def handle(payload: dict[str, Any]) -> dict[str, Any]:
     """
     codes: list[str] = payload["codes"]
     if not codes:
+        logger.debug("embed: empty codes list, returning empty embeddings")
         return {"embeddings": []}
+    logger.debug("embed: encoding", extra={"num_codes": len(codes)})
     model = _get_model()
     vecs = model.encode(codes, convert_to_numpy=True)
+    logger.debug("embed: done", extra={"num_embeddings": len(vecs)})
     return {"embeddings": [v.tolist() for v in vecs]}

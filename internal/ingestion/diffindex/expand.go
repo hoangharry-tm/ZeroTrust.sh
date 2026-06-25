@@ -17,6 +17,7 @@ package diffindex
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/hoangharry-tm/zerotrust/pkg/cpg"
 )
@@ -30,6 +31,7 @@ import (
 // If the CPG is unavailable or any query fails, the original ChangeSet is returned
 // unchanged — expansion is best-effort and must not block the scan.
 func ExpandWithCPG(ctx context.Context, cs *ChangeSet, g cpg.Graph) (*ChangeSet, error) {
+	slog.Debug("expanding changeset with CPG one-hop neighbours", "component", "diffindex", "changed", len(cs.Changed))
 	if cs == nil || len(cs.Changed) == 0 {
 		return cs, nil
 	}
@@ -71,6 +73,7 @@ func ExpandWithCPG(ctx context.Context, cs *ChangeSet, g cpg.Graph) (*ChangeSet,
 	}
 
 	if len(expanded) == len(cs.Changed) {
+		slog.Debug("CPG expansion added no new files", "component", "diffindex")
 		return cs, nil
 	}
 
@@ -86,6 +89,11 @@ func ExpandWithCPG(ctx context.Context, cs *ChangeSet, g cpg.Graph) (*ChangeSet,
 		}
 	}
 
+	slog.Info("CPG expansion complete",
+		"component", "diffindex",
+		"original", len(cs.Changed),
+		"expanded", len(result),
+	)
 	return &ChangeSet{
 		Changed:   result,
 		Removed:   cs.Removed,

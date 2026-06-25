@@ -1,0 +1,21 @@
+# Generated / build artifacts
+build/
+exports/
+godocs/
+
+# Heavy datasets (gitignored corpus)
+tests/corpus/
+
+# GitHub Pages marketing site (not source)
+site/
+
+# Python caches
+__pycache__/
+*.pyc
+worker/__pycache__/
+
+# Go test cache / binary
+zerotrust
+
+# Lock files (rarely useful to read)
+go.sum

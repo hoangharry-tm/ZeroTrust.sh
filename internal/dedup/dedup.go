@@ -44,6 +44,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"math"
 	"path/filepath"
 	"strings"
@@ -146,6 +147,7 @@ func (l *Layer) ProcessWithStats(ctx context.Context, findings []finding.Finding
 }
 
 func (l *Layer) process(ctx context.Context, input []finding.Finding) ([]finding.Finding, []MergeRecord, Stats, error) {
+	slog.Debug("dedup process started", "component", "dedup", "input_count", len(input))
 	stats := Stats{InputCount: len(input)}
 	var records []MergeRecord
 
@@ -214,6 +216,13 @@ func (l *Layer) process(ctx context.Context, input []finding.Finding) ([]finding
 	}
 
 	stats.OutputCount = len(out)
+	slog.Info("dedup process complete",
+		"component", "dedup",
+		"input", stats.InputCount,
+		"output", stats.OutputCount,
+		"merged", stats.MergeCount,
+		"suppressed", stats.AutoSuppressedCount,
+	)
 	return out, records, stats, nil
 }
 
@@ -223,6 +232,7 @@ func (l *Layer) process(ctx context.Context, input []finding.Finding) ([]finding
 func (l *Layer) gate3(ctx context.Context, survivors []finding.Finding) (
 	[]finding.Finding, []MergeRecord, int, [][2]int,
 ) {
+	slog.Debug("dedup gate3 (embedding) started", "component", "dedup", "candidates", len(survivors))
 	if l.w == nil || len(survivors) == 0 {
 		return survivors, nil, 0, nil
 	}
@@ -243,6 +253,7 @@ func (l *Layer) gate3(ctx context.Context, survivors []finding.Finding) (
 	vecs, err := l.w.Embed(ctx, codes)
 	if err != nil || len(vecs) != len(codes) {
 		// Best-effort: skip gate 3 on worker error.
+		slog.Warn("dedup gate3: embedding failed, skipping", "component", "dedup", "err", err)
 		return survivors, nil, 0, nil
 	}
 
@@ -301,6 +312,7 @@ func (l *Layer) gate3(ctx context.Context, survivors []finding.Finding) (
 func (l *Layer) gate4(ctx context.Context, survivors []finding.Finding, nearMiss [][2]int) (
 	[]finding.Finding, []MergeRecord, int,
 ) {
+	slog.Debug("dedup gate4 (AST edit) started", "component", "dedup", "near_miss_pairs", len(nearMiss))
 	if l.w == nil || len(nearMiss) == 0 {
 		return survivors, nil, 0
 	}

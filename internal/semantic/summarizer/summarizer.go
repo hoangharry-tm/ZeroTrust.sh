@@ -42,6 +42,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 
 	"github.com/hoangharry-tm/zerotrust/internal/semantic/assembler"
 	"github.com/hoangharry-tm/zerotrust/internal/tuning"
@@ -102,18 +103,20 @@ func New(w *worker.Manager) *Summarizer {
 //     Multiple summaries may correspond to the same SurfaceID (one per function in chain).
 //   - error: non-nil only for worker communication failures.
 func (s *Summarizer) Summarize(ctx context.Context, chains []assembler.CallChain) ([]Summary, error) {
+	slog.Debug("summarizing call chains", slog.Int("chains", len(chains)), slog.Int("batch_size", s.batchSize))
 	var out []Summary
 	for i := 0; i < len(chains); i += s.batchSize {
-		end := i + s.batchSize
-		if end > len(chains) {
-			end = len(chains)
-		}
+		end := min(i+s.batchSize, len(chains))
+		batchNum := i / s.batchSize
 		batch, err := s.summarizeBatch(ctx, chains[i:end])
 		if err != nil {
-			return nil, fmt.Errorf("summarize batch %d: %w", i/s.batchSize, err)
+			slog.Error("summarize batch failed", "err", err, slog.Int("batch", batchNum))
+			return nil, fmt.Errorf("summarize batch %d: %w", batchNum, err)
 		}
+		slog.Debug("batch summarized", slog.Int("batch", batchNum), slog.Int("summaries", len(batch)))
 		out = append(out, batch...)
 	}
+	slog.Info("summarization complete", slog.Int("summaries", len(out)))
 	return out, nil
 }
 

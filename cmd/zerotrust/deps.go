@@ -16,6 +16,7 @@ package main
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"runtime"
@@ -50,14 +51,21 @@ var (
 // It prints a styled status block to stderr, then either exits 1 (Docker
 // missing) or returns (ollamaFound bool) so the caller can wire GPU passthrough.
 func checkDeps() bool {
+	slog.Debug("checking runtime dependencies", "component", "deps")
 	dockerVer, dockerOK := dockerVersion()
 	ollamaOK := ollamaReachable(ollamaHostURL)
 
 	if !dockerOK {
+		slog.Error("Docker not found on PATH", "component", "deps")
 		printDockerError()
 		os.Exit(1)
 	}
 
+	slog.Info("dependency check complete",
+		"component", "deps",
+		"docker_version", dockerVer,
+		"ollama_ok", ollamaOK,
+	)
 	printDepStatus(dockerVer, ollamaOK)
 	return ollamaOK
 }

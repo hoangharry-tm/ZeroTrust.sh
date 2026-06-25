@@ -27,6 +27,7 @@ package assembler
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 
@@ -39,8 +40,10 @@ import (
 //
 // Must be called after Assemble and before the context is serialised for the LLM.
 func (a *Assembler) InjectCPGFields(ctx context.Context, cc *CallChainContext) error {
+	slog.Debug("injecting CPG fields", slog.String("surface_id", cc.SurfaceID), slog.Int("frames", len(cc.Frames)))
 	sinks, err := a.graph.PreFlaggedSinks()
 	if err != nil {
+		slog.Error("pre-flagged sinks query failed", "err", err)
 		return fmt.Errorf("pre-flagged sinks: %w", err)
 	}
 	sinkIDs := make(map[string]struct{}, len(sinks))
@@ -53,6 +56,7 @@ func (a *Assembler) InjectCPGFields(ctx context.Context, cc *CallChainContext) e
 			return err
 		}
 		if err := a.injectFrame(&cc.Frames[i], sinkIDs); err != nil {
+			slog.Error("inject frame failed", "err", err, slog.String("node_id", cc.Frames[i].NodeID))
 			return fmt.Errorf("inject frame %s: %w", cc.Frames[i].NodeID, err)
 		}
 		cc.Frames[i].Code = "" // raw source must not reach the LLM payload

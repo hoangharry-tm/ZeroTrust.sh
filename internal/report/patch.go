@@ -17,6 +17,7 @@ package report
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/bluekeyes/go-gitdiff/gitdiff"
@@ -43,11 +44,14 @@ const (
 // Returns (PatchStatusMalformed, "", err) if hunk headers are invalid.
 // Returns (PatchStatusOK, scope, nil) on success.
 func ValidatePatch(patch string) (status, scope string, err error) {
+	slog.Debug("validating patch", slog.Int("patch_len", len(patch)))
 	files, _, parseErr := gitdiff.Parse(strings.NewReader(patch))
 	if parseErr != nil {
+		slog.Error("patch parse failed", "err", parseErr)
 		return PatchStatusMalformed, "", parseErr
 	}
 	if len(files) == 0 {
+		slog.Warn("patch contains no file sections")
 		return PatchStatusMalformed, "", fmt.Errorf("patch contains no file sections")
 	}
 
@@ -73,11 +77,13 @@ func ValidatePatch(patch string) (status, scope string, err error) {
 // as few-shot context before the fix request.
 // Returns an empty string if patch generation fails or Ollama is unavailable.
 func GeneratePatch(ctx context.Context, client *ollama.Client, f finding.Finding) (string, error) {
+	slog.Debug("generating patch", slog.String("cwe", f.CWE), slog.String("severity", string(f.SeverityLabel)), slog.String("path", f.Path))
 	resp, err := client.Generate(ctx, buildPatchPrompt(f), &ollama.Options{
 		Temperature: tuning.PatchLLMTemperature,
 		NumPredict:  tuning.PatchLLMMaxTokens,
 	})
 	if err != nil {
+		slog.Error("patch generation failed", "err", err, slog.String("path", f.Path))
 		return "", fmt.Errorf("patch generate: %w", err)
 	}
 	return extractDiff(resp), nil

@@ -61,7 +61,7 @@ func DefaultIDORConfig() IDORConfig {
 // flows to a storage sink without an intervening ownership check (C-API anchor).
 // Uses graph.TaintPaths with P-API as sources and storage sinks as sinks; paths
 // where any intermediate node label matches a C-API anchor are excluded.
-func (t *Targeter) queryIDORCandidates(ctx context.Context, cfg IDORConfig) ([]Surface, error) {
+func (t *Targeter) queryIDORCandidates(_ context.Context, cfg IDORConfig) ([]Surface, error) {
 	methods, err := t.graph.QueryNodes(cpg.NodeMethod)
 	if err != nil {
 		return nil, err

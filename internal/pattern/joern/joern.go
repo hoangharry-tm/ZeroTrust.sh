@@ -63,6 +63,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -197,6 +198,7 @@ func New(opts ...Option) (*Client, error) {
 // Callers must call Stop when the client is no longer needed.
 // Returns ErrAlreadyStarted if called a second time without an intervening Stop.
 func (c *Client) Start(ctx context.Context) error {
+	slog.Info("joern: starting subprocess", slog.String("host", c.host), slog.Int("port", c.port))
 	c.mu.Lock()
 	if c.cmd != nil {
 		c.mu.Unlock()
@@ -205,6 +207,7 @@ func (c *Client) Start(ctx context.Context) error {
 
 	if err := checkPortAvailable(ctx, c.host, c.port); err != nil {
 		c.mu.Unlock()
+		slog.Error("joern: port unavailable", slog.String("host", c.host), slog.Int("port", c.port))
 		return err
 	}
 
@@ -226,6 +229,7 @@ func (c *Client) Start(ctx context.Context) error {
 
 	if err := cmd.Start(); err != nil {
 		c.mu.Unlock()
+		slog.Error("joern: subprocess start failed", "err", err)
 		return fmt.Errorf("joern: start subprocess: %w", err)
 	}
 
@@ -240,10 +244,17 @@ func (c *Client) Start(ctx context.Context) error {
 		defer close(done)
 		_ = cmd.Wait() //nolint:errcheck // exit status reported via crashed flag
 		c.crashed.Store(true)
+		slog.Warn("joern: subprocess exited unexpectedly")
 	}()
 
+	slog.Debug("joern: waiting for server to become ready")
 	// Poll /ready until the JVM is warm or context expires.
-	return c.waitReady(ctx)
+	if err := c.waitReady(ctx); err != nil {
+		slog.Error("joern: server did not become ready", "err", err)
+		return err
+	}
+	slog.Info("joern: server ready", slog.String("url", c.serverURL))
+	return nil
 }
 
 // Stop sends SIGTERM to the managed subprocess, waits up to the configured
@@ -252,6 +263,7 @@ func (c *Client) Start(ctx context.Context) error {
 //
 // Always cleans up internal state so the client can be restarted via Start.
 func (c *Client) Stop(ctx context.Context) error {
+	slog.Debug("joern: stopping subprocess")
 	c.mu.Lock()
 	cmd := c.cmd
 	done := c.done
@@ -274,12 +286,14 @@ func (c *Client) Stop(ctx context.Context) error {
 
 	select {
 	case <-done:
+		slog.Debug("joern: subprocess stopped cleanly")
 		return nil
 	case <-timeout.C:
 	case <-ctx.Done():
 	}
 
 	// Escalate to SIGKILL on the process group.
+	slog.Warn("joern: subprocess did not stop gracefully, sending SIGKILL")
 	_ = syscall.Kill(-pid, syscall.SIGKILL) //nolint:errcheck
 	<-done
 	return nil

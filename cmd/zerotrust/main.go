@@ -26,6 +26,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
@@ -90,23 +91,28 @@ func runOrchestrate(cmd *cobra.Command, args []string) error {
 	mock, _ := cmd.Flags().GetBool("mock")
 	mockLarge, _ := cmd.Flags().GetBool("mock-large")
 	if mock || mockLarge {
+		slog.Debug("mock mode selected", "component", "main", "large", mockLarge)
 		return runMock(cmd)
 	}
 	native, _ := cmd.Flags().GetBool("native")
 	if native {
+		slog.Info("native mode selected", "component", "main")
 		return runScan(cmd, args)
 	}
+	slog.Info("docker mode selected", "component", "main")
 	return runContainer(cmd, args)
 }
 
 // runMock renders the HTML report with hardcoded fixture data and opens it in the
 // default browser. No scan is performed.
 func runMock(cmd *cobra.Command) error {
+	slog.Debug("runMock entry", "component", "main")
 	reportPath, _ := cmd.Flags().GetString("report")
 	if reportPath == "" {
 		reportPath = "build/report.html"
 	}
-	if err := os.MkdirAll(filepath.Dir(reportPath), 0750); err != nil {
+	if err := os.MkdirAll(filepath.Dir(reportPath), 0o750); err != nil {
+		slog.Error("failed to create report directory", "component", "main", "err", err)
 		return fmt.Errorf("create report dir: %w", err)
 	}
 	f, err := os.Create(reportPath)
@@ -116,7 +122,7 @@ func runMock(cmd *cobra.Command) error {
 	defer f.Close()
 
 	mockLarge, _ := cmd.Flags().GetBool("mock-large")
-	var findings = mock.MockFindings()
+	findings := mock.MockFindings()
 	if mockLarge {
 		findings = mock.MockFindingsLarge()
 	}
@@ -184,12 +190,20 @@ func runScan(cmd *cobra.Command, args []string) error {
 	// a locally running Joern server (started externally by the user).
 	cfg.JoernURL = "http://127.0.0.1:8080"
 
+	slog.Info("starting native scan",
+		"component", "main",
+		"target", cfg.Target,
+		"mode", cfg.ScanMode,
+		"report", cfg.ReportPath,
+	)
+
 	renderer := selectRenderer(cfg.OutputMode)
 	events := make(chan output.Event, 64)
 
 	ctx := cmd.Context()
 	p, err := newPipeline(ctx, cfg)
 	if err != nil {
+		slog.Error("pipeline init failed", "component", "main", "err", err)
 		return fmt.Errorf("pipeline init: %w", err)
 	}
 	defer p.close() //nolint:errcheck
@@ -211,6 +225,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 // runContainer orchestrates the engine inside a Docker container.
 // It is the default execution mode.
 func runContainer(cmd *cobra.Command, args []string) error {
+	slog.Debug("runContainer entry", "component", "main")
 	flags := cmd.Flags()
 
 	target := "."
@@ -219,6 +234,7 @@ func runContainer(cmd *cobra.Command, args []string) error {
 	}
 	targetAbs, err := filepath.Abs(target)
 	if err != nil {
+		slog.Error("failed to resolve target path", "component", "main", "err", err)
 		return fmt.Errorf("resolve target path: %w", err)
 	}
 
@@ -243,7 +259,7 @@ func runContainer(cmd *cobra.Command, args []string) error {
 	}
 
 	ztHome := filepath.Join(os.Getenv("HOME"), scansDBPath)
-	if err := os.MkdirAll(ztHome, 0750); err != nil {
+	if err := os.MkdirAll(ztHome, 0o750); err != nil {
 		return fmt.Errorf("create state directory: %w", err)
 	}
 
@@ -259,7 +275,8 @@ func runContainer(cmd *cobra.Command, args []string) error {
 	}
 
 	if ollamaURL != "" {
-		argsDocker = append(argsDocker,
+		argsDocker = append(
+			argsDocker,
 			"--add-host", "host.docker.internal:host-gateway",
 			"-e", "OLLAMA_URL="+ollamaURL,
 		)
@@ -283,11 +300,17 @@ func runContainer(cmd *cobra.Command, args []string) error {
 	dockerCmd.Stdout = os.Stdout
 	dockerCmd.Stderr = os.Stderr
 
+	slog.Info("launching container scan",
+		"component", "main",
+		"target", targetAbs,
+		"image", img,
+		"ollama_found", ollamaFound,
+	)
 	if err := dockerCmd.Run(); err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
+		if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 			os.Exit(exitErr.ExitCode())
 		}
+		slog.Error("container execution failed", "component", "main", "err", err)
 		return fmt.Errorf("container execution: %w", err)
 	}
 	return nil

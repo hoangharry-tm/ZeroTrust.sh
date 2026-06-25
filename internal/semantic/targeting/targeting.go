@@ -32,6 +32,7 @@ package targeting
 
 import (
 	"context"
+	"log/slog"
 	"sort"
 	"strings"
 
@@ -203,7 +204,7 @@ func (t *Targeter) queryExternalInputNodes(ctx context.Context) ([]cpg.Node, err
 // buildCallGraph performs a BFS from the seed nodes, following callee edges,
 // and returns a CallGraph mapping each visited node ID to its direct callee IDs.
 // Cycles are handled via a visited set — each node is expanded at most once.
-func (t *Targeter) buildCallGraph(ctx context.Context, seeds []cpg.Node) (CallGraph, error) {
+func (t *Targeter) buildCallGraph(_ context.Context, seeds []cpg.Node) (CallGraph, error) {
 	cg := make(CallGraph)
 	visited := make(map[string]bool)
 	queue := make([]cpg.Node, len(seeds))
@@ -334,8 +335,10 @@ func cvssBandConfidence(cvss float64) float64 {
 //
 // Duplicate node IDs are collapsed: IDOR > auth_boundary > external_input.
 func (t *Targeter) Run(ctx context.Context) ([]Surface, error) {
+	slog.Debug("targeting: querying CPG for method nodes")
 	methods, err := t.graph.QueryNodes(cpg.NodeMethod)
 	if err != nil {
+		slog.Error("targeting: CPG QueryNodes failed", "err", err)
 		return nil, err
 	}
 
@@ -414,6 +417,12 @@ func (t *Targeter) Run(ctx context.Context) ([]Surface, error) {
 	for _, s := range merged {
 		out = append(out, s)
 	}
+
+	slog.Info("targeting complete",
+		slog.Int("methods_queried", len(methods)),
+		slog.Int("surfaces_selected", len(out)),
+		slog.Int("idor_candidates", len(idorSurfaces)),
+	)
 
 	// Sort: IDOR first, then ascending CallGraphDepth, then stable by ID.
 	sort.SliceStable(out, func(i, j int) bool {

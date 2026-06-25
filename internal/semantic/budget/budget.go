@@ -39,6 +39,8 @@
 package budget
 
 import (
+	"log/slog"
+
 	"github.com/hoangharry-tm/zerotrust/internal/semantic/summarizer"
 	"github.com/hoangharry-tm/zerotrust/internal/tuning"
 )
@@ -123,5 +125,12 @@ func (c *Controller) Rank(inputs []Input) (ranked []RankedSurface, exhausted []I
 
 // RankWithStats is identical to Rank but also returns a Stats summary.
 func (c *Controller) RankWithStats(inputs []Input) (ranked []RankedSurface, exhausted []Input, stats Stats) {
-	return c.rank(inputs)
+	ranked, exhausted, stats = c.rank(inputs)
+	slog.Info("token budget ranked",
+		slog.Int("total", stats.Total),
+		slog.Int("ranked", stats.Ranked),
+		slog.Int("exhausted", stats.Exhausted),
+		slog.Int("tokens_used", stats.TokensUsed),
+	)
+	return
 }

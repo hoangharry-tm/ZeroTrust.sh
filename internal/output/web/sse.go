@@ -16,6 +16,7 @@ package web
 
 import (
 	"fmt"
+	"log/slog"
 	"net/http"
 	"sync"
 )
@@ -63,6 +64,7 @@ func (h *hub) broadcast(event, fragment string) {
 
 // ServeHTTP streams SSE to a single client until they disconnect.
 func (h *hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	slog.Debug("SSE client connected", slog.String("remote", r.RemoteAddr))
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")

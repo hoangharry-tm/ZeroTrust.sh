@@ -17,6 +17,7 @@ package output
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
@@ -66,6 +67,7 @@ func (r *MinimalRenderer) ExitCode() int { return r.exitCode }
 
 // Render implements Renderer. It blocks until ch is closed or ctx is cancelled.
 func (r *MinimalRenderer) Render(ctx context.Context, ch <-chan Event) error {
+	slog.Debug("minimal renderer starting")
 	// Disable color globally for this renderer when not a TTY.
 	if !r.hasColor {
 		color.NoColor = true
@@ -118,6 +120,7 @@ func (r *MinimalRenderer) handle(e Event, currentStage *string) {
 
 	case EventError:
 		if e.Err != nil {
+			slog.Error("pipeline error", "err", e.Err)
 			r.printf("  error: %s\n", e.Err)
 			r.exitCode = 2
 		}
@@ -134,6 +137,7 @@ func (r *MinimalRenderer) printSummary() {
 	for _, n := range r.bySeverity {
 		total += n
 	}
+	slog.Info("scan complete", slog.Int("total_findings", total))
 
 	elapsed := time.Since(r.startTime).Round(time.Millisecond)
 

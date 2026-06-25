@@ -17,7 +17,6 @@ package joern
 import (
 	"path/filepath"
 	"sort"
-	"strings"
 
 	"github.com/hoangharry-tm/zerotrust/pkg/cpg"
 )
@@ -157,14 +156,4 @@ func FilterScopeByLanguage(files []string) []string {
 		}
 	}
 	return result
-}
-
-// moduleDirDepth returns the directory depth of a file path relative to root.
-// e.g. "src/handlers/user.go" → 2 (two directory levels: "src", "handlers")
-func moduleDirDepth(dir string) int {
-	clean := filepath.Clean(dir)
-	if clean == "." || clean == string(filepath.Separator) {
-		return 0
-	}
-	return len(strings.Split(clean, string(filepath.Separator)))
 }

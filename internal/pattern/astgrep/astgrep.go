@@ -32,6 +32,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -106,6 +107,7 @@ func (r *Runner) Scan(ctx context.Context, files []string) ([]finding.Finding, e
 	if len(files) == 0 {
 		return nil, nil
 	}
+	slog.Debug("ast-grep scan starting", slog.Int("files", len(files)))
 
 	args := append([]string{"scan", "--json", "--config", r.rulesDir}, files...)
 	cmd := exec.CommandContext(ctx, r.binaryPath, args...)
@@ -119,6 +121,7 @@ func (r *Runner) Scan(ctx context.Context, files []string) ([]finding.Finding, e
 		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
 			// some versions exit 1 when findings found; treat as success
 		} else {
+			slog.Error("ast-grep subprocess failed", "err", err, slog.String("stderr", stderr.String()))
 			return nil, fmt.Errorf("ast-grep: %w (stderr: %s)", err, stderr.String())
 		}
 	}
@@ -131,9 +134,11 @@ func (r *Runner) Scan(ctx context.Context, files []string) ([]finding.Finding, e
 
 	var matches []RawMatch
 	if err := json.Unmarshal(raw, &matches); err != nil {
+		slog.Error("ast-grep: failed to parse output", "err", err)
 		return nil, fmt.Errorf("ast-grep: parse output: %w", err)
 	}
 
+	slog.Info("ast-grep scan complete", slog.Int("raw_matches", len(matches)))
 	findings := make([]finding.Finding, 0, len(matches))
 	for _, m := range matches {
 		findings = append(findings, normalise(m))

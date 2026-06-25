@@ -276,16 +276,20 @@ func Start(ctx context.Context, workerPath string, logger *slog.Logger) (*Manage
 	if py != "uv" {
 		args = []string{py, workerPath}
 	}
+	slog.Info("starting python worker", slog.String("worker_path", workerPath), slog.String("python", py))
 	m := newManager(args, logger)
 	if err := m.spawn(); err != nil {
+		slog.Error("worker spawn failed", "err", err)
 		return nil, fmt.Errorf("worker: spawn: %w", err)
 	}
 	pingCtx, cancel := context.WithTimeout(ctx, tuning.WorkerStartPingTimeout)
 	defer cancel()
 	if err := m.Ping(pingCtx); err != nil {
+		slog.Error("worker initial ping failed", "err", err)
 		_ = m.Stop()
 		return nil, fmt.Errorf("worker: ping: %w", err)
 	}
+	slog.Info("python worker ready")
 	return m, nil
 }
 
@@ -494,6 +498,7 @@ func (m *Manager) Ping(ctx context.Context) error {
 // the process to exit gracefully, then closes stdin.
 // It is safe to call Stop even if the worker is already dead.
 func (m *Manager) Stop() error {
+	m.logger.Info("stopping python worker")
 	m.stopping.Store(true)
 
 	// Best-effort graceful shutdown; ignore errors (process may already be dead).

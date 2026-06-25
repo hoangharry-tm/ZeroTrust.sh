@@ -38,6 +38,7 @@ package enrichment
 
 import (
 	"context"
+	"log/slog"
 	"strings"
 
 	"github.com/hoangharry-tm/zerotrust/internal/finding"
@@ -139,12 +140,15 @@ func New(graph cpg.Graph, trivyPath string, offlineMode bool) *Enricher {
 //   - []EnrichedSurface: one enriched surface per input surface.
 //   - error: non-nil if Trivy fails to start or CPG queries fail.
 func (e *Enricher) Enrich(ctx context.Context, surfaces []targeting.Surface, projectRoot string) ([]EnrichedSurface, error) {
+	slog.Debug("enriching surfaces", slog.Int("surfaces", len(surfaces)), slog.String("project_root", projectRoot))
 	cvesByPkg, err := e.RunTrivy(ctx, projectRoot)
 	if err != nil {
 		// ponytail: non-fatal — CVE enrichment is best-effort; continue without CVEs.
+		slog.Warn("trivy CVE enrichment failed; continuing without CVEs", "err", err)
 		cvesByPkg = make(map[string][]CVEMatch)
 	}
 
+	autoFlagged := 0
 	enriched := make([]EnrichedSurface, 0, len(surfaces))
 	for _, s := range surfaces {
 		es := EnrichedSurface{
@@ -169,8 +173,12 @@ func (e *Enricher) Enrich(ctx context.Context, surfaces []targeting.Surface, pro
 			es.ResourceIDFlows = flows
 		}
 
+		if es.AutoFlagged {
+			autoFlagged++
+		}
 		enriched = append(enriched, es)
 	}
+	slog.Info("enrichment complete", slog.Int("enriched", len(enriched)), slog.Int("auto_flagged", autoFlagged))
 	return enriched, nil
 }
 

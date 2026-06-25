@@ -26,6 +26,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -56,20 +57,25 @@ type registryFile struct {
 //   - []RegistryEntry: all entries in the verified registry.
 //   - error: non-nil if the file is unreadable or the ECDSA signature fails.
 func (v *Verifier) LoadRegistry(ctx context.Context) ([]RegistryEntry, error) {
+	v.logger.Debug("miv: loading registry", "component", "miv")
 	regBytes, sigBytes, pubKeyPEM, err := v.loadFiles()
 	if err != nil {
+		v.logger.Error("miv: failed to load registry files", "component", "miv", "err", err)
 		return nil, err
 	}
 
 	pubKey, err := parseECDSAPublicKey(pubKeyPEM)
 	if err != nil {
+		v.logger.Error("miv: failed to parse public key", "component", "miv", "err", err)
 		return nil, fmt.Errorf("parse public key: %w", err)
 	}
 
 	// Primary security gate: ECDSA signature.
 	if err := verifyECDSA(regBytes, sigBytes, pubKey); err != nil {
+		v.logger.Error("miv: registry ECDSA signature invalid", "component", "miv", "err", err)
 		return nil, fmt.Errorf("registry signature invalid: %w", err)
 	}
+	v.logger.Debug("miv: ECDSA signature verified", "component", "miv")
 
 	// Best-effort: Rekor transparency proof (3-second window).
 	rekorCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
@@ -83,8 +89,10 @@ func (v *Verifier) LoadRegistry(ctx context.Context) ([]RegistryEntry, error) {
 
 	var reg registryFile
 	if err := json.Unmarshal(regBytes, &reg); err != nil {
+		v.logger.Error("miv: failed to parse registry JSON", "component", "miv", "err", err)
 		return nil, fmt.Errorf("parse registry: %w", err)
 	}
+	v.logger.Info("miv: registry loaded", "component", "miv", "entries", len(reg.Entries), "version", reg.Version)
 	return reg.Entries, nil
 }
 
@@ -92,6 +100,7 @@ func (v *Verifier) LoadRegistry(ctx context.Context) ([]RegistryEntry, error) {
 // Falls back to embedded data when paths are empty.
 func (v *Verifier) loadFiles() (regBytes, sigBytes, pubKeyPEM []byte, err error) {
 	if v.registryPath != "" {
+		slog.Debug("miv: loading registry from disk", "component", "miv", "path", v.registryPath)
 		regBytes, err = os.ReadFile(v.registryPath)
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("read registry: %w", err)
@@ -101,6 +110,7 @@ func (v *Verifier) loadFiles() (regBytes, sigBytes, pubKeyPEM []byte, err error)
 			return nil, nil, nil, fmt.Errorf("read registry sig: %w", err)
 		}
 	} else {
+		slog.Debug("miv: using embedded registry", "component", "miv")
 		regBytes = embeddedRegistry
 		sigBytes = embeddedRegistrySig
 	}

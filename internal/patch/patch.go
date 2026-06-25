@@ -33,8 +33,17 @@ package patch
 
 import (
 	"context"
+	"fmt"
+	"log/slog"
+	"os"
+	"strings"
+	"sync"
+
+	"github.com/bluekeyes/go-gitdiff/gitdiff"
 
 	"github.com/hoangharry-tm/zerotrust/internal/finding"
+	"github.com/hoangharry-tm/zerotrust/internal/tuning"
+	"github.com/hoangharry-tm/zerotrust/pkg/ollama"
 )
 
 // Status describes whether a patch was generated and if it validated cleanly.
@@ -84,11 +93,28 @@ type Generator struct {
 	// projectRoot is the absolute path to the scanned codebase, used to read
 	// source files for context injection and to validate diffs.
 	projectRoot string
+	client      *ollama.Client
+	clientOnce  sync.Once
 }
 
 // New returns a Generator operating against files under projectRoot.
 func New(projectRoot string) *Generator {
 	return &Generator{projectRoot: projectRoot}
+}
+
+func (g *Generator) getClient() *ollama.Client {
+	g.clientOnce.Do(func() {
+		url := os.Getenv("ZEROTRUST_OLLAMA_URL")
+		if url == "" {
+			url = "http://localhost:11434"
+		}
+		model := os.Getenv("ZEROTRUST_MODEL")
+		if model == "" {
+			model = "qwen2.5-coder:7b"
+		}
+		g.client = ollama.New(url, model)
+	})
+	return g.client
 }
 
 // Generate produces patch suggestions for each finding in the input slice.
@@ -102,17 +128,109 @@ func New(projectRoot string) *Generator {
 //   - []Patch: one patch entry per input finding (Status describes outcome).
 //   - error: non-nil only for unrecoverable infrastructure failures (e.g. projectRoot unreadable).
 func (g *Generator) Generate(ctx context.Context, findings []finding.Finding) ([]Patch, error) {
-	// implemented in G4.M4.2
-	return nil, nil
+	if len(findings) == 0 {
+		return nil, nil
+	}
+	slog.Debug("patch generator starting", slog.Int("findings", len(findings)))
+	client := g.getClient()
+	out := make([]Patch, 0, len(findings))
+	for _, f := range findings {
+		if err := ctx.Err(); err != nil {
+			return out, err
+		}
+		p := Patch{
+			FindingID:         f.ID,
+			CWERemediationURL: cweURL(f.CWE),
+		}
+		if f.SeverityLabel != finding.SeverityBlock && f.SeverityLabel != finding.SeverityHigh {
+			p.Status = StatusNotAttempted
+			out = append(out, p)
+			continue
+		}
+		diff, err := generateDiff(ctx, client, f)
+		if err != nil || diff == "" {
+			if err != nil {
+				slog.Warn("patch generation failed", slog.String("finding_id", f.ID), slog.String("err", err.Error()))
+			}
+			p.Status = StatusUnsupported
+			out = append(out, p)
+			continue
+		}
+		if validateErr := g.Validate(f.Path, diff); validateErr != nil {
+			slog.Warn("patch validation failed", slog.String("finding_id", f.ID), slog.String("err", validateErr.Error()))
+			p.UnifiedDiff = diff
+			p.Status = StatusValidationFailed
+		} else {
+			slog.Debug("patch generated", slog.String("finding_id", f.ID))
+			p.UnifiedDiff = diff
+			p.Status = StatusGenerated
+		}
+		out = append(out, p)
+	}
+	return out, nil
 }
 
-// Validate checks whether unifiedDiff applies cleanly to the file at relPath
-// (relative to projectRoot) using go-gitdiff. Returns nil on success.
-//
-// Parameters:
-//   - relPath: file path relative to projectRoot.
-//   - unifiedDiff: the diff string to validate.
+// Validate checks whether unifiedDiff applies cleanly using go-gitdiff.
+// Returns nil for empty diffs. relPath is accepted for future file-level checks
+// but is not currently used (go-gitdiff validates structure only).
 func (g *Generator) Validate(relPath, unifiedDiff string) error {
-	// implemented in G4.M4.2
+	if strings.TrimSpace(unifiedDiff) == "" {
+		return nil
+	}
+	files, _, err := gitdiff.Parse(strings.NewReader(unifiedDiff))
+	if err != nil {
+		return fmt.Errorf("gitdiff parse: %w", err)
+	}
+	if len(files) == 0 {
+		return fmt.Errorf("patch contains no file sections")
+	}
 	return nil
+}
+
+func generateDiff(ctx context.Context, client *ollama.Client, f finding.Finding) (string, error) {
+	var sb strings.Builder
+	if f.CVE != "" {
+		fmt.Fprintf(&sb, "CVE: %s (CVSS %.1f)\n\n", f.CVE, f.CVSS)
+	}
+	fmt.Fprintf(&sb, "Generate a minimal unified diff (--- a/file +++ b/file format) that fixes this %s security finding.\n", f.SeverityLabel)
+	fmt.Fprintf(&sb, "File: %s\nCWE: %s\nIssue: %s\n", f.Path, f.CWE, f.Justification)
+	if f.MatchedCode != "" {
+		fmt.Fprintf(&sb, "Vulnerable code:\n```\n%s\n```\n", f.MatchedCode)
+	}
+	sb.WriteString("Output ONLY the unified diff, no explanation.")
+
+	raw, err := client.Generate(ctx, sb.String(), &ollama.Options{
+		Temperature: tuning.PatchLLMTemperature,
+		NumPredict:  tuning.PatchLLMMaxTokens,
+	})
+	if err != nil {
+		return "", fmt.Errorf("ollama generate: %w", err)
+	}
+	return extractDiff(raw), nil
+}
+
+func extractDiff(raw string) string {
+	if _, after, ok := strings.Cut(raw, "```"); ok {
+		rest := after
+		if _, body, ok2 := strings.Cut(rest, "\n"); ok2 {
+			rest = body
+		}
+		if code, _, ok3 := strings.Cut(rest, "```"); ok3 {
+			return strings.TrimSpace(code)
+		}
+	}
+	trimmed := strings.TrimSpace(raw)
+	if strings.HasPrefix(trimmed, "---") {
+		return trimmed
+	}
+	return strings.TrimSpace(raw)
+}
+
+// cweURL returns the MITRE remediation page for a CWE identifier.
+func cweURL(cwe string) string {
+	id := strings.TrimPrefix(cwe, "CWE-")
+	if id == "" || id == cwe {
+		return "https://cwe.mitre.org/data/definitions/"
+	}
+	return fmt.Sprintf("https://cwe.mitre.org/data/definitions/%s.html", id)
 }

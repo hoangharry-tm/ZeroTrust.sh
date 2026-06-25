@@ -25,7 +25,7 @@ log = logging.getLogger(__name__)
 # ── Environment-driven configuration ─────────────────────────────────────────
 
 OLLAMA_URL: str = os.getenv("ZEROTRUST_OLLAMA_URL", "http://localhost:11434")
-MODEL: str = os.getenv("ZEROTRUST_MODEL", "qwen2.5:3b")
+MODEL: str = os.getenv("ZEROTRUST_MODEL", "qwen2.5-coder:7b")
 
 # ── Module-level lazy singletons ──────────────────────────────────────────────
 

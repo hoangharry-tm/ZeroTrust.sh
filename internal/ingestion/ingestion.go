@@ -39,6 +39,7 @@ package ingestion
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 
 	"github.com/hoangharry-tm/zerotrust/internal/ingestion/diffindex"
@@ -96,6 +97,7 @@ func New(indexer *diffindex.Indexer, verifier *miv.Verifier) *Ingester {
 //   - *Result: combined MIV + DI output.
 //   - error: non-nil only if DI fails (MIV errors are captured in Result.MIV).
 func (ig *Ingester) Run(ctx context.Context, cfg Config) (*Result, error) {
+	slog.Debug("ingestion run started", "component", "ingestion", "root", cfg.ProjectRoot)
 	projectID := cfg.ProjectID
 	if projectID == "" {
 		projectID = diffindex.DeriveProjectID(cfg.ProjectRoot)
@@ -128,18 +130,32 @@ func (ig *Ingester) Run(ctx context.Context, cfg Config) (*Result, error) {
 	wg.Wait()
 
 	if diffErr != nil {
+		slog.Error("ingestion: differential indexing failed", "component", "ingestion", "err", diffErr)
 		return nil, diffErr
 	}
 
 	if mivErr != nil || mivRes == nil {
+		slog.Warn("ingestion: MIV failed, defaulting to WARN", "component", "ingestion", "err", mivErr)
 		mivRes = &miv.Result{Status: miv.StatusWarn, Message: "MIV failed; defaulting to WARN"}
 	}
 
+	blockLLM := mivRes.Status == miv.StatusBlock
+	changedCount := 0
+	if cs != nil {
+		changedCount = len(cs.Changed)
+	}
+	slog.Info("ingestion complete",
+		"component", "ingestion",
+		"project_id", projectID,
+		"changed_files", changedCount,
+		"miv_status", mivRes.Status,
+		"block_llm", blockLLM,
+	)
 	return &Result{
 		ProjectID: projectID,
 		MIV:       mivRes,
 		ChangeSet: cs,
-		BlockLLM:  mivRes.Status == miv.StatusBlock,
+		BlockLLM:  blockLLM,
 	}, nil
 }
 
@@ -155,6 +171,7 @@ func (ig *Ingester) Run(ctx context.Context, cfg Config) (*Result, error) {
 //   - projectID: the resolved project ID from Result.ProjectID.
 //   - cs: the ChangeSet from Result.ChangeSet.
 func (ig *Ingester) CommitScan(ctx context.Context, projectID string, cs *diffindex.ChangeSet) error {
+	slog.Debug("committing scan state", "component", "ingestion", "project_id", projectID)
 	if cs == nil {
 		return nil
 	}

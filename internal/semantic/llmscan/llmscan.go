@@ -40,6 +40,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/hoangharry-tm/zerotrust/internal/finding"
@@ -143,13 +144,17 @@ type scanStepResponse struct {
 // structured JSON output. Returns ScanModeReAct on success, ScanModeSinglePass
 // on failure. Worker communication errors degrade gracefully to single-pass.
 func (s *Scanner) BackboneCheck(ctx context.Context) (ScanMode, error) {
+	slog.Debug("running backbone capability check")
 	resp, err := s.w.Call(ctx, worker.MsgLLMScan, map[string]string{"type": "backbone_probe"})
 	if err != nil {
+		slog.Warn("backbone check failed; degrading to single-pass", "err", err)
 		return ScanModeSinglePass, nil // degrade gracefully
 	}
 	if resp.Status == worker.ResponseError || !json.Valid(resp.Result) {
+		slog.Warn("backbone check returned invalid JSON; degrading to single-pass")
 		return ScanModeSinglePass, nil
 	}
+	slog.Info("backbone check passed; using ReAct mode")
 	return ScanModeReAct, nil
 }
 
@@ -160,8 +165,10 @@ func (s *Scanner) BackboneCheck(ctx context.Context) (ScanMode, error) {
 // Every surface produces exactly one finding: uncertain → SUPPRESSED(uncertain),
 // safe → SUPPRESSED(safe), vulnerable → severity derived from confidence.
 func (s *Scanner) Scan(ctx context.Context, surfaces []budget.RankedSurface) ([]finding.Finding, error) {
+	slog.Info("starting LLM semantic scan", slog.Int("surfaces", len(surfaces)))
 	mode, err := s.BackboneCheck(ctx)
 	if err != nil {
+		slog.Error("backbone check error", "err", err)
 		return nil, fmt.Errorf("backbone check: %w", err)
 	}
 
@@ -181,8 +188,10 @@ func (s *Scanner) Scan(ctx context.Context, surfaces []budget.RankedSurface) ([]
 
 		result, err := s.scanSurface(ctx, surf, mode, prior)
 		if err != nil {
+			slog.Error("scan surface failed", "err", err, slog.String("surface_id", surf.SurfaceID))
 			return nil, fmt.Errorf("scan surface %s: %w", surf.SurfaceID, err)
 		}
+		slog.Debug("surface scanned", slog.String("surface_id", surf.SurfaceID), slog.String("verdict", result.Verdict), slog.String("mode", string(result.Mode)))
 
 		if s.store != nil {
 			s.store.Put(ctx, scs.Inference{

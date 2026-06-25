@@ -39,6 +39,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -95,6 +96,7 @@ const trivyDBNotInitMsg = "--skip-db-update cannot be specified on the first run
 // vulnerability database has not been bootstrapped yet. The caller should
 // re-run without offline mode once to initialise the DB.
 func (e *Enricher) RunTrivy(ctx context.Context, projectRoot string) (map[string][]CVEMatch, error) {
+	slog.Debug("running trivy", slog.String("project_root", projectRoot), slog.Bool("offline", e.offlineMode))
 	args := []string{"fs", "--format", "json", "--quiet"}
 	if e.offlineMode {
 		args = append(args, "--offline-scan", "--skip-db-update")
@@ -109,15 +111,23 @@ func (e *Enricher) RunTrivy(ctx context.Context, projectRoot string) (map[string
 	if err := cmd.Run(); err != nil {
 		if stdout.Len() == 0 {
 			if strings.Contains(stderr.String(), trivyDBNotInitMsg) {
+				slog.Warn("trivy DB not initialised; run once without --offline-scan")
 				return nil, ErrTrivyDBNotInitialized
 			}
+			slog.Error("trivy run failed", "err", err)
 			return nil, fmt.Errorf("trivy: run failed: %w\nstderr: %s", err, stderr.String())
 		}
 		// Trivy exits 1 when vulnerabilities are found — non-zero with JSON output
 		// is the CVE-found case; fall through to parse.
 	}
 
-	return parseTrivyOutput(stdout.Bytes())
+	result, err := parseTrivyOutput(stdout.Bytes())
+	if err != nil {
+		slog.Error("trivy output parse failed", "err", err)
+		return nil, err
+	}
+	slog.Info("trivy scan complete", slog.Int("packages_with_cves", len(result)))
+	return result, nil
 }
 
 // parseTrivyOutput decodes Trivy JSON and returns CVE matches keyed by package name.

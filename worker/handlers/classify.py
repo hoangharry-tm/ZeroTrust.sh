@@ -76,8 +76,11 @@ def handle(payload: dict[str, Any]) -> dict[str, Any]:
     surfaces: list[dict[str, Any]] = payload["surfaces"]
 
     if not surfaces:
+        log.debug("classify: empty surfaces list, returning empty results")
         return {"results": []}
 
+    log.debug("classify: handle", extra={"num_surfaces": len(surfaces)})
     classifier = _get_classifier()
     results = classifier.classify_batch(surfaces)
+    log.debug("classify: done", extra={"num_results": len(results)})
     return {"results": results}

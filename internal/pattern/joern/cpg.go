@@ -17,6 +17,7 @@ package joern
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"path/filepath"
 	"strings"
 
@@ -76,8 +77,10 @@ func (c *Client) BuildCPG(ctx context.Context, cfg BuildConfig) error {
 	if len(cfg.Paths) == 0 {
 		return ErrEmptyPaths
 	}
+	slog.Info("joern: BuildCPG starting", slog.Int("paths", len(cfg.Paths)), slog.String("language", cfg.Language))
 	for _, p := range cfg.Paths {
 		if containsTraversal(p) {
+			slog.Error("joern: path traversal rejected", slog.String("path", p))
 			return fmt.Errorf("%w: %q", ErrPathTraversal, p)
 		}
 	}
@@ -103,10 +106,13 @@ func (c *Client) BuildCPG(ctx context.Context, cfg BuildConfig) error {
 
 	if _, err := c.doQuery(buildCtx, query); err != nil {
 		if buildCtx.Err() == context.DeadlineExceeded {
+			slog.Error("joern: CPG build timed out")
 			return ErrBuildTimeout
 		}
+		slog.Error("joern: BuildCPG failed", "err", err)
 		return fmt.Errorf("joern: BuildCPG: %w", err)
 	}
+	slog.Info("joern: CPG build complete")
 
 	if cfg.SerializedCPGPath != "" {
 		if err := c.SaveCPG(ctx, cfg.SerializedCPGPath); err != nil {
@@ -125,6 +131,10 @@ func (c *Client) BuildCPG(ctx context.Context, cfg BuildConfig) error {
 // in ChangedFunctions has ≥ HubCallerThreshold callers — in that case the
 // caller must invoke BuildCPG for a full rebuild instead.
 func (c *Client) IncrementalPatch(ctx context.Context, cfg IncrementalPatchConfig) error {
+	slog.Debug("joern: IncrementalPatch starting",
+		slog.Int("changed_functions", len(cfg.ChangedFunctions)),
+		slog.Int("removed_files", len(cfg.RemovedFiles)),
+	)
 	if cfg.MaxDepth == 0 {
 		cfg.MaxDepth = tuning.CPGDefaultMaxDepth
 	}
@@ -140,10 +150,12 @@ func (c *Client) IncrementalPatch(ctx context.Context, cfg IncrementalPatchConfi
 	for _, fn := range cfg.ChangedFunctions {
 		callers, err := g.GetCallers(fn)
 		if err != nil {
+			slog.Warn("joern: failed to query callers, falling back to full rebuild", slog.String("function", fn), "err", err)
 			// If we can't query callers, fall back to full rebuild to be safe.
 			return ErrHubModuleDetected
 		}
 		if len(callers) >= cfg.HubCallerThreshold {
+			slog.Warn("joern: hub module detected, full rebuild required", slog.String("function", fn), slog.Int("callers", len(callers)))
 			return ErrHubModuleDetected
 		}
 	}

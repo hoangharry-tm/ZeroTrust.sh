@@ -34,6 +34,7 @@ package assembler
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/hoangharry-tm/zerotrust/internal/semantic/enrichment"
 	"github.com/hoangharry-tm/zerotrust/internal/tuning"
@@ -122,14 +123,17 @@ func New(graph cpg.Graph, maxDepth int) *Assembler {
 //   - []CallChain: one call chain per input surface, in the same order.
 //   - error: non-nil if CPG queries fail.
 func (a *Assembler) Assemble(ctx context.Context, surfaces []enrichment.EnrichedSurface) ([]CallChain, error) {
+	slog.Debug("assembling call chains", slog.Int("surfaces", len(surfaces)), slog.Int("max_depth", a.maxDepth))
 	result := make([]CallChain, 0, len(surfaces))
 	for _, s := range surfaces {
 		chain, err := a.assembleOne(ctx, s)
 		if err != nil {
+			slog.Error("assemble surface failed", "err", err, slog.String("surface_id", s.ID))
 			return nil, fmt.Errorf("assemble surface %s: %w", s.ID, err)
 		}
 		result = append(result, chain)
 	}
+	slog.Info("call chains assembled", slog.Int("chains", len(result)))
 	return result, nil
 }
 

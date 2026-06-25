@@ -97,8 +97,14 @@ func New(db *sqlite.DB, logger *slog.Logger) *Indexer {
 //   - *ChangeSet: Changed (new/modified), Removed (deleted), and AllStates.
 //   - error: non-nil if projectRoot cannot be walked or SQLite access fails.
 func (ix *Indexer) Diff(ctx context.Context, projectID, projectRoot string) (*ChangeSet, error) {
+	ix.logger.Debug("diffindex: computing file diff",
+		"component", "diffindex",
+		"project_id", projectID,
+		"root", projectRoot,
+	)
 	prior, err := ix.db.ListScanState(ctx, projectID)
 	if err != nil {
+		ix.logger.Error("diffindex: failed to load prior scan state", "component", "diffindex", "err", err)
 		return nil, fmt.Errorf("list scan state: %w", err)
 	}
 	priorMap := make(map[string]string, len(prior))
@@ -174,6 +180,12 @@ func (ix *Indexer) Diff(ctx context.Context, projectID, projectRoot string) (*Ch
 		}
 	}
 
+	ix.logger.Info("diffindex: diff complete",
+		"component", "diffindex",
+		"changed", len(changed),
+		"removed", len(removed),
+		"total_files", len(allStates),
+	)
 	return &ChangeSet{Changed: changed, Removed: removed, AllStates: allStates}, nil
 }
 
@@ -185,6 +197,12 @@ func (ix *Indexer) Diff(ctx context.Context, projectID, projectRoot string) (*Ch
 //   - projectID: primary-key prefix for the SQLite scan_state table.
 //   - cs: the ChangeSet returned by Diff for this scan.
 func (ix *Indexer) Commit(ctx context.Context, projectID string, cs *ChangeSet) error {
+	ix.logger.Debug("diffindex: committing scan state",
+		"component", "diffindex",
+		"project_id", projectID,
+		"states", len(cs.AllStates),
+		"removed", len(cs.Removed),
+	)
 	for _, s := range cs.AllStates {
 		if err := ix.db.UpsertScanState(ctx, sqlite.ScanStateRow{
 			ProjectID:     projectID,
@@ -197,9 +215,15 @@ func (ix *Indexer) Commit(ctx context.Context, projectID string, cs *ChangeSet) 
 	}
 	for _, r := range cs.Removed {
 		if err := ix.db.DeleteScanState(ctx, projectID, r); err != nil {
+			ix.logger.Error("diffindex: failed to delete removed file state",
+				"component", "diffindex",
+				"file", r,
+				"err", err,
+			)
 			return fmt.Errorf("delete removed %s: %w", r, err)
 		}
 	}
+	ix.logger.Debug("diffindex: commit complete", "component", "diffindex")
 	return nil
 }
 

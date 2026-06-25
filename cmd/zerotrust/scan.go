@@ -114,7 +114,6 @@ type pipeline struct {
 	dd  *dedup.Layer
 	gen *patch.Generator
 	rep *report.Generator
-
 }
 
 // newPipeline constructs the full pipeline from cfg.
@@ -157,21 +156,9 @@ func newPipeline(ctx context.Context, cfg ScanConfig) (*pipeline, error) {
 		return nil, fmt.Errorf("open state db: %w", err)
 	}
 
-	// Register project and open a scan run so findings can be persisted.
+	// runID is assigned here; project/scan_run rows are registered after ingestion
+	// so we use the resolved ProjectID (ingester may derive one from the target path).
 	runID := newRunID()
-	if upsertErr := db.UpsertProject(ctx, sqlite.ProjectRow{
-		ProjectID: cfg.ProjectID,
-		RootPath:  cfg.Target,
-	}); upsertErr != nil {
-		logger.Warn("failed to upsert project record", "component", "scan", "err", upsertErr)
-	}
-	if createErr := db.CreateScanRun(ctx, sqlite.ScanRunRow{
-		RunID:     runID,
-		ProjectID: cfg.ProjectID,
-		ScanMode:  strings.ToLower(cfg.ScanMode),
-	}); createErr != nil {
-		logger.Warn("failed to create scan_run record", "component", "scan", "err", createErr)
-	}
 
 	// Propagate model name to Python worker handlers (llm_verify, llm_scan).
 	if cfg.ModelName != "" {
@@ -256,7 +243,8 @@ func newPipeline(ctx context.Context, cfg ScanConfig) (*pipeline, error) {
 // The caller is responsible for closing events after run returns.
 func (p *pipeline) run(ctx context.Context, events chan<- output.Event) error {
 	start := time.Now()
-	p.logger.Info("scan started",
+	p.logger.Info(
+		"scan started",
 		"component", "scan",
 		"target", p.cfg.Target,
 		"mode", p.cfg.ScanMode,
@@ -304,6 +292,24 @@ func (p *pipeline) run(ctx context.Context, events chan<- output.Event) error {
 		},
 	})
 
+	// Register project and scan run now that we have the resolved ProjectID.
+	// Must happen before UpsertFinding to satisfy the FK constraint.
+	if p.db != nil {
+		if upsertErr := p.db.UpsertProject(ctx, sqlite.ProjectRow{
+			ProjectID: ingResult.ProjectID,
+			RootPath:  p.cfg.Target,
+		}); upsertErr != nil {
+			slog.Warn("failed to upsert project record", "component", "scan", "err", upsertErr)
+		}
+		if createErr := p.db.CreateScanRun(ctx, sqlite.ScanRunRow{
+			RunID:     p.runID,
+			ProjectID: ingResult.ProjectID,
+			ScanMode:  strings.ToLower(p.cfg.ScanMode),
+		}); createErr != nil {
+			slog.Warn("failed to create scan_run record", "component", "scan", "err", createErr)
+		}
+	}
+
 	// ── 1.5. CPG BUILD / LOAD ──────────────────────────────────────────────────
 	// Build or load the CPG from the scope files. On first scan this is a full
 	// build; on repeat scans it loads a snapshot and applies incremental patches.
@@ -322,12 +328,14 @@ func (p *pipeline) run(ctx context.Context, events chan<- output.Event) error {
 			// in scope regardless of module segmentation mode. Best-effort:
 			// failures just mean no pre-flagged sinks for this scan.
 			if preFlagErr := p.joern.PreFlagSinks(ctx, changed); preFlagErr != nil {
-				p.logger.Warn("sink pre-flagging failed, continuing without pre-flagged sinks",
+				p.logger.Warn(
+					"sink pre-flagging failed, continuing without pre-flagged sinks",
 					"component", "scan",
 					"err", preFlagErr,
 				)
 			} else {
-				p.logger.Info("sink pre-flagging complete",
+				p.logger.Info(
+					"sink pre-flagging complete",
 					"component", "scan",
 					"sinks", len(p.joern.PreFlaggedSinks()),
 				)
@@ -343,7 +351,8 @@ func (p *pipeline) run(ctx context.Context, events chan<- output.Event) error {
 					// First expand change set with one-hop CPG neighbours.
 					expanded, expandErr := diffindex.ExpandWithCPG(ctx, ingResult.ChangeSet, graph)
 					if expandErr != nil {
-						p.logger.Error("cpg scope expansion failed, using pre-expansion modules",
+						p.logger.Error(
+							"cpg scope expansion failed, using pre-expansion modules",
 							"component", "scan",
 							"err", expandErr,
 						)
@@ -447,7 +456,8 @@ func (p *pipeline) run(ctx context.Context, events chan<- output.Event) error {
 				LastSeenAt:     now,
 			}
 			if upsertErr := p.db.UpsertFinding(ctx, row); upsertErr != nil {
-				p.logger.Warn("failed to persist finding",
+				p.logger.Warn(
+					"failed to persist finding",
 					"component", "scan",
 					"finding_id", f.ID,
 					"err", upsertErr,
@@ -467,7 +477,7 @@ func (p *pipeline) run(ctx context.Context, events chan<- output.Event) error {
 	}
 	for i := range scored {
 		if pp, ok := patchByID[scored[i].ID]; ok {
-			scored[i].Patch       = pp.UnifiedDiff
+			scored[i].Patch = pp.UnifiedDiff
 			scored[i].PatchStatus = string(pp.Status)
 		}
 	}
@@ -507,7 +517,8 @@ func (p *pipeline) run(ctx context.Context, events chan<- output.Event) error {
 		bySeverity[s.SeverityLabel]++
 	}
 	elapsed := time.Since(start)
-	p.logger.Info("scan complete",
+	p.logger.Info(
+		"scan complete",
 		"component", "scan",
 		"findings", len(scored),
 		"elapsed", elapsed,
@@ -894,6 +905,7 @@ func maxCVSS(matches []enrichment.CVEMatch) float64 {
 // close shuts down all managed subprocesses and releases held resources.
 // Always called after run() returns, even on error.
 func (p *pipeline) close() error {
+	p.logger.Debug("closing pipeline", "component", "scan", "run_id", p.runID)
 	// Stop Joern subprocess if we spawned it. Use a fixed timeout — this runs
 	// after the scan; we don't want it to block indefinitely on cleanup.
 	if p.cfg.JoernBin != "" && p.joern != nil {
@@ -962,7 +974,8 @@ func (p *pipeline) buildOrLoadCPG(ctx context.Context, cpgPath string, changedFi
 	// Query the current Joern version for snapshot invalidation.
 	currentVersion, verErr := p.joern.Version(ctx)
 	if verErr != nil {
-		p.logger.Warn("could not determine Joern version, proceeding without version check",
+		p.logger.Warn(
+			"could not determine Joern version, proceeding without version check",
 			"component", "cpg",
 			"err", verErr,
 		)
@@ -1034,11 +1047,11 @@ func (p *pipeline) buildOrLoadCPG(ctx context.Context, cpgPath string, changedFi
 
 		// Apply incremental patch.
 		err := p.joern.IncrementalPatch(ctx, joern.IncrementalPatchConfig{
-			ChangedFunctions: changedFunctions,
-			RemovedFiles:     nil, // removed not tracked here
-			MaxDepth:         tuning.CPGDefaultMaxDepth,
+			ChangedFunctions:   changedFunctions,
+			RemovedFiles:       nil, // removed not tracked here
+			MaxDepth:           tuning.CPGDefaultMaxDepth,
 			HubCallerThreshold: tuning.CPGHubCallerThreshold,
-			SerializedCPGPath: cpgPath,
+			SerializedCPGPath:  cpgPath,
 		})
 		if err != nil {
 			// Hub module detected or patch failed — fall back to full rebuild.
@@ -1074,7 +1087,8 @@ func (p *pipeline) buildFullCPG(ctx context.Context, cpgPath string, scopeFiles 
 			maxScopeLOC, loc)
 	}
 
-	p.logger.Info("building CPG",
+	p.logger.Info(
+		"building CPG",
 		"component", "cpg",
 		"files", len(scopeFiles),
 		"loc", loc,
@@ -1089,7 +1103,8 @@ func (p *pipeline) buildFullCPG(ctx context.Context, cpgPath string, scopeFiles 
 	})
 	buildElapsed := time.Since(buildStart)
 	if err != nil {
-		p.logger.Error("CPG build failed",
+		p.logger.Error(
+			"CPG build failed",
 			"component", "cpg",
 			"elapsed", buildElapsed,
 			"err", err,
@@ -1097,7 +1112,8 @@ func (p *pipeline) buildFullCPG(ctx context.Context, cpgPath string, scopeFiles 
 		return fmt.Errorf("build cpg: %w", err)
 	}
 
-	p.logger.Info("CPG build complete",
+	p.logger.Info(
+		"CPG build complete",
 		"component", "cpg",
 		"elapsed", buildElapsed,
 		"files", len(scopeFiles),
@@ -1110,7 +1126,8 @@ func (p *pipeline) buildFullCPG(ctx context.Context, cpgPath string, scopeFiles 
 	versionPath := joern.VersionSnapshotPath(p.cfg.ProjectID)
 	if version, verErr := p.joern.Version(ctx); verErr == nil {
 		if writeErr := os.WriteFile(versionPath, []byte(version+"\n"), 0o644); writeErr != nil {
-			p.logger.Warn("failed to persist Joern version snapshot",
+			p.logger.Warn(
+				"failed to persist Joern version snapshot",
 				"component", "cpg",
 				"err", writeErr,
 			)
@@ -1148,14 +1165,17 @@ func moduleDepthForMode(mode string) int {
 
 // runJoernTaint performs inter-procedural taint analysis on scopeFiles using
 // the Joern CPG graph. Returns normalised Finding structs.
-func runJoernTaint(ctx context.Context, graph cpg.Graph, scopeFiles []string) ([]finding.Finding, error) {
+func runJoernTaint(_ context.Context, graph cpg.Graph, scopeFiles []string) ([]finding.Finding, error) {
+	slog.Debug("joern taint analysis started", "component", "joern", "scope_files", len(scopeFiles))
 	// Detect the primary language from scope files.
 	lang, ok := joern.DetectLanguageFromFiles(scopeFiles)
 	if !ok {
+		slog.Debug("joern taint: no recognisable language detected, skipping", "component", "joern")
 		return nil, nil
 	}
 	// Ensure the language has a taint config.
 	if _, hasConfig := joern.TaintConfigs[lang]; !hasConfig {
+		slog.Debug("joern taint: no taint config for language, skipping", "component", "joern", "lang", lang)
 		return nil, nil
 	}
 
@@ -1191,12 +1211,24 @@ func runJoernTaint(ctx context.Context, graph cpg.Graph, scopeFiles []string) ([
 	}
 
 	if len(sources) == 0 || len(sinks) == 0 {
+		slog.Debug("joern taint: no sources or sinks found, skipping",
+			"component", "joern",
+			"sources", len(sources),
+			"sinks", len(sinks),
+		)
 		return nil, nil
 	}
 
+	slog.Info("running joern taint analysis",
+		"component", "joern",
+		"lang", lang,
+		"sources", len(sources),
+		"sinks", len(sinks),
+	)
 	// Run the taint analysis.
 	paths, err := graph.TaintPaths(sources, sinks)
 	if err != nil {
+		slog.Error("joern taint paths failed", "component", "joern", "err", err)
 		return nil, fmt.Errorf("taint paths: %w", err)
 	}
 

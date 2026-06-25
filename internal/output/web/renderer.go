@@ -31,6 +31,7 @@ import (
 	"context"
 	"embed"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -60,8 +61,10 @@ func (r *WebRenderer) ExitCode() int { return r.exitCode }
 // Render implements output.Renderer. It starts the HTTP server, prints the URL,
 // fans events to browser clients, then shuts down after EventDone or ctx cancel.
 func (r *WebRenderer) Render(ctx context.Context, ch <-chan output.Event) error {
+	slog.Debug("web renderer starting")
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
+		slog.Error("web renderer: listen failed", "err", err)
 		return fmt.Errorf("web renderer: listen: %w", err)
 	}
 
@@ -93,6 +96,7 @@ func (r *WebRenderer) Render(ctx context.Context, ch <-chan output.Event) error 
 	srv := &http.Server{Handler: mux}
 	go srv.Serve(ln) //nolint:errcheck
 
+	slog.Info("web renderer listening", slog.String("addr", ln.Addr().String()))
 	fmt.Fprintf(os.Stdout, "\n  open → http://%s\n\n", ln.Addr())
 
 	// Fan events from the pipeline into the SSE hub.
@@ -132,6 +136,7 @@ func (r *WebRenderer) Render(ctx context.Context, ch <-chan output.Event) error 
 func (r *WebRenderer) handle(e output.Event, h *hub, srv *http.Server) {
 	switch e.Kind {
 	case output.EventError:
+		slog.Error("pipeline error received by web renderer", "err", e.Err)
 		r.exitCode = 2
 	case output.EventDone:
 		if e.Done != nil {

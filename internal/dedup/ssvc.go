@@ -242,6 +242,7 @@ func epssScore(ctx context.Context, cve string) float64 {
 // CWE lookup tables. Network calls are best-effort; failures degrade to
 // CWE-only data rather than returning errors.
 func DeriveSSVC(ctx context.Context, f finding.Finding) finding.Finding {
+	slog.Debug("deriving SSVC dimensions", "component", "ssvc", "cwe", f.CWE, "cve", f.CVE)
 	// ── Automatable (CWE table) ──────────────────────────────────────────────
 	if v, ok := cweAutomatable[f.CWE]; ok {
 		f.SSVC.Automatable = v

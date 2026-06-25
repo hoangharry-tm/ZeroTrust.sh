@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"html/template"
 	"io"
+	"log/slog"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -96,7 +97,7 @@ type diffLine struct {
 // templateFuncs are the custom functions available in the template.
 var templateFuncs = template.FuncMap{
 	// not inverts a boolean — used for {{ if not .Findings }}.
-	"not": func(v interface{}) bool {
+	"not": func(v any) bool {
 		switch val := v.(type) {
 		case bool:
 			return !val
@@ -252,13 +253,19 @@ func New(outputPath string) *Generator {
 // Render writes the self-contained HTML report to w.
 // Findings are sorted by severity (BLOCK first) before rendering.
 func (g *Generator) Render(w io.Writer, info ScanInfo, findings []finding.Finding) error {
+	slog.Info("rendering report", slog.String("project", info.ProjectName), slog.Int("findings", len(findings)), slog.String("output", g.outputPath))
 	sorted := sortFindings(findings)
 	data := templateData{
 		Info:       info,
 		Findings:   sorted,
 		FileGroups: buildFileGroups(sorted),
 	}
-	return tmpl.Execute(w, data)
+	if err := tmpl.Execute(w, data); err != nil {
+		slog.Error("report render failed", "err", err)
+		return err
+	}
+	slog.Debug("report rendered", slog.Int("file_groups", len(data.FileGroups)))
+	return nil
 }
 
 // sortFindings returns a copy of findings ordered BLOCK > HIGH > MEDIUM > LOW > SUPPRESSED,
