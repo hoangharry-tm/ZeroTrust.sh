@@ -103,17 +103,7 @@ def _build_prompt(payload: dict[str, Any], action: str, is_final: bool) -> str:
             '"cwe": "<CWE-NNN or empty>", '
             '"early_exit": false}'
         )
-    else:
-        prompt += (
-            "Respond ONLY with JSON:\n"
-            '{"thought": "<one sentence reasoning>", '
-            '"action": "<what you checked>", '
-            '"observation": "<one sentence conclusion>", '
-            '"verdict": "", '
-            '"confidence": 0.0, '
-            '"cwe": "", '
-            '"early_exit": <true if no taint flow detected and scan can stop early, else false>}'
-        )
+    log.debug("llm_scan: final_prompt:\n%s", prompt)
     return prompt
 
 
@@ -122,6 +112,10 @@ def _call_step(client: ollama.Client, payload: dict[str, Any], step: int, is_fin
     action = _SINGLE_PASS_ACTION if mode == "single_pass" else _STEP_ACTIONS.get(step, _STEP_ACTIONS[3])
     prompt = _build_prompt(payload, action, is_final=(is_final or mode == "single_pass"))
 
+    log.debug(
+        "llm_scan: ollama request: %s",
+        json.dumps({"model": MODEL, "messages": [{"role": "user", "content": prompt}], "format": "json"}, indent=2),
+    )
     try:
         resp = client.chat(
             model=MODEL,
@@ -129,6 +123,7 @@ def _call_step(client: ollama.Client, payload: dict[str, Any], step: int, is_fin
             format="json",
             options={"temperature": 0.1, "num_predict": tuning.LLM_VERIFY_MAX_PREDICT},
         )
+        log.debug("llm_scan: ollama raw response: %s", resp.message.content)
         result: dict[str, Any] = json.loads(resp.message.content or "{}")
     except Exception as exc:
         log.warning("llm_scan: step %d failed: %s", step, exc)

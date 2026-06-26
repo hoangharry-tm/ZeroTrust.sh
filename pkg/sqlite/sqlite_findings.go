@@ -76,6 +76,9 @@ type CPGCacheRow struct {
 
 // UpsertProject inserts or updates a project row.
 // If the project already exists, only last_scanned_at and primary_language are updated.
+// If the root_path is already registered under a different project_id (e.g. after a
+// state-database reset changed the derived hash), the existing project_id is adopted
+// so callers can create scan_runs with a consistent FK reference.
 func (db *DB) UpsertProject(ctx context.Context, row ProjectRow) error {
 	now := time.Now().Unix()
 	if row.FirstSeenAt == 0 {
@@ -84,7 +87,17 @@ func (db *DB) UpsertProject(ctx context.Context, row ProjectRow) error {
 	if row.LastScannedAt == 0 {
 		row.LastScannedAt = now
 	}
-	_, err := db.conn.ExecContext(ctx, `
+
+	// Reconcile project_id when the root_path is already known. This avoids
+	// UNIQUE constraint violations on root_path when DeriveProjectID produces a
+	// different hash than the one stored from a prior scan.
+	existing, err := db.getProjectByRootPath(ctx, row.RootPath)
+	if err == nil && existing != nil {
+		row.ProjectID = existing.ProjectID
+		row.FirstSeenAt = existing.FirstSeenAt
+	}
+
+	_, err = db.conn.ExecContext(ctx, `
 		INSERT INTO projects (project_id, root_path, primary_language, first_seen_at, last_scanned_at)
 		VALUES (?, ?, ?, ?, ?)
 		ON CONFLICT(project_id) DO UPDATE SET
@@ -96,6 +109,23 @@ func (db *DB) UpsertProject(ctx context.Context, row ProjectRow) error {
 		return fmt.Errorf("sqlite: UpsertProject: %w", err)
 	}
 	return nil
+}
+
+// getProjectByRootPath returns the project row for the given root path, or nil
+// if no project has been registered for that path.
+func (db *DB) getProjectByRootPath(ctx context.Context, rootPath string) (*ProjectRow, error) {
+	row := &ProjectRow{}
+	err := db.conn.QueryRowContext(ctx, `
+		SELECT project_id, root_path, primary_language, first_seen_at, last_scanned_at
+		FROM projects WHERE root_path = ?`, rootPath,
+	).Scan(&row.ProjectID, &row.RootPath, &row.PrimaryLanguage, &row.FirstSeenAt, &row.LastScannedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return row, nil
 }
 
 // GetProject returns the project row for projectID, or sql.ErrNoRows if absent.

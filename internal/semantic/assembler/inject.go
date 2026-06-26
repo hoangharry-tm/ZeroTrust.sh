@@ -61,12 +61,14 @@ func (a *Assembler) InjectCPGFields(ctx context.Context, cc *CallChainContext) e
 		}
 		cc.Frames[i].Code = "" // raw source must not reach the LLM payload
 	}
+	slog.Debug("inject: done", slog.String("surface_id", cc.SurfaceID), slog.Int("frames", len(cc.Frames)))
 	return nil
 }
 
 // injectFrame populates a single frame's CPG-derived fields using PDG edges and
 // CallsMade heuristics.
 func (a *Assembler) injectFrame(f *FunctionContext, sinkIDs map[string]struct{}) error {
+	slog.Debug("inject: frame", slog.String("node_id", f.NodeID), slog.String("name", f.Name))
 	edges, err := a.graph.QueryEdges(f.NodeID, "")
 	if err != nil {
 		return fmt.Errorf("query edges: %w", err)
@@ -87,6 +89,12 @@ func (a *Assembler) injectFrame(f *FunctionContext, sinkIDs map[string]struct{})
 			f.AuthAnnotations = appendUnique(f.AuthAnnotations, call)
 		}
 	}
+	slog.Debug("inject: frame done",
+		slog.String("node_id", f.NodeID),
+		slog.Int("taint_source_params", len(f.TaintSourceParams)),
+		slog.Int("sanitizer_calls", len(f.SanitizerCalls)),
+		slog.Int("auth_annotations", len(f.AuthAnnotations)),
+	)
 	return nil
 }
 

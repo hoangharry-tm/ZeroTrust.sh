@@ -205,6 +205,7 @@ func (t *Targeter) queryExternalInputNodes(ctx context.Context) ([]cpg.Node, err
 // and returns a CallGraph mapping each visited node ID to its direct callee IDs.
 // Cycles are handled via a visited set — each node is expanded at most once.
 func (t *Targeter) buildCallGraph(_ context.Context, seeds []cpg.Node) (CallGraph, error) {
+	slog.Debug("targeting: building call graph", slog.Int("seeds", len(seeds)))
 	cg := make(CallGraph)
 	visited := make(map[string]bool)
 	queue := make([]cpg.Node, len(seeds))
@@ -290,6 +291,7 @@ func bfsHopDepths(cg CallGraph, seeds []cpg.Node) map[string]int {
 // and remainder. Auto-flagged surfaces have ConfidenceScore set and bypass the
 // UniXcoder classifier. Missing CVSS (0.0) is treated as 5.0.
 func AutoFlagCVESurfaces(surfaces []Surface) (flagged []Surface, remaining []Surface) {
+	slog.Debug("targeting: auto-flagging CVE surfaces", slog.Int("surfaces", len(surfaces)))
 	for _, s := range surfaces {
 		if !s.HasCVEMatch {
 			remaining = append(remaining, s)
@@ -342,6 +344,8 @@ func (t *Targeter) Run(ctx context.Context) ([]Surface, error) {
 		return nil, err
 	}
 
+	slog.Debug("targeting: methods from CPG", slog.Int("count", len(methods)))
+
 	type nodeResult struct {
 		node cpg.Node
 		kind SurfaceKind
@@ -365,11 +369,13 @@ func (t *Targeter) Run(ctx context.Context) ([]Surface, error) {
 			candidates = append(candidates, nodeResult{m, SurfaceAuthBoundary})
 		}
 	}
+	slog.Debug("targeting: candidates identified", slog.Int("external_input", len(extInputNodes)), slog.Int("total_candidates", len(candidates)))
 
 	idorSurfaces, err := t.queryIDORCandidates(ctx, DefaultIDORConfig())
 	if err != nil {
 		return nil, err
 	}
+	slog.Debug("targeting: IDOR candidates", slog.Int("count", len(idorSurfaces)))
 
 	// Build call graph and compute hop depths from entry-point seeds.
 	cg, err := t.buildCallGraph(ctx, extInputNodes)

@@ -173,10 +173,11 @@ func (s *Scanner) Scan(ctx context.Context, surfaces []budget.RankedSurface) ([]
 	}
 
 	findings := make([]finding.Finding, 0, len(surfaces))
-	for _, surf := range surfaces {
+	for i, surf := range surfaces {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
+		slog.Debug("llmscan: scanning surface", slog.Int("idx", i), slog.String("surface_id", surf.SurfaceID), slog.Float64("priority", surf.Priority))
 
 		var prior *scs.Result
 		if s.store != nil {
@@ -209,6 +210,7 @@ func (s *Scanner) Scan(ctx context.Context, surfaces []budget.RankedSurface) ([]
 
 // scanSurface routes to reactLoop or singlePass based on mode.
 func (s *Scanner) scanSurface(ctx context.Context, surface budget.RankedSurface, mode ScanMode, prior *scs.Result) (ScanResult, error) {
+	slog.Debug("llmscan: scanSurface", slog.String("surface_id", surface.SurfaceID), slog.String("mode", string(mode)))
 	if mode == ScanModeSinglePass {
 		return s.singlePass(ctx, surface, prior)
 	}
@@ -221,6 +223,7 @@ func (s *Scanner) scanSurface(ctx context.Context, surface budget.RankedSurface,
 // Step 2 (T4): callee taint — does this surface propagate taint to any callee?
 // Step 3 (T5, stub): trigger constraint at sink — implemented in ML3.4 T5.
 func (s *Scanner) reactLoop(ctx context.Context, surface budget.RankedSurface, prior *scs.Result) (ScanResult, error) {
+	slog.Debug("llmscan: reactLoop starting", slog.String("surface_id", surface.SurfaceID))
 	var priorInfs []scs.Inference
 	if prior != nil {
 		priorInfs = prior.Inferences
@@ -228,36 +231,44 @@ func (s *Scanner) reactLoop(ctx context.Context, surface budget.RankedSurface, p
 	steps := make([]ReActStep, 0, 3)
 
 	// Step 1 (T3): transfer constraint.
+	slog.Debug("llmscan: step 1 starting", slog.String("surface_id", surface.SurfaceID))
 	resp1, err := s.callStep(ctx, surface, 1, steps, priorInfs)
 	if err != nil {
 		return ScanResult{}, fmt.Errorf("step 1: %w", err)
 	}
+	slog.Debug("llmscan: step 1 done", slog.String("surface_id", surface.SurfaceID), slog.Bool("early_exit", resp1.EarlyExit))
 	steps = append(steps, ReActStep{StepNum: 1, Thought: resp1.Thought, Action: resp1.Action, Observation: resp1.Observation})
 	if resp1.EarlyExit {
 		return buildResult(surface.SurfaceID, resp1, steps, true), nil
 	}
 
 	// Step 2 (T4): callee taint propagation.
+	slog.Debug("llmscan: step 2 starting", slog.String("surface_id", surface.SurfaceID))
 	resp2, err := s.callStep(ctx, surface, 2, steps, priorInfs)
 	if err != nil {
 		return ScanResult{}, fmt.Errorf("step 2: %w", err)
 	}
+	slog.Debug("llmscan: step 2 done", slog.String("surface_id", surface.SurfaceID), slog.Bool("early_exit", resp2.EarlyExit))
 	steps = append(steps, ReActStep{StepNum: 2, Thought: resp2.Thought, Action: resp2.Action, Observation: resp2.Observation})
 	if resp2.EarlyExit {
 		return buildResult(surface.SurfaceID, resp2, steps, true), nil
 	}
 
 	// Step 3: trigger constraint — validate exploit preconditions before confirming.
+	slog.Debug("llmscan: step 3 starting", slog.String("surface_id", surface.SurfaceID))
 	resp3, err := s.callStep(ctx, surface, 3, steps, priorInfs)
 	if err != nil {
 		return ScanResult{}, fmt.Errorf("step 3: %w", err)
 	}
+	slog.Debug("llmscan: step 3 done", slog.String("surface_id", surface.SurfaceID))
 	steps = append(steps, ReActStep{StepNum: 3, Thought: resp3.Thought, Action: resp3.Action, Observation: resp3.Observation})
+	slog.Debug("llmscan: reactLoop done", slog.String("surface_id", surface.SurfaceID), slog.Int("steps", len(steps)), slog.String("verdict", resp3.Verdict))
 	return buildResult(surface.SurfaceID, resp3, steps, false), nil
 }
 
 // singlePass sends the full surface in a single prompt (CoD+SCoT fallback).
 func (s *Scanner) singlePass(ctx context.Context, surface budget.RankedSurface, prior *scs.Result) (ScanResult, error) {
+	slog.Debug("llmscan: singlePass starting", slog.String("surface_id", surface.SurfaceID))
 	var priorInfs []scs.Inference
 	if prior != nil {
 		priorInfs = prior.Inferences
@@ -282,6 +293,7 @@ func (s *Scanner) singlePass(ctx context.Context, surface budget.RankedSurface, 
 	if err := json.Unmarshal(resp.Result, &sr); err != nil {
 		return ScanResult{}, fmt.Errorf("unmarshal: %w", err)
 	}
+	slog.Debug("llmscan: singlePass done", slog.String("surface_id", surface.SurfaceID), slog.String("verdict", sr.Verdict), slog.Float64("confidence", sr.Confidence))
 	return ScanResult{
 		SurfaceID:     surface.SurfaceID,
 		Verdict:       sr.Verdict,
@@ -304,6 +316,12 @@ func (s *Scanner) callStep(ctx context.Context, surface budget.RankedSurface, st
 		PriorSteps:   priorSteps,
 		PriorContext: priorContext,
 	}
+	slog.Debug("llmscan: callStep request",
+		slog.String("surface_id", surface.SurfaceID),
+		slog.Int("step", stepNum),
+		slog.Int("prior_steps", len(priorSteps)),
+		slog.Int("prior_context", len(priorContext)),
+	)
 	resp, err := s.w.Call(ctx, worker.MsgLLMScan, req)
 	if err != nil {
 		return scanStepResponse{}, fmt.Errorf("worker call: %w", err)
@@ -315,6 +333,14 @@ func (s *Scanner) callStep(ctx context.Context, surface budget.RankedSurface, st
 	if err := json.Unmarshal(resp.Result, &sr); err != nil {
 		return scanStepResponse{}, fmt.Errorf("unmarshal step %d: %w", stepNum, err)
 	}
+	slog.Debug("llmscan: callStep response",
+		slog.String("surface_id", surface.SurfaceID),
+		slog.Int("step", stepNum),
+		slog.String("verdict", sr.Verdict),
+		slog.Float64("confidence", sr.Confidence),
+		slog.Bool("early_exit", sr.EarlyExit),
+		slog.String("thought", sr.Thought),
+	)
 	return sr, nil
 }
 

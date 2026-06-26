@@ -75,7 +75,8 @@ type joernFlow struct {
 // QueryNodes returns all nodes of nodeType across all ingested source files.
 func (g *joernGraph) QueryNodes(nodeType cpg.NodeType) ([]cpg.Node, error) {
 	q := nodeTypeQuery(nodeType)
-	raw, err := g.client.doQuery(g.ctx,q)
+	slog.Debug("joern: QueryNodes query", "query", q)
+	raw, err := g.client.doQuery(g.ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("joern: QueryNodes(%s): %w", nodeType, err)
 	}
@@ -94,7 +95,8 @@ func (g *joernGraph) QueryNodesByFile(relPath string, nodeType cpg.NodeType) ([]
 	default:
 		q = queryCallsByFile(relPath)
 	}
-	raw, err := g.client.doQuery(g.ctx,q)
+	slog.Debug("joern: QueryNodesByFile query", "query", q, "relPath", relPath)
+	raw, err := g.client.doQuery(g.ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("joern: QueryNodesByFile(%s, %s): %w", relPath, nodeType, err)
 	}
@@ -113,13 +115,16 @@ func (g *joernGraph) QueryEdges(fromID, toID string) ([]cpg.Edge, error) {
 	switch {
 	case fromID != "" && toID == "":
 		q := queryEdgesFrom(fromID)
+		slog.Debug("joern: QueryEdges query", "query", q)
 		raw, err = g.client.doQuery(g.ctx, q)
 	case toID != "" && fromID == "":
 		q := queryEdgesTo(toID)
+		slog.Debug("joern: QueryEdges query", "query", q)
 		raw, err = g.client.doQuery(g.ctx, q)
 	default:
 		// Both set: query from-side and filter by toID on the Go side.
 		q := queryEdgesFrom(fromID)
+		slog.Debug("joern: QueryEdges query", "query", q)
 		raw, err = g.client.doQuery(g.ctx, q)
 	}
 	if err != nil {
@@ -146,7 +151,9 @@ func (g *joernGraph) QueryEdges(fromID, toID string) ([]cpg.Edge, error) {
 
 // GetCallGraph returns the full inter-procedural call graph.
 func (g *joernGraph) GetCallGraph() (cpg.CallGraph, error) {
-	raw, err := g.client.doQuery(g.ctx, queryAllEdges())
+	q := queryAllEdges()
+	slog.Debug("joern: GetCallGraph query", "query", q)
+	raw, err := g.client.doQuery(g.ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("joern: GetCallGraph: %w", err)
 	}
@@ -160,6 +167,7 @@ func (g *joernGraph) GetCallGraph() (cpg.CallGraph, error) {
 	for _, e := range edges {
 		cg[e.From] = append(cg[e.From], e.To)
 	}
+	slog.Debug("joern: GetCallGraph done", "edges", len(cg))
 	return cg, nil
 }
 
@@ -169,7 +177,11 @@ func (g *joernGraph) GetCallers(functionID string) ([]cpg.Node, error) {
 	if functionID == "" {
 		return nil, fmt.Errorf("joern: GetCallers: functionID must not be empty")
 	}
+	if strings.HasPrefix(functionID, "-") {
+		return nil, nil // ponytail: synthetic/virtual node
+	}
 	q := queryCallersByID(functionID)
+	slog.Debug("joern: GetCallers query", "query", q, "functionID", functionID)
 	raw, err := g.client.doQuery(g.ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("joern: GetCallers(%s): %w", functionID, err)
@@ -183,7 +195,11 @@ func (g *joernGraph) GetCallees(functionID string) ([]cpg.Node, error) {
 	if functionID == "" {
 		return nil, fmt.Errorf("joern: GetCallees: functionID must not be empty")
 	}
+	if strings.HasPrefix(functionID, "-") {
+		return nil, nil // ponytail: synthetic/virtual node — no real callees
+	}
 	q := queryCalleesByID(functionID)
+	slog.Debug("joern: GetCallees query", "query", q, "functionID", functionID)
 	raw, err := g.client.doQuery(g.ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("joern: GetCallees(%s): %w", functionID, err)
@@ -199,6 +215,7 @@ func (g *joernGraph) GetCallees(functionID string) ([]cpg.Node, error) {
 // side to avoid a complex recursive Joern script. Each depth level makes two
 // HTTP round-trips.
 func (g *joernGraph) GetNeighboursAtDepth(rootID string, depth int) ([]cpg.Node, error) {
+	slog.Debug("joern: GetNeighboursAtDepth", "rootID", rootID, "depth", depth)
 	if depth > 6 {
 		return nil, ErrDepthExceeded
 	}
@@ -274,6 +291,7 @@ func (g *joernGraph) TaintPaths(sources []cpg.TaintSource, sinks []cpg.TaintSink
 	}
 
 	q := queryTaintFlows(methodID)
+	slog.Debug("joern: TaintPaths query", "query", q, "sources", len(sources), "sinks", len(sinks))
 	raw, err := g.client.doQuery(g.ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("joern: TaintPaths: reachableByFlows: %w", err)
@@ -325,6 +343,7 @@ func (g *joernGraph) TaintPaths(sources []cpg.TaintSource, sinks []cpg.TaintSink
 		path.IntermediateNodes = intermediate
 		paths = append(paths, path)
 	}
+	slog.Debug("joern: TaintPaths done", "paths", len(paths))
 	return paths, nil
 }
 

@@ -31,10 +31,10 @@ import (
 // If the CPG is unavailable or any query fails, the original ChangeSet is returned
 // unchanged — expansion is best-effort and must not block the scan.
 func ExpandWithCPG(ctx context.Context, cs *ChangeSet, g cpg.Graph) (*ChangeSet, error) {
-	slog.Debug("expanding changeset with CPG one-hop neighbours", "component", "diffindex", "changed", len(cs.Changed))
 	if cs == nil || len(cs.Changed) == 0 {
 		return cs, nil
 	}
+	slog.Debug("expanding changeset with CPG one-hop neighbours", "component", "diffindex", "changed", len(cs.Changed))
 
 	expanded := make(map[string]bool)
 	for _, f := range cs.Changed {

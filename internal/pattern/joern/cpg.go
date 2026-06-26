@@ -18,8 +18,11 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/hoangharry-tm/zerotrust/internal/tuning"
 	"github.com/hoangharry-tm/zerotrust/pkg/cpg"
@@ -35,6 +38,11 @@ type BuildConfig struct {
 	// Accepted values: "JAVASRC", "PYTHONSRC", "GOLANG", "JSSRC", "RUBYSRC".
 	// Empty string uses auto-detection.
 	Language string
+
+	// ProjectRoot overrides the root directory passed to importCode. When set,
+	// commonParent(Paths) is ignored — Joern ingests from this directory.
+	// Use when Paths are individual changed files spread across a larger repo.
+	ProjectRoot string
 
 	// SerializedCPGPath is the file path where the finished CPG is persisted for
 	// incremental patching on repeat scans. Empty string skips serialization.
@@ -87,32 +95,91 @@ func (c *Client) BuildCPG(ctx context.Context, cfg BuildConfig) error {
 
 	buildCtx, cancel := context.WithTimeout(ctx, c.buildTimeout)
 	defer cancel()
+	buildStart := time.Now()
 
-	// Joern accepts a single root directory or file. For multiple paths,
-	// the common parent directory is used and Joern recurses from there.
-	// Single-path case (most common): pass it directly.
-	root := cfg.Paths[0]
-	if len(cfg.Paths) > 1 {
-		root = commonParent(cfg.Paths)
+	// Abs-path all inputs so commonParent never collapses relative paths to ".".
+	absPaths := make([]string, len(cfg.Paths))
+	for i, p := range cfg.Paths {
+		abs, err := filepath.Abs(p)
+		if err != nil {
+			return fmt.Errorf("joern: BuildCPG: resolve path %q: %w", p, err)
+		}
+		absPaths[i] = abs
 	}
 
-	var query string
-	if cfg.Language != "" {
-		query = fmt.Sprintf(`importCode(inputPath=%q, language=%q)`,
-			root, cfg.Language)
+	// Caller-supplied ProjectRoot takes priority; otherwise derive from paths.
+	var root string
+	if cfg.ProjectRoot != "" {
+		var err error
+		root, err = filepath.Abs(cfg.ProjectRoot)
+		if err != nil {
+			return fmt.Errorf("joern: BuildCPG: resolve project root %q: %w", cfg.ProjectRoot, err)
+		}
 	} else {
-		query = fmt.Sprintf(`importCode(inputPath=%q)`, root)
+		root = absPaths[0]
+		if len(absPaths) > 1 {
+			root = commonParent(absPaths)
+		}
+		// For JVM languages walk up to the Maven/Gradle project root.
+		if cfg.Language == "JAVASRC" || cfg.Language == "KOTLIN" {
+			if projectRoot := findJVMProjectRoot(root); projectRoot != "" {
+				root = projectRoot
+			}
+		}
 	}
 
-	if _, err := c.doQuery(buildCtx, query); err != nil {
+	// Try importCode with up to 2 language attempts:
+	//   1. cfg.Language (empty = auto-detection)
+	//   2. detectProjectLanguage fallback if auto-detection fails/cpg unusable
+	// After each successful import, verify the CPG is actually queryable.
+	var languages []string
+	if cfg.Language != "" {
+		languages = append(languages, cfg.Language)
+	} else {
+		languages = append(languages, "") // sentinel: auto-detection
+		if lang := DetectProjectLanguage(absPaths); lang != "" {
+			languages = append(languages, lang)
+		}
+	}
+	slog.Info("joern: BuildCPG resolved root", "root", root, "languages", languages)
+	var cpgReady bool
+	for _, lang := range languages {
+		q := fmt.Sprintf(`importCode(inputPath=%q)`, root)
+		if lang != "" {
+			q = fmt.Sprintf(`importCode(inputPath=%q, language=%q)`, root, lang)
+			if cfg.Language == "" {
+				slog.Warn("joern: BuildCPG retrying with explicit language", "language", lang)
+			}
+		}
+
+		slog.Debug("joern: BuildCPG importCode", "query", q)
+		if _, err := c.doQuery(buildCtx, q); err != nil {
+			slog.Warn("joern: BuildCPG importCode failed", "language", lang, "err", err)
+			continue
+		}
+		// Verify the CPG is actually loaded and queryable. importCode can
+		// return success=true while the active project has no CPG (e.g.
+		// partial frontend failure in multi-language repos).
+		slog.Debug("joern: BuildCPG verifying CPG", "query", "cpg.method.size")
+		if _, verr := c.doQuery(buildCtx, "cpg.method.size"); verr != nil {
+			slog.Warn("joern: BuildCPG verification failed", "language", lang, "err", verr)
+			continue
+		}
+		cpgReady = true
+		break
+	}
+	if !cpgReady {
 		if buildCtx.Err() == context.DeadlineExceeded {
 			slog.Error("joern: CPG build timed out")
 			return ErrBuildTimeout
 		}
-		slog.Error("joern: BuildCPG failed", "err", err)
-		return fmt.Errorf("joern: BuildCPG: %w", err)
+		slog.Error("joern: BuildCPG failed")
+		return fmt.Errorf("joern: BuildCPG: no language succeeded")
 	}
-	slog.Info("joern: CPG build complete")
+	slog.Info("joern: CPG build complete",
+		slog.Int("paths", len(cfg.Paths)),
+		slog.Duration("elapsed", time.Since(buildStart)),
+	)
 
 	if cfg.SerializedCPGPath != "" {
 		if err := c.SaveCPG(ctx, cfg.SerializedCPGPath); err != nil {
@@ -134,6 +201,7 @@ func (c *Client) IncrementalPatch(ctx context.Context, cfg IncrementalPatchConfi
 	slog.Debug("joern: IncrementalPatch starting",
 		slog.Int("changed_functions", len(cfg.ChangedFunctions)),
 		slog.Int("removed_files", len(cfg.RemovedFiles)),
+		slog.Int("max_depth", cfg.MaxDepth),
 	)
 	if cfg.MaxDepth == 0 {
 		cfg.MaxDepth = tuning.CPGDefaultMaxDepth
@@ -164,6 +232,7 @@ func (c *Client) IncrementalPatch(ctx context.Context, cfg IncrementalPatchConfi
 	for _, f := range cfg.RemovedFiles {
 		evictQuery := fmt.Sprintf(
 			`cpg.file.nameExact(%q).foreach(_.start.ast.foreach(_.delete()))`, f)
+		slog.Debug("joern: IncrementalPatch evicting file", "query", evictQuery)
 		if _, err := c.doQuery(ctx, evictQuery); err != nil {
 			return fmt.Errorf("joern: IncrementalPatch: evict %q: %w", f, err)
 		}
@@ -174,6 +243,7 @@ func (c *Client) IncrementalPatch(ctx context.Context, cfg IncrementalPatchConfi
 	for _, fn := range cfg.ChangedFunctions {
 		patchQuery := fmt.Sprintf(
 			`cpg.method.fullName(%q).filename.l.foreach(f => importCode.incrementally(f))`, fn)
+		slog.Debug("joern: IncrementalPatch patching function", "query", patchQuery)
 		if _, err := c.doQuery(ctx, patchQuery); err != nil {
 			return fmt.Errorf("joern: IncrementalPatch: patch %q: %w", fn, err)
 		}
@@ -188,6 +258,7 @@ func (c *Client) SaveCPG(ctx context.Context, destPath string) error {
 		return fmt.Errorf("%w: %q", ErrPathTraversal, destPath)
 	}
 	query := fmt.Sprintf(`cpg.save; workspace.getActiveProject.foreach(_.cpg.save(%q))`, destPath)
+	slog.Debug("joern: SaveCPG query", "query", query, "dest", destPath)
 	if _, err := c.doQuery(ctx, query); err != nil {
 		return fmt.Errorf("joern: SaveCPG: %w", err)
 	}
@@ -201,6 +272,7 @@ func (c *Client) LoadCPG(ctx context.Context, srcPath string) error {
 		return fmt.Errorf("%w: %q", ErrPathTraversal, srcPath)
 	}
 	query := fmt.Sprintf(`importCpg(path=%q)`, srcPath)
+	slog.Debug("joern: LoadCPG query", "query", query, "src", srcPath)
 	if _, err := c.doQuery(ctx, query); err != nil {
 		return fmt.Errorf("joern: LoadCPG: %w", err)
 	}
@@ -223,19 +295,120 @@ func containsTraversal(p string) bool {
 }
 
 // commonParent returns the longest common directory prefix of paths.
+// It operates on path components (not characters) so /a/b and /a/c → /a.
 func commonParent(paths []string) string {
 	if len(paths) == 0 {
 		return "."
 	}
-	base := filepath.Dir(filepath.Clean(paths[0]))
+	// Split each path's directory into components.
+	split := func(p string) []string {
+		return strings.Split(filepath.Dir(filepath.Clean(p)), string(filepath.Separator))
+	}
+	common := split(paths[0])
 	for _, p := range paths[1:] {
-		d := filepath.Dir(filepath.Clean(p))
-		for base != d && base != "." && base != "/" {
-			base = filepath.Dir(base)
-			d = filepath.Dir(d)
+		parts := split(p)
+		end := len(common)
+		if len(parts) < end {
+			end = len(parts)
+		}
+		i := 0
+		for i < end && common[i] == parts[i] {
+			i++
+		}
+		common = common[:i]
+	}
+	if len(common) == 0 {
+		return "/"
+	}
+	// filepath.Join drops leading empty component from absolute-path splits.
+	joined := filepath.Join(common...)
+	if filepath.IsAbs(paths[0]) && !filepath.IsAbs(joined) {
+		joined = string(filepath.Separator) + joined
+	}
+	return joined
+}
+
+// findJVMProjectRoot walks up from dir until it finds a Maven or Gradle build
+// file, returning that directory as the Joern importCode root. Returns "" if
+// none is found before reaching the filesystem root.
+func findJVMProjectRoot(dir string) string {
+	markers := []string{"pom.xml", "build.gradle", "build.gradle.kts"}
+	cur := dir
+	for {
+		for _, m := range markers {
+			if _, err := os.Stat(filepath.Join(cur, m)); err == nil {
+				return cur
+			}
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return "" // reached fs root without finding a marker
+		}
+		cur = parent
+	}
+}
+
+// DetectProjectLanguage infers the most likely Joern language code from source
+// file extensions in paths. Returns "" when no known extension is found.
+func DetectProjectLanguage(paths []string) string {
+	extCount := make(map[string]int)
+	for _, p := range paths {
+		ext := strings.TrimPrefix(filepath.Ext(p), ".")
+		if ext != "" {
+			extCount[ext]++
 		}
 	}
-	return base
+	// If the project root directory itself is in paths, recurse into it.
+	if len(extCount) == 0 && len(paths) > 0 {
+		dirents, err := os.ReadDir(paths[0])
+		if err == nil {
+			for _, de := range dirents {
+				if !de.IsDir() {
+					ext := strings.TrimPrefix(filepath.Ext(de.Name()), ".")
+					if ext != "" {
+						extCount[ext]++
+					}
+				}
+			}
+		}
+	}
+
+	type langScore struct {
+		code  string
+		score int
+	}
+	var candidates []langScore
+	for ext, count := range extCount {
+		code := extToJoernLang(ext)
+		if code != "" {
+			candidates = append(candidates, langScore{code, count})
+		}
+	}
+	if len(candidates) == 0 {
+		return ""
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].score > candidates[j].score
+	})
+	return candidates[0].code
+}
+
+// extToJoernLang maps a file extension to Joern's language code.
+func extToJoernLang(ext string) string {
+	switch strings.ToLower(ext) {
+	case "java", "class", "jar", "gradle", "mvn", "pom":
+		return "JAVASRC"
+	case "py", "pyw":
+		return "PYTHONSRC"
+	case "go":
+		return "GOLANG"
+	case "js", "jsx", "ts", "tsx", "mjs", "cjs":
+		return "JSSRC"
+	case "rb", "ruby":
+		return "RUBYSRC"
+	default:
+		return ""
+	}
 }
 
 // Ensure joernGraph satisfies cpg.Graph at compile time.

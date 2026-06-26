@@ -10,13 +10,15 @@ via newline-delimited JSON:
 
 import json
 import logging
+import os
 import sys
 from typing import Any
 
 from handlers import ast_edit, classify, embed, llm_scan, llm_verify, summarize
 
+_log_level = logging.DEBUG if os.getenv("ZEROTRUST_VERBOSE") else logging.INFO
 logging.basicConfig(
-    level=logging.INFO,
+    level=_log_level,
     stream=sys.stderr,
     format="%(levelname)s %(name)s %(message)s",
 )

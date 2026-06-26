@@ -125,12 +125,19 @@ func New(graph cpg.Graph, maxDepth int) *Assembler {
 func (a *Assembler) Assemble(ctx context.Context, surfaces []enrichment.EnrichedSurface) ([]CallChain, error) {
 	slog.Debug("assembling call chains", slog.Int("surfaces", len(surfaces)), slog.Int("max_depth", a.maxDepth))
 	result := make([]CallChain, 0, len(surfaces))
-	for _, s := range surfaces {
+	for i, s := range surfaces {
+		slog.Debug("assembler: processing surface", slog.Int("idx", i), slog.String("id", s.ID), slog.String("function", s.FunctionName))
 		chain, err := a.assembleOne(ctx, s)
 		if err != nil {
 			slog.Error("assemble surface failed", "err", err, slog.String("surface_id", s.ID))
 			return nil, fmt.Errorf("assemble surface %s: %w", s.ID, err)
 		}
+		slog.Debug("assembler: chain done",
+			slog.String("surface_id", s.ID),
+			slog.Int("depth", chain.Depth),
+			slog.Bool("truncated", chain.Truncated),
+			slog.Int("functions", len(chain.Functions)),
+		)
 		result = append(result, chain)
 	}
 	slog.Info("call chains assembled", slog.Int("chains", len(result)))
@@ -139,6 +146,7 @@ func (a *Assembler) Assemble(ctx context.Context, surfaces []enrichment.Enriched
 
 // assembleOne builds the callee-first call chain for a single surface.
 func (a *Assembler) assembleOne(ctx context.Context, s enrichment.EnrichedSurface) (CallChain, error) {
+	slog.Debug("assembler: assembleOne", slog.String("surface_id", s.ID), slog.String("function", s.FunctionName))
 	root := cpg.Node{ID: s.ID, Name: s.FunctionName, File: s.File}
 	frames := make([]FunctionContext, 0, a.maxDepth+1)
 	visited := make(map[string]bool)
@@ -167,6 +175,7 @@ func (a *Assembler) dfsCallees(ctx context.Context, node cpg.Node, depth int, fr
 		return false, err
 	}
 	if depth > a.maxDepth {
+		slog.Debug("assembler: dfs truncated at maxDepth", slog.Int("depth", depth), slog.Int("max_depth", a.maxDepth))
 		return true, nil
 	}
 	visited[node.ID] = true

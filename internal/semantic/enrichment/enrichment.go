@@ -150,7 +150,8 @@ func (e *Enricher) Enrich(ctx context.Context, surfaces []targeting.Surface, pro
 
 	autoFlagged := 0
 	enriched := make([]EnrichedSurface, 0, len(surfaces))
-	for _, s := range surfaces {
+	for i, s := range surfaces {
+		slog.Debug("enrichment: processing surface", slog.Int("idx", i), slog.String("id", s.ID), slog.String("file", s.File))
 		es := EnrichedSurface{
 			Surface:  s,
 			Language: finding.LangFromPath(s.File),
@@ -185,6 +186,7 @@ func (e *Enricher) Enrich(ctx context.Context, surfaces []targeting.Surface, pro
 // DetectIDORFlows applies the zero-trust resource ID heuristic to a single surface.
 // Returns the list of resource ID flows detected (empty slice means no IDOR signal).
 func (e *Enricher) DetectIDORFlows(_ context.Context, surface targeting.Surface) ([]ResourceIDFlow, error) {
+	slog.Debug("enrichment: DetectIDORFlows", slog.String("surface_id", surface.ID))
 	if e.graph == nil {
 		return nil, nil
 	}
@@ -227,6 +229,7 @@ func (e *Enricher) DetectIDORFlows(_ context.Context, surface targeting.Surface)
 			})
 		}
 	}
+	slog.Debug("enrichment: IDOR flows detected", slog.String("surface_id", surface.ID), slog.Int("flows", len(flows)))
 	return flows, nil
 }
 

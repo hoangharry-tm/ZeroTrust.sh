@@ -88,7 +88,7 @@ def _build_prompt(payload: dict[str, Any]) -> str:
         f"Context: {justification}" if justification else ""
     )
 
-    return (
+    prompt = (
         "You are a security code analyzer. "
         "Determine whether the following code pattern is a real vulnerability.\n\n"
         "FINDING\n"
@@ -102,8 +102,11 @@ def _build_prompt(payload: dict[str, Any]) -> str:
         "2. FLOW: Does tainted data reach the dangerous operation?\n"
         "3. GUARD: Is there sanitization, encoding, or parameterization between source and sink?\n"
         "4. VERDICT: confirmed / false_positive / uncertain — and why in ≤20 words.\n\n"
-        "Respond ONLY with JSON."
+        "Respond ONLY with valid JSON conforming to this exact schema:\n"
+        '{"verdict": "confirmed|false_positive|uncertain", "confidence": 0.0-1.0, "justification": "reason (≤200 chars)"}'
     )
+    log.debug("llm_verify: final_prompt:\n%s", prompt)
+    return prompt
 
 
 # ── Single Ollama call ────────────────────────────────────────────────────────
@@ -125,6 +128,8 @@ def _call_ollama(
     """
     options = {"temperature": temperature, "num_predict": tuning.LLM_VERIFY_MAX_PREDICT}
 
+    log.debug("llm_verify: ollama request (finding_id=%s)", finding_id)
+
     def _chat(fmt: Any) -> str:
         try:
             response = client.chat(
@@ -137,7 +142,9 @@ def _call_ollama(
             raise RuntimeError(
                 f"llm_verify: ollama unreachable (finding_id={finding_id}): {exc}"
             ) from exc
-        return response.message.content or ""
+        raw_content = response.message.content or ""
+        log.debug("llm_verify: ollama raw response: %s (finding_id=%s)", raw_content, finding_id)
+        return raw_content
 
     raw = _chat(enforcer.json_schema)
     try:
@@ -145,8 +152,9 @@ def _call_ollama(
     except ValueError:
         log.warning(
             "llm_verify: JSON parse failed on first attempt (finding_id=%s)"
-            " — retrying with format=json",
+            " — retrying with format=json; raw_response=%s",
             finding_id,
+            raw,
         )
         raw2 = _chat("json")
         try:
@@ -287,4 +295,5 @@ def handle(payload: dict[str, Any]) -> dict[str, Any]:
 
     out = result.model_dump()
     out["finding_id"] = finding_id
+    log.debug("llm_verify: done (finding_id=%s, verdict=%s, confidence=%.2f)", finding_id, out.get("verdict"), out.get("confidence", 0.0))
     return out

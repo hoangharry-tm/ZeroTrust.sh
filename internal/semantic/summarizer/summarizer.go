@@ -123,6 +123,14 @@ func (s *Summarizer) Summarize(ctx context.Context, chains []assembler.CallChain
 // summarizeBatch sends one BatchRequest to the Python worker and decodes the result.
 func (s *Summarizer) summarizeBatch(ctx context.Context, batch []assembler.CallChain) ([]Summary, error) {
 	req := BatchRequest{Chains: batch}
+	for _, ch := range batch {
+		slog.Debug("summarizer: chain in batch",
+			slog.String("surface_id", ch.SurfaceID),
+			slog.Int("depth", ch.Depth),
+			slog.Int("functions", len(ch.Functions)),
+		)
+	}
+	slog.Debug("summarizer: calling worker", slog.Int("chains", len(batch)))
 	resp, err := s.w.Call(ctx, worker.MsgSummarize, req)
 	if err != nil {
 		return nil, fmt.Errorf("worker call: %w", err)
@@ -135,5 +143,15 @@ func (s *Summarizer) summarizeBatch(ctx context.Context, batch []assembler.CallC
 	if err := json.Unmarshal(resp.Result, &summaries); err != nil {
 		return nil, fmt.Errorf("decode summaries: %w", err)
 	}
+	for _, sm := range summaries {
+		slog.Debug("summarizer: summary result",
+			slog.String("surface_id", sm.SurfaceID),
+			slog.String("function_id", sm.FunctionID),
+			slog.String("sink_type", sm.TaintFlow.SinkType),
+			slog.Bool("auth_present", sm.AuthGuard.CheckPresent),
+			slog.String("resource_id_source", sm.LogicFlaw.ResourceIDSource),
+		)
+	}
+	slog.Debug("summarizer: worker returned", slog.Int("summaries", len(summaries)))
 	return summaries, nil
 }

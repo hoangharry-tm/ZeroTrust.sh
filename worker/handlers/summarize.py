@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import threading
@@ -76,6 +77,8 @@ def _summarize_function(client: ollama.Client, surface_id: str, fn: dict[str, An
         '"check_location": "<before_query|after_query|unknown>"}}'
     )
 
+    log.debug("summarize: ollama request: %s", json.dumps({"model": MODEL, "messages": [{"role": "user", "content": prompt}], "format": "json"}, indent=2))
+    log.debug("summarize: final_prompt:\n%s", prompt)
     try:
         resp = client.chat(
             model=MODEL,
@@ -83,7 +86,7 @@ def _summarize_function(client: ollama.Client, surface_id: str, fn: dict[str, An
             format="json",
             options={"temperature": 0.1, "num_predict": 256},
         )
-        import json
+        log.debug("summarize: ollama raw response: %s", resp.message.content)
         raw = json.loads(resp.message.content or "{}")
         taint = raw.get("taint_flow", _EMPTY_TAINT)
         auth = raw.get("auth_guard", _EMPTY_AUTH)

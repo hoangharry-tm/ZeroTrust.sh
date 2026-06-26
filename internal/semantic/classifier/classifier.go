@@ -180,6 +180,7 @@ func (g *Gate) classifyBatch(ctx context.Context, surfaces []enrichment.Enriched
 		}
 	}
 
+	slog.Debug("classifier: calling worker", slog.Int("surfaces", len(surfaces)))
 	resp, err := g.w.Call(ctx, worker.MsgClassify, payload)
 	if err != nil {
 		return worker.ClassifyResult{}, fmt.Errorf("classifier: worker call: %w", err)
@@ -192,6 +193,7 @@ func (g *Gate) classifyBatch(ctx context.Context, surfaces []enrichment.Enriched
 	if err := json.Unmarshal(resp.Result, &cr); err != nil {
 		return worker.ClassifyResult{}, fmt.Errorf("classifier: unmarshal response: %w", err)
 	}
+	slog.Debug("classifier: worker response", slog.Int("results", len(cr.Results)))
 	return cr, nil
 }
 
@@ -210,6 +212,7 @@ func (g *Gate) classifyBatch(ctx context.Context, surfaces []enrichment.Enriched
 // supported surfaces go to the Python worker in one batch; unsupported surfaces
 // receive their result immediately without an IPC round-trip.
 func (g *Gate) Classify(ctx context.Context, surfaces []enrichment.EnrichedSurface) ([]Result, error) {
+	slog.Debug("classifier: starting", slog.Int("surfaces", len(surfaces)))
 	if len(surfaces) == 0 {
 		return nil, nil
 	}
@@ -332,5 +335,6 @@ func (g *Gate) Classify(ctx context.Context, surfaces []enrichment.EnrichedSurfa
 		}
 	}
 
+	slog.Debug("classifier: done", slog.Int("results", len(results)))
 	return results, nil
 }

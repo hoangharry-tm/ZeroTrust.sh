@@ -26,50 +26,34 @@
 
 AI coding agents (Cursor, Cline, Aider, GitHub Copilot Workspace) generate functional code at speed. They also introduce vulnerabilities that existing SAST tools were not designed to catch.
 
-Not classic injection bugs — those are covered. The new class:
+AI-assisted development ships code faster and at higher volume — so vulnerabilities appear faster too. ZeroTrust.sh is an upgraded SAST: it scans **source code** for real, exploitable flaws and reports them with proof of exploitation. The developer decides what's intentional.
 
 <details>
-<summary><b>Package hallucinations (slopsquatting)</b></summary>
+<summary><b>Phantom dependencies (slopsquatting)</b></summary>
 
-An agent imports <code>requests-auth-aws</code> (non-existent). An attacker registers it with a payload. Your scanner sees nothing — the package isn't on any CVE list yet.
+Your dependency manifest imports <code>requests-auth-aws</code> — a package that doesn't exist. An attacker registers it with a payload. No CVE list will catch this yet.
 
-ZeroTrust.sh flags it immediately via hallucination heuristics.
+ZeroTrust.sh flags phantom imports in <code>go.mod</code>, <code>requirements.txt</code>, <code>pom.xml</code>, and <code>package.json</code> before they reach production.
 </details>
 
 <details>
-<summary><b>Prompt injection in source</b></summary>
-
-Adversarial instructions in comments, docstrings, or string literals that redirect the next agent that reads this file.
-
-Detected by OpenGrep pattern rules + LLM Verifier.
-</details>
-
-<details>
-<summary><b>Security-node disappearance</b></summary>
+<summary><b>Security regression detection</b></summary>
 
 An auth check is present in commit N, silently absent in commit N+1. Functional tests still pass. No diff alert fires.
 
-The Differential Indexer catches the AST-node delta.
+The Differential Indexer tracks auth/validate/sanitize AST nodes across scans; removal triggers deep semantic analysis.
 </details>
 
 <details>
-<summary><b>AI agent instruction file backdoors</b></summary>
+<summary><b>Deep semantic taint analysis</b></summary>
 
-Unicode obfuscation (U+202E, U+200B) buried in <code>CLAUDE.md</code>, <code>.cursor/rules</code>, <code>AGENTS.md</code>, or MCP configs. No competitor scans this surface.
+Pattern-only tools miss logic-level flaws: SSRF through indirect calls, IDOR in non-obvious data flows, broken auth that passes unit tests.
 
-ZeroTrust.sh's instrscan engine was built for this.
-</details>
-
-<details>
-<summary><b>MCP server config injection &amp; agent cheat patterns</b></summary>
-
-External URLs, shell/execute capabilities, and over-broad filesystem scopes injected into <code>.mcp.json</code>. `return True` in `*auth*` functions. `TODO: add auth` with no follow-through. Disabled assertions.
-
-Pattern rules catch these reliably.
+ZeroTrust.sh's Path B runs a three-tier semantic funnel (heuristic → UniXcoder classifier → bounded LLM) to surface what regex can't.
 </details>
 
 > [!NOTE]
-> Traditional SAST tools require cloud upload, run against CVE databases, and assume a human wrote the code. **ZeroTrust.sh does not.**
+> Traditional SAST tools require cloud upload, run against CVE databases, and miss logic-level flaws. **ZeroTrust.sh runs locally and reasons about code semantics.**
 
 ## Quickstart
 

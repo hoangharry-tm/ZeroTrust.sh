@@ -79,7 +79,7 @@ func queryLiterals() string {
 // queryMethodsByFile returns a DSL expression for METHOD nodes in a file.
 func queryMethodsByFile(relPath string) string {
 	escaped := escapeScalaString(relPath)
-	return fmt.Sprintf(`cpg.method.filename("%s")
+	return fmt.Sprintf(`cpg.method.where(_.file.name("%s"))
   .map(m => s"""{"id":"${m.id.toString}","name":"${m.name}","file":"${m.filename}","line":${m.lineNumber.getOrElse(0)}}""")
   .toList
   .mkString("[", ",", "]")`, escaped)
@@ -88,7 +88,7 @@ func queryMethodsByFile(relPath string) string {
 // queryCallsByFile returns a DSL expression for CALL nodes in a file.
 func queryCallsByFile(relPath string) string {
 	escaped := escapeScalaString(relPath)
-	return fmt.Sprintf(`cpg.call.filename("%s")
+	return fmt.Sprintf(`cpg.call.where(_.file.name("%s"))
   .map(c => s"""{"id":"${c.id.toString}","name":"${c.name}","file":"${c.location.filename}","line":${c.lineNumber.getOrElse(0)}}""")
   .toList
   .mkString("[", ",", "]")`, escaped)
@@ -130,8 +130,9 @@ func queryAllEdges() string {
 
 // queryCallersByID returns a DSL expression for callers of a method.
 func queryCallersByID(functionID string) string {
-	return fmt.Sprintf(`cpg.method.id(%s)
+	return fmt.Sprintf(`cpg.method.id(%sL)
   .caller
+  .filterNot(_.id < 0)
   .map(m => s"""{"id":"${m.id.toString}","name":"${m.name}","file":"${m.filename}","line":${m.lineNumber.getOrElse(0)}}""")
   .toList
   .mkString("[", ",", "]")`, functionID)
@@ -139,9 +140,10 @@ func queryCallersByID(functionID string) string {
 
 // queryCalleesByID returns a DSL expression for callees of a method.
 func queryCalleesByID(functionID string) string {
-	return fmt.Sprintf(`cpg.method.id(%s)
+	return fmt.Sprintf(`cpg.method.id(%sL)
   .callee
-  .map(m => s"""{"id":"${m.id.toString}","name":"${m.name}","file":"${m.filename}","line":${m.lineNumber.getOrElse(0)}}""")
+  .filterNot(_.id < 0)
+  .map(m => s"""{"id":"${m.id.toString}","name":"${m.name}","file":"${m.location.filename}","line":${m.lineNumber.getOrElse(0)}}""")
   .toList
   .mkString("[", ",", "]")`, functionID)
 }

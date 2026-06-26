@@ -23,12 +23,14 @@ package budget
 
 import (
 	"cmp"
+	"log/slog"
 	"slices"
 )
 
 // rank is the shared implementation for Rank and RankWithStats.
 func (c *Controller) rank(inputs []Input) (ranked []RankedSurface, exhausted []Input, stats Stats) {
 	stats.Total = len(inputs)
+	slog.Debug("budget: ranking", slog.Int("total", len(inputs)), slog.Int("token_cap", c.tokenCap))
 	if len(inputs) == 0 {
 		return nil, nil, stats
 	}
@@ -67,5 +69,6 @@ func (c *Controller) rank(inputs []Input) (ranked []RankedSurface, exhausted []I
 		stats.Ranked++
 		stats.TokensUsed += tokens
 	}
+	slog.Debug("budget: ranked", slog.Int("ranked", len(ranked)), slog.Int("exhausted", len(exhausted)), slog.Int("tokens_used", stats.TokensUsed))
 	return ranked, exhausted, stats
 }

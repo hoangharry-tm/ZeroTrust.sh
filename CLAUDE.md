@@ -1,17 +1,17 @@
 # ZeroTrust.sh — AI Codebase Security Scanner
 
-Local, privacy-first CLI scanner for codebases modified by AI coding agents. Accepts a directory path, runs deep on-device security analysis, outputs an interactive HTML report with patch suggestions.
+Local, privacy-first CLI vulnerability scanner. Accepts a directory path, runs deep on-device source code security analysis, outputs an interactive HTML report with patch suggestions.
 
 ## Core Problem
 
-AI coding agents generate functional code at speed but introduce vulnerabilities — hallucinated packages, prompt injection risks, degraded security controls. Traditional SAST tools require cloud upload, are too slow for agent loops, and weren't designed for AI-specific threat vectors.
+AI coding assistants ship code faster and at higher volume — so vulnerabilities appear faster and in larger numbers. Traditional SAST tools require cloud upload, are too slow for developer loops, and lack the semantic depth to catch logic-level flaws. ZeroTrust.sh is an upgraded SAST: it scans source code for real, exploitable vulnerabilities and reports them with proof of exploitation. The developer decides what's intentional.
 
 ## Key Features
 
 - **Local & offline** — source code never leaves the machine; no VCS dependency required
-- **AI-specific detection** — hallucinated packages, bypass comments, TODO-then-skip, security-node disappearance, prompt injection in AI agent config files (`.cursor/rules`, `AGENTS.md`, `CLAUDE.md`, MCP configs) — no competitor scans this surface
+- **Phantom dependency detection** — scans dependency manifests for non-existent or typo-squatted package imports (supply-chain risk)
 - **Model Integrity Verifier** — cosign/Sigstore Rekor signed registry; WARN for unrecognized models, BLOCK on hash mismatch; gates LLM calls only
-- **Security regression detection** — Differential Indexer tracks auth/validate/check AST nodes; security-control removal triggers Path B escalation
+- **Security regression detection** — Differential Indexer tracks auth/validate/sanitize AST nodes; removal of a security-critical function triggers Path B escalation
 - **Dual-path engine** — Path A (pattern, fast) runs in parallel with Path B (semantic, three-tier funnel); neither gates the other
 - **Three-tier cost funnel** — Heuristic Targeting → UniXcoder classifier (CPU) → bounded LLM; ~95% file elimination target; budget-exhausted surfaces emit SUPPRESSED, never silent drop
 - **SSVC-aligned output** — BLOCK/HIGH/MEDIUM/LOW/SUPPRESSED mapped to Exploitation/Automatable/Technical Impact; cross-path boost +15pp
@@ -119,7 +119,7 @@ This project is indexed by GitNexus as **ZeroTrust.sh** (4998 symbols, 10079 rel
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **ZeroTrust.sh** (5073 symbols, 10228 relationships, 157 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **ZeroTrust.sh** (5097 symbols, 10313 relationships, 161 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > Index stale? Run `node .gitnexus/run.cjs analyze` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? `npx gitnexus analyze` (npm 11 crash → `npm i -g gitnexus`; #1939).
 

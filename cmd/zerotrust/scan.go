@@ -20,7 +20,6 @@ package main
 //
 //  1. INGEST  — MIV + DI run in parallel (ingestion.Ingester).
 //  2. PATH A  — OpenGrep + ast-grep + Joern CPG run in parallel goroutines.
-//     instrscan also runs here (AI agent config file scanner, no CPG dependency).
 //     LLM Verifier filters false positives from pattern findings.
 //  3. PATH B  — Sequential tier pipeline:
 //     Heuristic Targeting → CVE Enrichment → UniXcoder Classifier →
@@ -38,12 +37,18 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"net"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"golang.org/x/sync/errgroup"
@@ -56,7 +61,6 @@ import (
 	"github.com/hoangharry-tm/zerotrust/internal/output"
 	"github.com/hoangharry-tm/zerotrust/internal/patch"
 	"github.com/hoangharry-tm/zerotrust/internal/pattern/astgrep"
-	"github.com/hoangharry-tm/zerotrust/internal/pattern/instrscan"
 	"github.com/hoangharry-tm/zerotrust/internal/pattern/joern"
 	"github.com/hoangharry-tm/zerotrust/internal/pattern/opengrep"
 	"github.com/hoangharry-tm/zerotrust/internal/pattern/verifier"
@@ -96,7 +100,6 @@ type pipeline struct {
 	opengrep *opengrep.Runner
 	astgrep  *astgrep.Runner
 	joern    *joern.Client
-	instr    *instrscan.Scanner
 	verif    *verifier.Verifier
 
 	// Path B
@@ -116,6 +119,33 @@ type pipeline struct {
 	rep *report.Generator
 }
 
+// teeHandler writes every log record to two separate handlers.
+// Used when --verbose is set to send Debug+ logs to both the JSON log file
+// and the terminal (text format on stderr).
+type teeHandler struct {
+	json slog.Handler
+	text slog.Handler
+}
+
+func (h *teeHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	return h.json.Enabled(ctx, level) || h.text.Enabled(ctx, level)
+}
+
+func (h *teeHandler) Handle(ctx context.Context, r slog.Record) error {
+	if err := h.json.Handle(ctx, r); err != nil {
+		return err
+	}
+	return h.text.Handle(ctx, r)
+}
+
+func (h *teeHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &teeHandler{json: h.json.WithAttrs(attrs), text: h.text.WithAttrs(attrs)}
+}
+
+func (h *teeHandler) WithGroup(name string) slog.Handler {
+	return &teeHandler{json: h.json.WithGroup(name), text: h.text.WithGroup(name)}
+}
+
 // newPipeline constructs the full pipeline from cfg.
 // It opens the SQLite state cache, starts the Python worker, and instantiates
 // every stage. Returns a ready-to-run pipeline or an error on setup failure.
@@ -131,6 +161,8 @@ func newPipeline(ctx context.Context, cfg ScanConfig) (*pipeline, error) {
 	cfg.Target = absTarget
 
 	// Structured logger — JSON lines written to build/zerotrust.log alongside the report.
+	// Also set as slog.Default so all slog.* calls in every package flow to the log file
+	// (and optionally to stderr when --verbose is active).
 	logDir := filepath.Dir(cfg.ReportPath)
 	if err := os.MkdirAll(logDir, 0o750); err != nil {
 		return nil, fmt.Errorf("mkdir %s: %w", logDir, err)
@@ -140,12 +172,19 @@ func newPipeline(ctx context.Context, cfg ScanConfig) (*pipeline, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open log file: %w", err)
 	}
-	logger := slog.New(slog.NewJSONHandler(logFile, &slog.HandlerOptions{
-		Level: slog.LevelDebug,
-	}))
+	jsonHandler := slog.NewJSONHandler(logFile, &slog.HandlerOptions{Level: slog.LevelDebug})
+	var defaultHandler slog.Handler = jsonHandler
+	if cfg.Verbose {
+		defaultHandler = &teeHandler{
+			json: jsonHandler,
+			text: slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}),
+		}
+	}
+	logger := slog.New(defaultHandler)
+	slog.SetDefault(logger)
 
-	// SQLite state cache at ~/.zerotrust/scans.db
-	dbPath, err := stateDBPath()
+	// SQLite state cache at <target>/.zerotrust/scans.db
+	dbPath, err := stateDBPath(cfg.Target)
 	if err != nil {
 		_ = logFile.Close()
 		return nil, err
@@ -160,9 +199,12 @@ func newPipeline(ctx context.Context, cfg ScanConfig) (*pipeline, error) {
 	// so we use the resolved ProjectID (ingester may derive one from the target path).
 	runID := newRunID()
 
-	// Propagate model name to Python worker handlers (llm_verify, llm_scan).
+	// Propagate model name and verbosity to Python worker handlers.
 	if cfg.ModelName != "" {
 		_ = os.Setenv("ZEROTRUST_MODEL", cfg.ModelName)
+	}
+	if cfg.Verbose {
+		_ = os.Setenv("ZEROTRUST_VERBOSE", "1")
 	}
 	// Python worker — started once, shared by verifier, classifier, summarizer, llmscan.
 	wm, err := worker.Start(ctx, "worker/main.py", logger)
@@ -191,7 +233,6 @@ func newPipeline(ctx context.Context, cfg ScanConfig) (*pipeline, error) {
 	if err != nil {
 		return nil, fmt.Errorf("configure joern: %w", err)
 	}
-	is := instrscan.New(logger)
 	vf := verifier.New(wm, logger)
 
 	// Path B — graph shared from Joern after CPG build
@@ -221,7 +262,6 @@ func newPipeline(ctx context.Context, cfg ScanConfig) (*pipeline, error) {
 		opengrep: og,
 		astgrep:  ag,
 		joern:    jc,
-		instr:    is,
 		verif:    vf,
 		target:   tgt,
 		enrich:   enr,
@@ -256,10 +296,14 @@ func (p *pipeline) run(ctx context.Context, events chan<- output.Event) error {
 	// is skipped; OpenGrep + ast-grep + instrscan continue regardless.
 	if p.cfg.JoernBin != "" {
 		if err := p.joern.Start(ctx); err != nil {
-			output.Emit(events, output.Event{
-				Kind: output.EventLog,
-				Log:  fmt.Sprintf("warn: joern start: %v — taint analysis disabled for this scan", err),
-			})
+			if errors.Is(err, joern.ErrPortInUse) {
+				p.resolvePortConflict(ctx, events)
+			} else {
+				output.Emit(events, output.Event{
+					Kind: output.EventLog,
+					Log:  fmt.Sprintf("warn: joern start: %v — taint analysis disabled for this scan", err),
+				})
+			}
 		}
 	}
 
@@ -299,14 +343,14 @@ func (p *pipeline) run(ctx context.Context, events chan<- output.Event) error {
 			ProjectID: ingResult.ProjectID,
 			RootPath:  p.cfg.Target,
 		}); upsertErr != nil {
-			slog.Warn("failed to upsert project record", "component", "scan", "err", upsertErr)
+			p.logger.Warn("failed to upsert project record", "err", upsertErr)
 		}
 		if createErr := p.db.CreateScanRun(ctx, sqlite.ScanRunRow{
 			RunID:     p.runID,
 			ProjectID: ingResult.ProjectID,
 			ScanMode:  strings.ToLower(p.cfg.ScanMode),
 		}); createErr != nil {
-			slog.Warn("failed to create scan_run record", "component", "scan", "err", createErr)
+			p.logger.Warn("failed to create scan_run record", "err", createErr)
 		}
 	}
 
@@ -315,13 +359,26 @@ func (p *pipeline) run(ctx context.Context, events chan<- output.Event) error {
 	// build; on repeat scans it loads a snapshot and applies incremental patches.
 	// Non-fatal: if the CPG cannot be built, taint analysis is skipped but
 	// OpenGrep + ast-grep + instrscan continue.
+	// On repeat scans with no changed files, still load the serialized CPG so
+	// that Path B taint analysis can run against the previously built graph.
+	if p.cfg.JoernBin != "" && (ingResult.ChangeSet == nil || len(ingResult.ChangeSet.Changed) == 0) {
+		cpgPath := cpgSnapshotPath(p.cfg.ProjectID)
+		if _, statErr := os.Stat(cpgPath); statErr == nil {
+			if loadErr := p.joern.LoadCPG(ctx, cpgPath); loadErr != nil {
+				p.logger.Warn("joern: failed to load cached CPG on no-change scan", "err", loadErr)
+			} else {
+				p.logger.Info("joern: loaded cached CPG for no-change scan", "path", cpgPath)
+			}
+		}
+	}
+
 	var scopeFiles []string
 	if ingResult.ChangeSet != nil && len(ingResult.ChangeSet.Changed) > 0 {
 		changed := ingResult.ChangeSet.Changed
 
 		// Detect working modules and determine scope.
 		modules := joern.DetectWorkingModules(changed)
-		if p.joern != nil {
+		if p.cfg.JoernBin != "" {
 			graph := p.joern.GraphWithContext(ctx)
 
 			// Pre-flag dangerous sinks in the changed files so they are always
@@ -630,28 +687,6 @@ func (p *pipeline) runPathA(ctx context.Context, res *ingestion.Result, scopeFil
 		return nil
 	})
 
-	// 3. instrscan — AI agent instruction file and MCP config injection.
-	g.Go(func() error {
-		if !instrscan.ContainsInstructionFile(changed) {
-			return nil
-		}
-		fsys := os.DirFS(p.cfg.Target)
-		instrFindings, err := p.instr.Scan(fsys)
-		if err != nil {
-			output.Emit(events, output.Event{
-				Kind: output.EventLog,
-				Log:  fmt.Sprintf("warn: instrscan: %v", err),
-			})
-			return nil
-		}
-		fs := make([]finding.Finding, len(instrFindings))
-		for i, instr := range instrFindings {
-			fs[i] = instrFindingToFinding(instr)
-		}
-		collect(fs)
-		return nil
-	})
-
 	if err := g.Wait(); err != nil {
 		return fmt.Errorf("path a: %w", err)
 	}
@@ -710,30 +745,6 @@ func (p *pipeline) runPathA(ctx context.Context, res *ingestion.Result, scopeFil
 	return nil
 }
 
-// instrFindingToFinding converts an instrscan.Finding to a canonical finding.Finding.
-// CWE-1035 (OWASP: Prompt Injection) is used for instruction-file injection signals.
-func instrFindingToFinding(f instrscan.Finding) finding.Finding {
-	var confidence float64
-	switch f.Signal {
-	case instrscan.SignalMCPSchemaViolation:
-		confidence = tuning.ConfSchemaCheck
-	case instrscan.SignalKeywordMatch:
-		confidence = tuning.ConfLowPattern
-	default: // SignalUnicodeObfuscation
-		confidence = tuning.ConfMidPattern
-	}
-	return finding.Finding{
-		ID:            finding.ComputeID("CWE-1035", f.File, ""),
-		Path:          f.File,
-		LineRange:     finding.LineRange{Start: f.Line, End: f.Line},
-		CWE:           "CWE-1035",
-		Confidence:    confidence,
-		SeverityLabel: finding.SeverityFromConfidence(confidence),
-		SourcePath:    finding.SourcePattern,
-		Justification: string(f.Signal) + ": " + f.Detail,
-		RuleID:        "INSTR-" + string(f.Signal),
-	}
-}
 
 // runPathB executes the Path B semantic detection tier pipeline and writes
 // findings to ch. Returns nil when Joern CPG is unavailable (0 surfaces selected).
@@ -902,6 +913,123 @@ func maxCVSS(matches []enrichment.CVEMatch) float64 {
 	return max
 }
 
+// resolvePortConflict handles a Joern ErrPortInUse by attempting to identify
+// and optionally kill the process holding the port. If stdin is a terminal
+// and the user confirms with 'y', the process is killed and Joern is retried
+// once. Otherwise the scan degrades gracefully with a warning.
+func (p *pipeline) resolvePortConflict(ctx context.Context, events chan<- output.Event) {
+	port := joernPortFromURL(p.cfg.JoernURL)
+	if port <= 0 {
+		port = 8080
+	}
+
+	pid, name, lsofErr := findProcessOnPort(port)
+	if lsofErr != nil || pid == 0 {
+		output.Emit(events, output.Event{
+			Kind: output.EventLog,
+			Log:  fmt.Sprintf("warn: joern port %d in use — cannot identify process: %v — taint analysis disabled", port, lsofErr),
+		})
+		return
+	}
+
+	fmt.Fprintf(os.Stderr, "\nJoern port %d is in use by PID %d (%s)\n", port, pid, name)
+	fmt.Fprintf(os.Stderr, "Kill it and retry? [y/N] ")
+
+	var buf [1]byte
+	var interactive bool
+	if stat, statErr := os.Stdin.Stat(); statErr == nil && stat.Mode()&os.ModeCharDevice != 0 {
+		_, err := io.ReadFull(os.Stdin, buf[:1])
+		interactive = err == nil
+	}
+
+	if !interactive || (buf[0] != 'y' && buf[0] != 'Y') {
+		fmt.Fprintln(os.Stderr)
+		output.Emit(events, output.Event{
+			Kind: output.EventLog,
+			Log:  fmt.Sprintf("warn: joern port %d in use by PID %d (%s) — taint analysis disabled", port, pid, name),
+		})
+		return
+	}
+
+	if killErr := syscall.Kill(pid, syscall.SIGTERM); killErr != nil {
+		output.Emit(events, output.Event{
+			Kind: output.EventLog,
+			Log:  fmt.Sprintf("warn: failed to kill PID %d on port %d: %v — taint analysis disabled", pid, port, killErr),
+		})
+		return
+	}
+
+	// ponytail: poll until port is free — JVMs take 2–10s to release after SIGTERM
+	portAddr := fmt.Sprintf("127.0.0.1:%d", port)
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		time.Sleep(300 * time.Millisecond)
+		c, dialErr := net.DialTimeout("tcp", portAddr, 100*time.Millisecond)
+		if dialErr != nil {
+			break // port is free
+		}
+		c.Close()
+	}
+
+	if retryErr := p.joern.Start(ctx); retryErr != nil {
+		output.Emit(events, output.Event{
+			Kind: output.EventLog,
+			Log:  fmt.Sprintf("warn: joern retry after killing port %d failed: %v — taint analysis disabled", port, retryErr),
+		})
+	}
+}
+
+// joernPortFromURL extracts the TCP port from a Joern URL string.
+// Returns 0 if the URL cannot be parsed.
+func joernPortFromURL(rawURL string) int {
+	if !strings.Contains(rawURL, ":") {
+		return 0
+	}
+	// Strip scheme prefix if present.
+	hostPort := rawURL
+	if strings.HasPrefix(hostPort, "http://") {
+		hostPort = hostPort[7:]
+	} else if strings.HasPrefix(hostPort, "https://") {
+		hostPort = hostPort[8:]
+	}
+	// hostPort is now "host:port/path" or "host:port".
+	if idx := strings.IndexByte(hostPort, ':'); idx >= 0 {
+		rest := hostPort[idx+1:]
+		if slash := strings.IndexByte(rest, '/'); slash >= 0 {
+			rest = rest[:slash]
+		}
+		if p, err := strconv.Atoi(rest); err == nil {
+			return p
+		}
+	}
+	return 0
+}
+
+// findProcessOnPort returns the PID and process name of the process bound to
+// the given TCP port. Returns (0, "", error) if the process cannot be identified.
+func findProcessOnPort(port int) (int, string, error) {
+	if _, err := exec.LookPath("lsof"); err != nil {
+		return 0, "", fmt.Errorf("lsof not found: %w", err)
+	}
+	cmd := exec.Command("lsof", "-ti", "tcp:"+strconv.Itoa(port))
+	pidOut, err := cmd.Output()
+	if err != nil || len(pidOut) == 0 {
+		return 0, "", fmt.Errorf("lsof: %w", err)
+	}
+
+	pid, err := strconv.Atoi(strings.TrimSpace(string(pidOut)))
+	if err != nil || pid == 0 {
+		return 0, "", fmt.Errorf("parse pid from lsof: %w", err)
+	}
+
+	nameOut, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "comm=").Output()
+	if err != nil {
+		return pid, "unknown", nil
+	}
+
+	return pid, strings.TrimSpace(string(nameOut)), nil
+}
+
 // close shuts down all managed subprocesses and releases held resources.
 // Always called after run() returns, even on error.
 func (p *pipeline) close() error {
@@ -927,16 +1055,18 @@ func (p *pipeline) close() error {
 	return workerErr
 }
 
-// stateDBPath returns the path to the SQLite state file, creating the directory
-// if needed. The file lives at ~/.zerotrust/scans.db.
-func stateDBPath() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("home dir: %w", err)
-	}
-	dir := filepath.Join(home, ".zerotrust")
+// stateDBPath returns the path to the SQLite state file inside the target
+// project directory at <target>/.zerotrust/scans.db, creating the directory
+// and a .gitignore guard if needed.
+func stateDBPath(target string) (string, error) {
+	dir := filepath.Join(target, ".zerotrust")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", fmt.Errorf("mkdir ~/.zerotrust: %w", err)
+		return "", fmt.Errorf("mkdir .zerotrust: %w", err)
+	}
+	// Ensure scans.db is never accidentally committed.
+	giPath := filepath.Join(dir, ".gitignore")
+	if _, err := os.Stat(giPath); os.IsNotExist(err) {
+		_ = os.WriteFile(giPath, []byte("scans.db\nscan_state.db\n"), 0o600)
 	}
 	return filepath.Join(dir, "scans.db"), nil
 }
@@ -1096,9 +1226,13 @@ func (p *pipeline) buildFullCPG(ctx context.Context, cpgPath string, scopeFiles 
 	)
 
 	buildStart := time.Now()
+	// Pre-detect language from file extensions so Joern skips irrelevant
+	// frontends (e.g. pysrc2cpg on Java repos breaks on Java 21+).
+	detectedLang := joern.DetectProjectLanguage(scopeFiles)
 	err = p.joern.BuildCPG(ctx, joern.BuildConfig{
 		Paths:             scopeFiles,
-		Language:          "", // auto-detect
+		ProjectRoot:       p.cfg.Target,
+		Language:          detectedLang,
 		SerializedCPGPath: cpgPath,
 	})
 	buildElapsed := time.Since(buildStart)

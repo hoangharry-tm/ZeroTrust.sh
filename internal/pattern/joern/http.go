@@ -65,6 +65,7 @@ func (c *Client) doQuery(ctx context.Context, query string) ([]byte, error) {
 	if c.crashed.Load() {
 		return nil, ErrJoernCrashed
 	}
+	slog.Debug("joern: doQuery submitting", "query", query)
 
 	uuid, err := c.postQuery(ctx, query)
 	if err != nil {
@@ -74,7 +75,7 @@ func (c *Client) doQuery(ctx context.Context, query string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	slog.Debug("joern: doQuery raw result", "stdout", truncate(raw, 512))
+	slog.Debug("joern: doQuery result", "uuid", uuid, "stdout", string(raw))
 	return raw, nil
 }
 
@@ -84,6 +85,7 @@ func (c *Client) postQuery(ctx context.Context, query string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("joern: marshal query: %w", err)
 	}
+	slog.Debug("joern: POST /query body", "body", string(body))
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		c.serverURL+"/query", bytes.NewReader(body))
@@ -129,12 +131,34 @@ func (c *Client) postQuery(ctx context.Context, query string) (string, error) {
 func (c *Client) fetchResult(ctx context.Context, uuid string) ([]byte, error) {
 	url := c.serverURL + "/result/" + uuid //nolint:gocritic // not a net/url — simple string concat
 
+	start := time.Now()
+	idleStart := time.Now()  // reset each time we see a non-202/204 response
+	lastLogAt := time.Now()  // throttle progress logs to every 30s
+
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil, fmt.Errorf("joern: fetch result cancelled: %w", err)
 		}
 		if c.crashed.Load() {
 			return nil, ErrJoernCrashed
+		}
+		// Idle-freeze detection: if we've been receiving only 202/204 for
+		// longer than JoernIdleTimeout, Joern is likely frozen (GC deadlock,
+		// OOM without crash). Surface ErrBuildTimeout so callers can decide.
+		if time.Since(idleStart) > tuning.JoernIdleTimeout {
+			slog.Warn("joern: fetchResult idle timeout — Joern appears frozen",
+				slog.Duration("idle", time.Since(idleStart)),
+				slog.Duration("elapsed", time.Since(start)),
+			)
+			return nil, ErrBuildTimeout
+		}
+		// Progress heartbeat every 30s so operators can see Joern is alive.
+		if time.Since(lastLogAt) > 30*time.Second {
+			slog.Info("joern: fetchResult waiting for Joern",
+				slog.Duration("elapsed", time.Since(start)),
+				slog.Duration("idle", time.Since(idleStart)),
+			)
+			lastLogAt = time.Now()
 		}
 
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -161,6 +185,7 @@ func (c *Client) fetchResult(ctx context.Context, uuid string) ([]byte, error) {
 
 		if resp.StatusCode == http.StatusAccepted || resp.StatusCode == http.StatusNoContent {
 			// 202/204 means still processing — poll again.
+			// idleStart is not reset here; consecutive 202s accumulate idle time.
 			select {
 			case <-ctx.Done():
 				return nil, fmt.Errorf("joern: fetch result cancelled: %w", ctx.Err())
@@ -168,6 +193,8 @@ func (c *Client) fetchResult(ctx context.Context, uuid string) ([]byte, error) {
 				continue
 			}
 		}
+		// Any non-202/204 response (including 200 in-progress states) resets idle clock.
+		idleStart = time.Now()
 
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			return nil, fmt.Errorf("%w: GET /result HTTP %d — %s",
@@ -208,6 +235,7 @@ func (c *Client) fetchResult(ctx context.Context, uuid string) ([]byte, error) {
 		if isJoernConsoleError(stdout) {
 			return nil, fmt.Errorf("joern: console error: %s", truncate([]byte(stdout), 512))
 		}
+		slog.Debug("joern: fetchResult complete", "uuid", uuid, "elapsed", time.Since(start))
 		return []byte(stdout), nil
 	}
 }

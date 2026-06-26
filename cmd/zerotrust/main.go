@@ -47,7 +47,6 @@ import (
 const (
 	engineImage   = "ghcr.io/hoangharry-tm/zerotrust-engine:latest"
 	ollamaHostURL = "http://localhost:11434"
-	scansDBPath   = ".zerotrust"
 	defaultCap    = 50_000
 )
 
@@ -55,9 +54,8 @@ func main() {
 	root := &cobra.Command{
 		Use:   "zerotrust <directory>",
 		Short: "Local, privacy-first AI codebase security scanner",
-		Long: `ZeroTrust.sh scans codebases modified by AI coding agents for security
-vulnerabilities, package hallucinations, prompt injection, and AI-agent-specific
-threats.
+		Long: `ZeroTrust.sh is a local, privacy-first vulnerability scanner for source code.
+It runs deep semantic analysis and outputs an HTML report with proof of exploitation.
 
 By default, analysis runs inside a Docker container — the engine image includes
 all dependencies (Joern, Python ML worker, OpenGrep, ast-grep). Use --native to
@@ -80,6 +78,7 @@ run the pipeline directly with local toolchain installations.`,
 	root.Flags().String("engine-image", engineImage, "Docker image for the engine")
 	root.Flags().Bool("mock", false, "render the HTML report with mock data (no scan; UI development only)")
 	root.Flags().Bool("mock-large", false, "render with large mock dataset (~60 findings)")
+	root.Flags().BoolP("verbose", "v", false, "enable debug-level logging to stderr")
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -186,6 +185,10 @@ func runScan(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	cfg.Verbose, err = cmd.Flags().GetBool("verbose")
+	if err != nil {
+		return err
+	}
 	// In native mode JoernURL can be set via --joern-bin; default points at
 	// a locally running Joern server (started externally by the user).
 	cfg.JoernURL = "http://127.0.0.1:8080"
@@ -258,9 +261,14 @@ func runContainer(cmd *cobra.Command, args []string) error {
 		ollamaURL = "http://host.docker.internal:11434"
 	}
 
-	ztHome := filepath.Join(os.Getenv("HOME"), scansDBPath)
-	if err := os.MkdirAll(ztHome, 0o750); err != nil {
+	ztState := filepath.Join(targetAbs, ".zerotrust")
+	if err := os.MkdirAll(ztState, 0o750); err != nil {
 		return fmt.Errorf("create state directory: %w", err)
+	}
+	// Ensure scans.db is never accidentally committed.
+	giPath := filepath.Join(ztState, ".gitignore")
+	if _, err := os.Stat(giPath); os.IsNotExist(err) {
+		_ = os.WriteFile(giPath, []byte("scans.db\nscan_state.db\n"), 0o600)
 	}
 
 	img, _ := flags.GetString("engine-image")
@@ -269,7 +277,7 @@ func runContainer(cmd *cobra.Command, args []string) error {
 		"--init",
 		"--name", "zerotrust-scan",
 		"-v", targetAbs + ":/workspace:ro",
-		"-v", ztHome + ":/home/zt/.zerotrust",
+		"-v", ztState + ":/workspace/.zerotrust",
 		"-e", "ZT_PROJECT_DIR=/workspace",
 		"-e", "HOME=/home/zt",
 	}

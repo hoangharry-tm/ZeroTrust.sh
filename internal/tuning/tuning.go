@@ -139,10 +139,14 @@ const (
 	JoernPingTimeout        = 30 * time.Second
 	JoernStopTimeout        = 5 * time.Second
 	JoernQueryTimeout       = 30 * time.Second
-	JoernBuildTimeout       = 120 * time.Second
+	JoernBuildTimeout       = 900 * time.Second
 	JoernResultPollInterval = 200 * time.Millisecond
 	JoernScanStopTimeout    = 10 * time.Second
 )
+
+// JoernIdleTimeout is the max consecutive 202-polling duration with no
+// state change before we treat Joern as frozen and surface ErrBuildTimeout.
+const JoernIdleTimeout = 120 * time.Second
 
 // ── Network / worker timeouts ────────────────────────────────────────────────
 

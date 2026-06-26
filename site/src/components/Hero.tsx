@@ -8,7 +8,7 @@ export default function Hero() {
         <span class="bg-linear-to-r from-[#58a6ff] via-[#818cf8] to-[#8b5cf6] bg-clip-text text-transparent animate-gradient-shift">ZeroTrust.sh</span>
       </h1>
       <p class="text-xl md:text-2xl text-[#e6edf3] mb-2 max-w-2xl">
-        Local, offline SAST for code written by AI coding agents.
+        Local, offline vulnerability scanner for source code. Deeper than SAST.
       </p>
       <p class="text-[#8b949e] mb-8 max-w-xl">
         Source never leaves your machine. No VCS token. No cloud upload. No trust.

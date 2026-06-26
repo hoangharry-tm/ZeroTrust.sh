@@ -343,6 +343,7 @@ func (c *Client) Ping(ctx context.Context) error {
 // silently skipped. Results are stored on the Client; PreFlaggedSinks() on
 // the graph reads from the same cache.
 func (c *Client) PreFlagSinks(ctx context.Context, files []string) error {
+	slog.Debug("joern: PreFlagSinks starting", slog.Int("files", len(files)))
 	var sinks []cpg.TaintSink
 
 	for _, f := range files {
@@ -383,6 +384,7 @@ func (c *Client) PreFlagSinks(ctx context.Context, files []string) error {
 		}
 	}
 
+	slog.Debug("joern: PreFlagSinks done", slog.Int("sinks_found", len(sinks)))
 	c.preFlaggedMu.Lock()
 	c.preFlaggedSinks = sinks
 	c.preFlaggedMu.Unlock()

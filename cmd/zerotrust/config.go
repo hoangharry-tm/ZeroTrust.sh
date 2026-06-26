@@ -79,6 +79,9 @@ type ScanConfig struct {
 	// TokenCap is the hard per-scan token budget for the Token Budget Controller.
 	// Surfaces that exceed the cap are emitted as SUPPRESSED findings.
 	TokenCap int
+
+	// Verbose enables debug-level logging to stderr for both Go and the Python worker.
+	Verbose bool
 }
 
 // defaults fills zero-value fields with safe production defaults.

@@ -1,51 +1,35 @@
 const threats = [
   {
-    name: 'Package hallucinations',
+    name: 'Phantom dependencies',
     statNumber: '205,474',
     statLabel: 'phantom packages across 16 LLMs',
-    description: "An agent imports `requests-auth-aws` (non-existent). An attacker registers it with a payload. Your scanner sees nothing — the package isn't on any CVE list yet.",
+    description: "Your manifest imports `requests-auth-aws` — a package that doesn't exist. An attacker registers it with a payload. No CVE list will catch it yet.",
     source: "Spracklen et al., USENIX Security 2025",
     url: "https://arxiv.org/abs/2406.10279",
   },
   {
-    name: 'Prompt injection in source',
-    statNumber: '85%+',
-    statLabel: 'attack success rate in agentic assistants',
-    description: 'Adversarial instructions in comments, docstrings, or string literals that redirect the next agent that reads this file.',
-    source: "Yang et al., arXiv 2026",
-    url: "https://arxiv.org/abs/2601.17548",
-  },
-  {
-    name: 'Security-node disappearance',
-    statNumber: '2.74×',
-    statLabel: 'more vulns than human-written code',
-    description: 'An auth check is present in commit N, silently absent in commit N+1. Functional tests still pass. No diff alert fires.',
-    source: "Veracode 2025 GenAI Report",
-    url: "https://www.veracode.com/blog/security-news/veracode-2025-generative-ai-report",
-  },
-  {
-    name: 'Instruction file backdoors',
-    statNumber: '94.4%',
-    statLabel: 'of models vulnerable to direct injection',
-    description: 'Unicode obfuscation (U+202E, U+200B) buried in `CLAUDE.md`, `.cursor/rules`, `AGENTS.md`, or MCP configs. No competitor scans this surface.',
-    source: "Lupinacci et al., arXiv 2025",
-    url: "https://arxiv.org/abs/2507.06850",
-  },
-  {
-    name: 'Agent cheat patterns',
+    name: 'Broken authentication logic',
     statNumber: '36–40%',
-    statLabel: 'of Copilot code contains CWE vulns',
-    description: '`return True` in `*auth*` functions. `TODO: add auth` with no follow-through. Disabled assertions that make the test suite green.',
+    statLabel: 'of AI-assisted code contains CWE vulns',
+    description: 'Auth functions that always return success. Missing access-control checks on sensitive endpoints. Logic flaws that pass unit tests but fail under real input.',
     source: "Ferrara et al., arXiv 2024",
     url: "https://arxiv.org/abs/2408.07106",
   },
   {
-    name: 'MCP server config injection',
-    statNumber: '959',
-    statLabel: 'attack cases (SIREN benchmark)',
-    description: 'External URLs, shell/execute capabilities, and over-broad filesystem scopes injected into `.mcp.json`.',
-    source: "Lin et al., arXiv 2026",
-    url: "https://arxiv.org/abs/2601.05755",
+    name: 'Security regression',
+    statNumber: '2.74×',
+    statLabel: 'more vulns than human-written code',
+    description: 'An auth check is present in commit N, silently absent in commit N+1. Functional tests still pass. No diff alert fires. The Differential Indexer catches the AST-node delta.',
+    source: "Veracode 2025 GenAI Report",
+    url: "https://www.veracode.com/blog/security-news/veracode-2025-generative-ai-report",
+  },
+  {
+    name: 'Injection & taint flaws',
+    statNumber: '85%+',
+    statLabel: 'exploitation rate for unpatched injection',
+    description: 'SQL injection, SSRF, command injection, and XSS buried in indirect call chains that pattern-only scanners miss. ZeroTrust.sh traces taint through call graphs.',
+    source: "Yang et al., arXiv 2026",
+    url: "https://arxiv.org/abs/2601.17548",
   },
 ]
 
@@ -96,7 +80,7 @@ function Card({ threat }: { threat: typeof threats[0] }) {
 export default function Problem() {
   return (
     <section id="problem" class="py-24 px-4 max-w-6xl mx-auto">
-      <h2 class="text-3xl font-semibold text-center mb-4">What AI coding agents introduce</h2>
+      <h2 class="text-3xl font-semibold text-center mb-4">Vulnerabilities appearing at scale</h2>
       <p class="text-[#8b949e] text-center text-sm max-w-xl mx-auto mb-12">
         Traditional SAST misses these. ZeroTrust.sh was built for them.
       </p>

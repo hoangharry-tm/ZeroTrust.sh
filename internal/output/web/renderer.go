@@ -87,12 +87,6 @@ func (r *WebRenderer) Render(ctx context.Context, ch <-chan output.Event) error 
 
 	mux.Handle("/events", h)
 
-	mux.HandleFunc("/report", func(w http.ResponseWriter, req *http.Request) {
-		// proxy the HTML report file so it's accessible from the dashboard
-		// reportPath comes through the done event — serve it if it exists
-		http.NotFound(w, req)
-	})
-
 	srv := &http.Server{Handler: mux}
 	go srv.Serve(ln) //nolint:errcheck
 
