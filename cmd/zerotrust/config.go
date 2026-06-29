@@ -24,7 +24,6 @@ import "github.com/hoangharry-tm/zerotrust/internal/tuning"
 //	<directory>     → Target        (positional arg, defaults to ".")
 //	--model         → ModelName     (Ollama model name, e.g. "llama3.2")
 //	--offline       → Offline       (disable all network requests)
-//	--output        → OutputMode    (output mode: minimal|tree|tui; default: auto-detect from TTY)
 //	--report        → ReportPath    (HTML report destination, default "build/report.html")
 //	--project-id    → ProjectID     (override derived project ID for scan-state cache)
 //	--mode          → ScanMode      (Default | Thorough | Full; default "Default")
@@ -44,10 +43,6 @@ type ScanConfig struct {
 	// When true: Trivy runs in offline mode, cosign/Rekor registry lookup is skipped,
 	// and MIV defaults to StatusWarn for unrecognised models.
 	Offline bool
-
-	// OutputMode selects the CLI output renderer: "minimal", "tree", or "tui".
-	// Empty string triggers auto-detection: TTY → tree, no TTY → minimal.
-	OutputMode string
 
 	// ReportPath is the file path where the self-contained HTML report is written.
 	ReportPath string

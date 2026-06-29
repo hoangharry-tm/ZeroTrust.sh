@@ -253,7 +253,10 @@ func New(outputPath string) *Generator {
 // Render writes the self-contained HTML report to w.
 // Findings are sorted by severity (BLOCK first) before rendering.
 func (g *Generator) Render(w io.Writer, info ScanInfo, findings []finding.Finding) error {
-	slog.Info("rendering report", slog.String("project", info.ProjectName), slog.Int("findings", len(findings)), slog.String("output", g.outputPath))
+	slog.Debug("rendering layout",
+		slog.String("project", info.ProjectName),
+		slog.Int("findings", len(findings)),
+	)
 	sorted := sortFindings(findings)
 	data := templateData{
 		Info:       info,
@@ -261,10 +264,10 @@ func (g *Generator) Render(w io.Writer, info ScanInfo, findings []finding.Findin
 		FileGroups: buildFileGroups(sorted),
 	}
 	if err := tmpl.Execute(w, data); err != nil {
-		slog.Error("report render failed", "err", err)
+		slog.Error("layout render failed", "err", err)
 		return err
 	}
-	slog.Debug("report rendered", slog.Int("file_groups", len(data.FileGroups)))
+	slog.Debug("layout rendered", slog.Int("file_groups", len(data.FileGroups)))
 	return nil
 }
 

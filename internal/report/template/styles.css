@@ -178,7 +178,11 @@ body {
   color: var(--color-primary);
   border-color: var(--color-muted);
 }
-
+.topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 /* ── Summary Bar ──────────────────────────────────────────── */
 .summary-bar {
   display: flex;
@@ -1285,3 +1289,6 @@ details[open] > summary .folder-indicator {
     margin-top: 4px;
   }
 }
+
+
+

@@ -13,7 +13,7 @@ JOERN_VERSION := v4.0.550
 # Homebrew installs as "joern" (uses --server flag mode, not a separate joern-server binary).
 JOERN_BIN     := $(shell command -v joern 2>/dev/null || echo "$(HOME)/bin/joern/joern")
 
-.PHONY: build test test-rules test-integration joern-check lint worker-install format-template demo demo-report demo-report-small demo-report-large clean docker-build docker-push
+.PHONY: build test test-rules test-integration run-integration joern-check lint worker-install format-template demo demo-report demo-report-small demo-report-large clean docker-build docker-push
 
 build:
 	@mkdir -p $(BUILD_DIR)
@@ -25,6 +25,21 @@ test:
 test-rules:
 	@echo "Running OpenGrep rule tests..."
 	@./scripts/rules/test_rules.sh
+
+# Full clean-and-run against the Spring Boot integration test app.
+# Removes both CPG snapshots (~/.zerotrust) and the diff-index cache
+# (<target>/.zerotrust) before building and scanning.
+run-integration:
+	rm -rf ~/.zerotrust \
+	  && rm -rf ./tests/integration/spring-boot-app/.zerotrust \
+	  && rm -rf build/ \
+	  && rm -rf workspace/spring-boot-app/ \
+	  && make build \
+	  && ./build/zerotrust ./tests/integration/spring-boot-app \
+	     --native \
+	     --report build/report_Spring_boot.html \
+	     --joern-bin /opt/homebrew/bin/joern \
+	     --verbose
 
 # Run integration tests — requires a live Joern binary (Homebrew: brew install joern).
 # Set JOERN_BIN to override the resolved joern path.

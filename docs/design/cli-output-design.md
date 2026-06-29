@@ -1,65 +1,16 @@
 # CLI Output Design
 
-Two output modes. The default on a TTY opens a **live HTML dashboard** in the browser;
-the minimal mode is for CI pipelines, pipes, and file redirection.
+Two output paths. The terminal always shows plain-text progress (MinimalRenderer);
+the self-contained HTML report is written to disk via the `--report` flag.
 
-| Mode          | Flag               | Auto-selected when            | Use case                            |
-|---------------|--------------------|-------------------------------|-------------------------------------|
-| Web (default) | `--output web`     | TTY detected                  | Local dev, interactive terminal     |
-| Minimal       | `--output minimal` | no TTY (pipe / redirect / CI) | CI/CD pipelines, servers, scripting |
+| Mode          | Flag               | Use case                            |
+|---------------|--------------------|-------------------------------------|
+| Minimal       | `--output minimal` | CI/CD pipelines, servers, scripting |
+| HTML report   | `--report <path>`  | Local dev, interactive review       |
 
----
-
-## Mode selection
-
-```go
-switch outputFlag {
-case "minimal":
-    return output.NewMinimalRenderer()
-case "web":
-    return web.NewRenderer()
-default:
-    if output.IsTTY() {
-        return web.NewRenderer()  // TTY → live HTML dashboard
-    }
-    return output.NewMinimalRenderer() // no TTY → plain text
-}
-```
-
----
-
-## Web mode (`WebRenderer`)
-
-Starts a local HTTP server on a random free port. Prints the URL to stdout and waits for
-the scan to complete.
-
-```
-  open → http://localhost:54321
-```
-
-The browser connects to `/events` (SSE). The Go server fans pipeline events as named
-SSE events (`stage`, `finding`, `log`, `summary`). The browser inserts HTML fragments
-directly via the native `EventSource` API — no external framework, fully offline.
-
-**Architecture:**
-
-```
-pipeline → output.Event → WebRenderer → SSE hub → browser
-                                    ↓
-                              /events  (SSE)
-                              /        (index.html)
-                              /report  (proxied HTML report)
-```
-
-The dashboard (`internal/output/web/ui/index.html`) is embedded in the Go binary via
-`//go:embed`. It has three live panels:
-
-- **Scan Progress** — stage blocks + detail lines as the pipeline advances
-- **Findings** — finding cards with severity filter chips and expandable detail rows
-- **Live Logs** — structured log rows with level, component chip, and key=val attrs
-
-The server shuts down 30 seconds after `EventDone` (or immediately on context cancel),
-giving the user time to read the final state before the process exits.
+The `--output web` mode (SSE live dashboard) has been removed. The HTML report
+is now a static file generated at the end of the scan — no HTTP server, no
+Server-Sent Events, no browser overlay.
 
 ---
 
@@ -90,10 +41,25 @@ Exit codes:
 
 ## What was removed
 
+The WebRenderer (SSE live dashboard) and its dependencies have been removed:
+- `internal/output/web/` — entire package (hub, client management, `/events` endpoint)
+- SSE event types (`stage`, `finding`, `summary`) — no longer broadcast to browser
+- Client-side `EventSource` — JavaScript `ScanDialog`, pipeline graph, glassmorphism overlay
+- `--output web` flag — only `--output minimal` is valid
+- `--web-port` flag — no HTTP server to configure
+- `ScanInProgress` template state — report is always rendered as a complete static file
+
+The MinimalRenderer remains the sole terminal renderer. HTML output is produced
+via `--report <path>` (default: `build/report.html`).
+
+---
+
+## What was removed (history)
+
 The three-renderer stack (MinimalRenderer/TreeRenderer/TUIRenderer) and the standalone
-`preview/main.go` Bubble Tea demo have been replaced by:
-- `WebRenderer` — the interactive path
-- `MinimalRenderer` — the CI/pipe path
+`preview/main.go` Bubble Tea demo were previously replaced by:
+- `WebRenderer` — the interactive path (now removed)
+- `MinimalRenderer` — the CI/pipe path (still active)
 
 `charmbracelet/bubbletea` and `charmbracelet/bubbles` are no longer dependencies.
 `charmbracelet/lipgloss` is retained for the Docker dependency error box in `deps.go`.

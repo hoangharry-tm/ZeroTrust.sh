@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'"
+      content="default-src 'none'; connect-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'"
     />
     <title>ZeroTrust.sh — {{ .Info.ProjectName }}</title>
     <style>{{ inlineCSS }}</style>
@@ -19,7 +19,7 @@
             >{{ .Info.ProjectName }}</span
           >
         </div>
-        <div>
+        <div class="topbar-right">
           <button class="theme-toggle" id="themeToggle" title="Toggle theme">
             <svg id="iconSun" width="14" height="14" viewBox="0 0 16 16" fill="none" style="display: none">
               <circle cx="8" cy="8" r="3" stroke="currentColor" stroke-width="1.5" />

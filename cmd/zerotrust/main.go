@@ -66,7 +66,7 @@ run the pipeline directly with local toolchain installations.`,
 
 	root.Flags().StringP("model", "m", "", "Ollama model name (e.g. llama3.2)")
 	root.Flags().BoolP("offline", "o", false, "disable all network requests (Trivy offline mode)")
-	root.Flags().String("output", "", "output mode: minimal|web (default: web on TTY, minimal otherwise)")
+	root.Flags().String("output", "minimal", "output mode: minimal (only; HTML report via --report)")
 	root.Flags().String("report", "", "HTML report output path (default: build/report.html)")
 	root.Flags().String("project-id", "", "override project ID used for scan-state caching")
 	root.Flags().String("mode", "Default", "scan scope mode: Default | Thorough | Full")
@@ -157,10 +157,6 @@ func runScan(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	cfg.OutputMode, err = cmd.Flags().GetString("output")
-	if err != nil {
-		return err
-	}
 	cfg.ReportPath, err = cmd.Flags().GetString("report")
 	if err != nil {
 		return err
@@ -200,7 +196,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 		"report", cfg.ReportPath,
 	)
 
-	renderer := selectRenderer(cfg.OutputMode)
+	renderer := selectRenderer()
 	events := make(chan output.Event, 64)
 
 	ctx := cmd.Context()
