@@ -75,6 +75,10 @@ type ScanConfig struct {
 	// Surfaces that exceed the cap are emitted as SUPPRESSED findings.
 	TokenCap int
 
+	// CalibrationPath is an optional path to a JSON calibration file produced by
+	// scripts/calibrate.py. Empty means compile-time defaults are used.
+	CalibrationPath string
+
 	// Verbose enables debug-level logging to stderr for both Go and the Python worker.
 	Verbose bool
 }

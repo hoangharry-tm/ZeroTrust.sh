@@ -21,6 +21,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/hoangharry-tm/zerotrust/internal/tuning"
 	"github.com/hoangharry-tm/zerotrust/pkg/cpg"
 )
 
@@ -228,7 +229,7 @@ func TestBuildCallGraph_Cycle(t *testing.T) {
 
 func TestAutoFlagCVESurfaces_Block(t *testing.T) {
 	s := Surface{HasCVEMatch: true, CVSSScore: 9.0}
-	flagged, rem := AutoFlagCVESurfaces([]Surface{s})
+	flagged, rem := AutoFlagCVESurfaces([]Surface{s}, tuning.DefaultCalibration())
 	require.Len(t, flagged, 1)
 	assert.Empty(t, rem)
 	assert.InEpsilon(t, 0.95, flagged[0].ConfidenceScore, 1e-6)
@@ -238,8 +239,8 @@ func TestAutoFlagCVESurfaces_HighBoundary(t *testing.T) {
 	// 8.9 → HIGH (0.82), 9.0 → BLOCK (0.95)
 	s89 := Surface{HasCVEMatch: true, CVSSScore: 8.9}
 	s90 := Surface{HasCVEMatch: true, CVSSScore: 9.0}
-	f89, _ := AutoFlagCVESurfaces([]Surface{s89})
-	f90, _ := AutoFlagCVESurfaces([]Surface{s90})
+	f89, _ := AutoFlagCVESurfaces([]Surface{s89}, tuning.DefaultCalibration())
+	f90, _ := AutoFlagCVESurfaces([]Surface{s90}, tuning.DefaultCalibration())
 	assert.InEpsilon(t, 0.82, f89[0].ConfidenceScore, 1e-6)
 	assert.InEpsilon(t, 0.95, f90[0].ConfidenceScore, 1e-6)
 }
@@ -247,7 +248,7 @@ func TestAutoFlagCVESurfaces_HighBoundary(t *testing.T) {
 func TestAutoFlagCVESurfaces_MissingCVSSDefaultsToFive(t *testing.T) {
 	// CVSSScore == 0 → treated as 5.0 → medium (0.68)
 	s := Surface{HasCVEMatch: true, CVSSScore: 0}
-	flagged, rem := AutoFlagCVESurfaces([]Surface{s})
+	flagged, rem := AutoFlagCVESurfaces([]Surface{s}, tuning.DefaultCalibration())
 	require.Len(t, flagged, 1)
 	assert.Empty(t, rem)
 	assert.InEpsilon(t, 0.68, flagged[0].ConfidenceScore, 1e-6)
@@ -255,14 +256,14 @@ func TestAutoFlagCVESurfaces_MissingCVSSDefaultsToFive(t *testing.T) {
 
 func TestAutoFlagCVESurfaces_NoCVEMatchGoesToRemainder(t *testing.T) {
 	s := Surface{HasCVEMatch: false, CVSSScore: 9.0}
-	flagged, rem := AutoFlagCVESurfaces([]Surface{s})
+	flagged, rem := AutoFlagCVESurfaces([]Surface{s}, tuning.DefaultCalibration())
 	assert.Empty(t, flagged)
 	require.Len(t, rem, 1)
 }
 
 func TestAutoFlagCVESurfaces_BelowThresholdGoesToRemainder(t *testing.T) {
 	s := Surface{HasCVEMatch: true, CVSSScore: 3.9}
-	flagged, rem := AutoFlagCVESurfaces([]Surface{s})
+	flagged, rem := AutoFlagCVESurfaces([]Surface{s}, tuning.DefaultCalibration())
 	assert.Empty(t, flagged)
 	require.Len(t, rem, 1)
 }

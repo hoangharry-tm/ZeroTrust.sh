@@ -33,6 +33,7 @@ package targeting
 import (
 	"context"
 	"log/slog"
+	"math"
 	"sort"
 	"strings"
 
@@ -290,7 +291,10 @@ func bfsHopDepths(cg CallGraph, seeds []cpg.Node) map[string]int {
 // AutoFlagCVESurfaces splits surfaces into auto-flagged (CVE match with CVSS ≥ 4.0)
 // and remainder. Auto-flagged surfaces have ConfidenceScore set and bypass the
 // CodeT5+ classifier. Missing CVSS (0.0) is treated as 5.0.
-func AutoFlagCVESurfaces(surfaces []Surface) (flagged []Surface, remaining []Surface) {
+//
+// cal controls the confidence mapping: Platt sigmoid when calibrated, band
+// bucketing otherwise. Use tuning.DefaultCalibration() when no file is loaded.
+func AutoFlagCVESurfaces(surfaces []Surface, cal tuning.Calibration) (flagged []Surface, remaining []Surface) {
 	slog.Debug("targeting: auto-flagging CVE surfaces", slog.Int("surfaces", len(surfaces)))
 	for _, s := range surfaces {
 		if !s.HasCVEMatch {
@@ -301,7 +305,7 @@ func AutoFlagCVESurfaces(surfaces []Surface) (flagged []Surface, remaining []Sur
 		if cvss == 0 {
 			cvss = tuning.CVSSMissingDefault
 		}
-		conf := cvssBandConfidence(cvss)
+		conf := cvssConfidence(cvss, cal)
 		if conf == 0 {
 			remaining = append(remaining, s)
 			continue
@@ -312,9 +316,20 @@ func AutoFlagCVESurfaces(surfaces []Surface) (flagged []Surface, remaining []Sur
 	return flagged, remaining
 }
 
-// cvssBandConfidence maps a CVSS score to an SSVC-inspired confidence score.
+// cvssConfidence maps a CVSS score to a confidence value.
+// When cal has non-zero Platt parameters, it applies σ(slope×cvss + intercept).
+// Otherwise it falls back to the three-band step function.
 // Returns 0 when the score is below the auto-flag threshold (4.0).
-func cvssBandConfidence(cvss float64) float64 {
+func cvssConfidence(cvss float64, cal tuning.Calibration) float64 {
+	if cal.CVSSPlattSlope != 0 {
+		// ponytail: Platt sigmoid from calibration; replaces band bucketing once labeled data is available
+		p := 1.0 / (1.0 + math.Exp(-(cal.CVSSPlattSlope*cvss+cal.CVSSPlattIntercept)))
+		if cvss < tuning.CVSSMedium {
+			return 0
+		}
+		return p
+	}
+	// Band bucketing fallback (compile-time defaults).
 	switch {
 	case cvss >= tuning.CVSSCritical:
 		return tuning.ConfCVSSCritical

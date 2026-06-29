@@ -87,6 +87,7 @@ run the pipeline directly with local toolchain installations.`,
 	root.Flags().String("engine-image", engineImage, "Docker image for the engine")
 	root.Flags().Bool("mock", false, "render the HTML report with mock data (no scan; UI development only)")
 	root.Flags().Bool("mock-large", false, "render with large mock dataset (~60 findings)")
+	root.Flags().String("calibration", "", "path to JSON calibration file from scripts/calibrate.py")
 	root.Flags().BoolP("verbose", "v", false, "enable debug-level logging to stderr")
 
 	if err := root.Execute(); err != nil {
@@ -195,6 +196,10 @@ func runScan(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	cfg.Verbose, err = cmd.Flags().GetBool("verbose")
+	if err != nil {
+		return err
+	}
+	cfg.CalibrationPath, err = cmd.Flags().GetString("calibration")
 	if err != nil {
 		return err
 	}

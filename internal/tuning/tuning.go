@@ -17,7 +17,11 @@
 // Change a value here and rebuild — no other file needs to be touched.
 package tuning
 
-import "time"
+import (
+	"encoding/json"
+	"os"
+	"time"
+)
 
 // ── Severity band thresholds ─────────────────────────────────────────────────
 // Used by finding.SeverityFromConfidence to map composite confidence → label.
@@ -167,3 +171,73 @@ const (
 	PatchLLMTemperature = 0.1
 	PatchLLMMaxTokens   = 512
 )
+
+// ── Runtime calibration ───────────────────────────────────────────────────────
+
+// Calibration holds scoring parameters that can be updated from labeled scan
+// data via scripts/calibrate.py. Zero values in optional fields fall back to
+// the compile-time constants above.
+//
+// Load with LoadCalibration; use DefaultCalibration when no file is provided.
+type Calibration struct {
+	// ClassifierVulnerableThreshold and ClassifierSafeThreshold replace the
+	// compile-time CodeT5+ operating point. Surfaces between the two thresholds
+	// escalate to the LLM tier.
+	ClassifierVulnerableThreshold float64 `json:"classifier_vulnerable_threshold"`
+	ClassifierSafeThreshold       float64 `json:"classifier_safe_threshold"`
+
+	// CVSSPlattSlope and CVSSPlattIntercept define a Platt-scaled sigmoid for
+	// CVSS → confidence mapping: σ(slope×cvss + intercept).
+	// Both must be non-zero to activate; otherwise band bucketing is used.
+	CVSSPlattSlope     float64 `json:"cvss_platt_slope"`
+	CVSSPlattIntercept float64 `json:"cvss_platt_intercept"`
+
+	// Budget ranking weights; must sum to 1.0.
+	BudgetWeightCVSS   float64 `json:"budget_weight_cvss"`
+	BudgetWeightUncert float64 `json:"budget_weight_uncert"`
+	BudgetWeightDepth  float64 `json:"budget_weight_depth"`
+
+	// Severity label thresholds (confidence → BLOCK/HIGH/MEDIUM/LOW).
+	ConfBlock  float64 `json:"conf_block"`
+	ConfHigh   float64 `json:"conf_high"`
+	ConfMedium float64 `json:"conf_medium"`
+	ConfLow    float64 `json:"conf_low"`
+}
+
+// DefaultCalibration returns a Calibration populated from the compile-time
+// constants. Behaviour is identical to the pre-calibration codebase.
+func DefaultCalibration() Calibration {
+	return Calibration{
+		ClassifierVulnerableThreshold: ClassifierVulnerableThreshold,
+		ClassifierSafeThreshold:       ClassifierSafeThreshold,
+		BudgetWeightCVSS:              BudgetWeightCVSS,
+		BudgetWeightUncert:            BudgetWeightUncert,
+		BudgetWeightDepth:             BudgetWeightDepth,
+		ConfBlock:                     ConfBlock,
+		ConfHigh:                      ConfHigh,
+		ConfMedium:                    ConfMedium,
+		ConfLow:                       ConfLow,
+		// CVSSPlattSlope/Intercept intentionally zero → band bucketing fallback.
+	}
+}
+
+// LoadCalibration reads a JSON calibration file produced by scripts/calibrate.py.
+// If path is empty or the file does not exist, DefaultCalibration is returned
+// with no error — the scanner runs with compile-time defaults unchanged.
+func LoadCalibration(path string) (Calibration, error) {
+	if path == "" {
+		return DefaultCalibration(), nil
+	}
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return DefaultCalibration(), nil
+	}
+	if err != nil {
+		return Calibration{}, err
+	}
+	base := DefaultCalibration()
+	if err := json.Unmarshal(data, &base); err != nil {
+		return Calibration{}, err
+	}
+	return base, nil
+}

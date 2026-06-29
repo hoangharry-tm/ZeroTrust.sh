@@ -1,87 +1,160 @@
 # ZeroTrust.sh — TODO
 
 > L0 ✅ · L1 ✅ · L2 ✅ · L3 ✅ · ML4.1 ✅ · ML4.2 ✅ · ML4.3 ✅ · Test audit ✅ (all complete as of Jun 24, ~6 weeks early)
-> Full plan: `docs/planning/implementation-plan.md`
+> Full plan: `docs/planning/revised-execution-plan.md`
 > **Aug 6 hard deadline** — 6 weeks of buffer remaining.
 
 ---
 
 ## Priority Order
 
-1. **Data Pipeline** — build the corpus for testing, benchmarking, profiling, and tuning (feeds A-18 + all future evaluation)
-2. **A-18 Resolution** — QLoRA fine-tuning on CVEFixes; unblocks accuracy claims and threshold recalibration
-3. **Approach 3 / PoE** — LangGraph agentic scanner, Docker sandbox, BOLAZ IDOR — last, only after data is solid
+1. **P0 + P6** — Foundation + Path A rewrite (parallel; P6 unblocks Path A correctness before we have fine-tuned adapters)
+2. **P1–P3** — Data pipeline (corpus for training, eval, calibration)
+3. **P4** — LoRA fine-tuning on CVEFixes + Juliet + SARD (~$3.80 GPU)
+4. **P5** — Deploy adapters, recalibrate thresholds
+5. **P7** — Benchmarking + CI regression gate
+6. **Approach 3 / PoE** — Last; only after corpus is solid and A-18 is resolved
 
 ---
 
-## Next: ML-DATA — Data Collection & Pipeline (`pipeline/`)
+## P0 — Pipeline Foundation (2h)
 
-> **Why first**: Every remaining workstream (A-18 fine-tuning, benchmark reporting, funnel calibration, regression testing, threshold recalibration) requires a labelled, multi-language corpus. The `pipeline/` directory is currently empty. Building it now unblocks everything else.
->
-> Output: `tests/corpus/` (gitignored) — per-language JSONL files ready for training, eval, and profiling.
-
-### ML-DATA.1 — CVEFixes Collector (`pipeline/collectors/`)
-
-- [ ] **T1** — Download CVEFixes SQLite DB (`pipeline/collectors/cvefixes.py`); verify checksum; store at `~/.zerotrust/cvefixes.db` (not in repo)
-- [ ] **T2** — Query `file_change` + `fixes` + `commits`; extract function-level hunks via Tree-sitter (reuse tree-sitter-languages already in project); output raw JSONL per language: `{code, label, cve_id, cwe_id, language, repo, commit}`
-- [ ] **T3** — Language filter: Python / Java / JavaScript / Go only (match scanner rule coverage); discard C/C++ (BigVul territory, not our gap)
-- [ ] **T4** — Dedup: drop samples where `sha256(code)` appears in both vuln and safe sets; log dropped count
-
-**Checkpoint**: `python pipeline/collectors/cvefixes.py` produces `tests/corpus/raw/{language}.jsonl`; row counts logged.
+- [x] **0.1** — Shared config: paths, language list `[python, java, javascript, go, csharp]`, token limits (1024 CodeT5+/512 fallback), thresholds → `pipeline/config.py`
+- [x] **0.2** — Pipeline orchestrator: sequential stages with checkpoints, resume support → `pipeline/run.py`
+- [x] **0.3** — Add deps: `tree-sitter-languages`, `datasets`, `peft`, `evaluate`, `cleanlab` → `worker/pyproject.toml`
 
 ---
 
-### ML-DATA.2 — Normalizer (`pipeline/normalizer/`)
+## P1 — Data Collection (5h)
 
-- [ ] **T1** — Strip comments, normalise whitespace, clip functions to 512 tokens (CodeT5+ context window); write to `tests/corpus/normalized/{language}.jsonl`
-- [ ] **T2** — Class balance audit: log vuln:safe ratio per language; apply random oversampling of minority class to reach ≤ 3:1 ratio (document in `docs/benchmarks/a18_gap.md`)
-- [ ] **T3** — Stratified 80/10/10 train/val/test split per language; write `{language}_{split}.jsonl`
+- [ ] **1.1** — Load CVEFixes via HF Datasets: `load_dataset("hitoshura25/cvefixes")` → `pipeline/collectors/cvefixes.py`
+- [ ] **1.2** — Filter to Python, Java, JavaScript (covers TS), Go, C# → same file
+- [ ] **1.3** — Load Juliet C# 1.3 (28,942 synthetic cases, perfect labels) + SARD C# → `pipeline/collectors/juliet.py`
+- [ ] **1.4** — Extract vulnerable/fixed paired samples: `{code, label, cve_id, cwe_id, language, repo}` → both collector files
+- [ ] **1.5** — Dedup: `sha256(code)` within vuln set + across vuln/safe; log dropped count → `pipeline/collectors/dedup.py`
+- [ ] **1.6** — Output raw per-language JSONL → `tests/corpus/raw/{language}.jsonl`
 
-**Checkpoint**: `python pipeline/normalizer/normalize.py` produces train/val/test splits; class distribution table written to `docs/benchmarks/corpus_stats.md`.
-
----
-
-### ML-DATA.3 — Labeler & Quality Check (`pipeline/labeler/`)
-
-- [ ] **T1** — Rule-based sanity check: samples where CWE matches a known-safe pattern (e.g. CWE-0 placeholder) are flagged and removed
-- [ ] **T2** — Overlap check: assert zero overlap between train and test splits (hash-based)
-- [ ] **T3** — Coverage report: for each scanner rule in `rules/`, confirm ≥ 1 CVEFixes sample covers that CWE; flag rules with no corpus coverage
-
-**Checkpoint**: `python pipeline/labeler/check.py` exits 0 with zero overlap and coverage report written.
+**Checkpoint**: row counts logged per language. Expected: Java (~3-6K) · Python (~2-4K) · JS/TS (~2-4K) · C# (~30K with Juliet) · Go (~0.5-1.5K, thin — document gap).
 
 ---
 
-### ML-DATA.4 — Profiling & Benchmarking Harness (`scripts/benchmarks/`)
+## P2 — Normalization & Splits (4h)
 
-- [ ] **T1** — Benchmark script (`scripts/benchmarks/corpus_bench.py`): run classifier on the test split; record precision/recall/F1 per language; write to `docs/benchmarks/a18_gap.md` results table
-- [ ] **T2** — Profiling harness (`scripts/benchmarks/profile_scan.py`): run `zerotrust scan` on a 5K-LOC synthetic codebase sampled from corpus; capture wall-clock, peak RSS, p50/p95 latency per stage; append to `docs/benchmarks/performance.md`
-- [ ] **T3** — Regression gate: add `make bench` target; fails CI if F1 drops below 0.75 on any language or wall-clock exceeds 60s on 5K LOC
-
-**Checkpoint**: `make bench` runs clean; all thresholds met or explicitly documented as known gaps.
+- [ ] **2.1** — Strip comments, normalize whitespace, clip to 1024 tokens → `pipeline/normalizer/normalize.py`
+- [ ] **2.2** — Class balance audit: log vuln:safe ratio per language → same file
+- [ ] **2.3** — Apply weighted loss strategy (not oversampling — avoids overfitting) → same file
+- [ ] **2.4** — CVE-aware stratified 80/10/10 split per language → same file
+- [ ] **2.5** — Write normalized splits → `tests/corpus/normalized/{language}_{split}.jsonl`
+- [ ] **2.6** — Write corpus statistics → `docs/benchmarks/corpus_stats.md`
 
 ---
 
-## After Data Pipeline: A-18 Resolution (QLoRA Fine-Tuning)
+## P3 — Label Noise Audit + Quality Checks (7h)
 
-> Unblocked by ML-DATA.3. Full task breakdown in `docs/planning/implementation-plan.md` under `[BONUS] R&D — A-18 Resolution`.
+- [ ] **3.1** — Sample 50 "vulnerable" functions per language for manual noise audit → `pipeline/labeler/noise_audit.py`
+- [ ] **3.2** — Manual label verification (3 reviewers, independent) — external process
+- [ ] **3.3** — Compute noise rate; log to `corpus_stats.md`
+- [ ] **3.4** — If noise > 40%: apply confident learning via `cleanlab` → same file
+- [ ] **3.5** — Rule-based sanity check: remove CWE-0 placeholders, malformed code → `pipeline/labeler/check.py`
+- [ ] **3.6** — Overlap check: zero train/test overlap (hash + CVE-based); exit 1 on violation → same file
+- [ ] **3.7** — Coverage report: for each Semgrep `p/*` ruleset we dynamically select, confirm ≥ 1 corpus CWE covered; flag gaps → `pipeline/labeler/coverage_report.py`
 
-| ID     | Task                                                        | Est.                        |
-| ------ | ----------------------------------------------------------- | --------------------------- |
-| A18.T1 | CVEFixes data pipeline                                      | ✅ covered by ML-DATA above |
-| A18.T2 | Class balancing + splits                                    | ✅ covered by ML-DATA.2     |
-| A18.T3 | QLoRA fine-tune per language (RunPod A40, ~$15–25)          | 6.0h                        |
-| A18.T4 | Per-language F1/precision/recall evaluation                 | 3.0h                        |
-| A18.T5 | Save LoRA adapter + wire into `worker/handlers/classify.py` | 2.0h                        |
-| A18.T6 | Threshold recalibration (0.80 → 0.85–0.90 per language)     | 1.0h                        |
-| A18.T7 | Update accuracy claims in CLAUDE.md, README, report output  | 0.5h                        |
+**Checkpoint**: `check.py` exits 0; coverage gaps documented in `docs/rules/coverage_gap.md`.
 
-**Hard time-box: 12.5h post-data-pipeline.** If Go/Ruby sample counts < 1.5k, keep high-recall mode for those languages and document.
+---
+
+## P4 — LoRA Fine-Tuning of CodeT5+ (9h script + 5.5h GPU, ~$3.80)
+
+- [ ] **4.1** — Verify CodeT5+ attention module names: `model.named_modules()` → confirm `target_modules` (0.5h)
+- [ ] **4.2** — Training script: `LoraConfig(r=16, alpha=32, target_modules=all_attn, dropout=0.05)` + `BCEWithLogitsLoss` + fp16 mixed precision (3.0h) → `scripts/train_lora.py`
+- [ ] **4.3–4.7** — Train per-language adapters: Python · Java · JavaScript · Go · C# (1.0-1.5h each, ~$0.70-1.04 each on A40 @ $0.69/h)
+- [ ] **4.8** — Save adapters → `~/.zerotrust/adapters/{language}/` (0.2h)
+- [ ] **4.9** — Evaluate per-language F1 on held-out test split (1.0h)
+- [ ] **4.10** — Cross-validate on PrimeVul: `load_dataset("colin/PrimeVul", split="test")` (1.0h)
+- [ ] **4.11** — Precision check on OWASP Benchmark (Java, 2,741 cases, ground truth) (1.0h)
+- [ ] **4.12** — Log all results → `docs/benchmarks/a18_gap.md` (0.5h)
+
+> If Go < 1.5K samples: keep high-recall mode, document gap.
+
+| Language   | GPU time | Cost (A40 @ $0.69/h) |
+| ---------- | -------- | -------------------- |
+| Python     | 1.0h     | $0.69                |
+| Java       | 1.0h     | $0.69                |
+| JavaScript | 1.0h     | $0.69                |
+| Go         | 1.0h     | $0.69 (or skip)      |
+| C#         | 1.5h     | $1.04                |
+| **Total**  | **5.5h** | **$3.80**            |
+
+---
+
+## P5 — Deployment Integration (4h)
+
+- [ ] **5.1** — Wire LoRA into classifier: base CodeT5+ loads once; `set_adapter(language)` per classify request → `worker/handlers/classify.py`
+- [ ] **5.2** — Load adapters from `~/.zerotrust/adapters/` on worker startup → same file
+- [ ] **5.3** — Threshold recalibration: replace hardcoded 0.85/0.15 with per-language empirical values → `worker/tuning.py`
+- [ ] **5.5** ⚠️ **Severity gate calibration** — `ConfBlock/High/Medium/Low` (0.92/0.75/0.60/0.30) and CVSS-band confidence values (0.95/0.82/0.68) are all judgment-based guesses with no statistical backing. After P4 produces a labeled val-set, run `scripts/calibrate.py --input val.csv --out cal.json` to fit real thresholds from model outputs, then pass `--calibration cal.json` at scan time. See `docs/planning/implementation-plan.md` A18.T8 for full details.
+- [ ] **5.4** — Update accuracy claims: replace A-18 caveat with validated per-language F1 → `CLAUDE.md`, `README.md`, report output
+
+---
+
+## P6 — Path A Rewrite: Pure Orchestrator (11h)
+
+> Runs in parallel with P1–P2. Path A currently ships custom YAML rules and ast-grep; revised architecture delegates all detection to community tooling.
+
+### 6a — Remove Custom Detection (2h)
+
+- [ ] **6a.1** — Delete entire `rules/` directory (~57 YAML files)
+- [ ] **6a.2** — Delete `internal/pattern/astgrep/` package
+- [ ] **6a.3** — Delete `internal/pattern/instrscan/` package
+- [ ] **6a.4** — Remove ast-grep and instrscan from `cmd/zerotrust/scan.go` pipeline wiring
+- [ ] **6a.5** — Remove unused deps from `go.mod`
+
+### 6b — Dynamic Semgrep Ruleset via Heuristics (5h)
+
+- [ ] **6b.1** — Build heuristic engine: scan target for file extensions, build files (`pom.xml`, `go.mod`, `package.json`, `requirements.txt`, `*.csproj`), content patterns (SQL keywords, API key patterns) → `internal/ingestion/heuristics/`
+- [ ] **6b.2** — Build ruleset mapper: heuristic → Semgrep `p/*` rulesets → `internal/pattern/semgrep/ruleset.go`
+- [ ] **6b.3** — Wire dynamic selection into Semgrep `Scan()` call → `internal/pattern/semgrep/semgrep.go`
+- [ ] **6b.4** — Cache selection per project in DI SQLite → same package
+- [ ] **6b.5** — Fallback: `p/owasp-top-ten` when no heuristics match → same package
+
+**Ruleset mapping**:
+
+| Heuristic                      | Semgrep ruleset              |
+| ------------------------------ | ---------------------------- |
+| Python detected                | `p/python`, `p/flask`        |
+| Java detected                  | `p/java`, `p/spring`         |
+| JavaScript/TypeScript detected | `p/javascript`, `p/react`    |
+| C# detected                    | `p/csharp`                   |
+| SQL patterns in code           | `p/sql-injection`            |
+| Web framework detected         | Framework-specific ruleset   |
+| No match                       | `p/owasp-top-ten` (fallback) |
+
+### 6c — New Tool Integrations (4.5h)
+
+- [ ] **6c.1** — gosec: Go subprocess wrapper, JSON output, normalize → unified Finding struct → `internal/pattern/gosec/`
+- [ ] **6c.2** — Gitleaks: binary download check, subprocess wrapper, JSON output normalization → `internal/pattern/gitleaks/`
+
+### 6d — Orchestrator Wiring (2h)
+
+- [ ] **6d.1** — Wire gosec into Path A (Go targets only)
+- [ ] **6d.2** — Wire Gitleaks into Path A (all targets)
+- [ ] **6d.3** — Wire dynamic Semgrep into Path A (replaces fixed ruleset)
+- [ ] **6d.4** — Update dedup normalization for new tool sources
+
+---
+
+## P7 — Benchmarking + Regression Gate (3h)
+
+- [ ] **7.1** — Post-LoRA per-language F1 on test split → `scripts/benchmarks/corpus_bench.py`
+- [ ] **7.2** — Wall-clock, RSS, p50/p95 latency on 5K synthetic codebase → `scripts/benchmarks/profile_scan.py`
+- [ ] **7.3** — Add `make bench` target → `Makefile`
+- [ ] **7.4** — CI gate: F1 ≥ 0.75 per language, wall-clock ≤ 60s on 5K LOC → CI config
 
 ---
 
 ## Last: Approach 3 / PoE — Agentic Scanner
 
-> Start only after the corpus is collected and A-18 is resolved (or consciously deferred past Aug 6).
+> Start only after corpus is collected and A-18 is resolved (or consciously deferred past Aug 6).
 > Approach 3 per CLAUDE.md: LangGraph 3-agent ensemble (Recon → Exploit → Verify), Threat Feature Extractor, Docker PoE sandbox, BOLAZ IDOR tracking.
 
 | ID     | Task                                                    | Notes                                                                |
@@ -92,7 +165,23 @@
 | PoE.T4 | Threat Feature Extractor (Python)                       | Union schema over taint + auth + logic features; feeds Exploit agent |
 | PoE.T5 | Wire PoE confidence into Dedup gate                     | PoE-confirmed findings bypass Gate 3 similarity check                |
 
-**Do not start PoE until ML-DATA is done.** Agentic scanner quality is directly correlated with corpus quality — a bad corpus produces an untuned agent that overfits to the Spring Boot testbed.
+**Do not start PoE until P3 (corpus QC) is done.**
+
+---
+
+## Phase Summary
+
+| Phase               | Hours                    | Dependencies        | Notable                                      |
+| ------------------- | ------------------------ | ------------------- | -------------------------------------------- |
+| P0 — Foundation     | 2h                       | None                | Config + orchestrator + deps                 |
+| P1 — Collection     | 5h                       | P0                  | CVEFixes HF + Juliet C#                      |
+| P2 — Normalization  | 4h                       | P1                  | CVE-aware splits, weighted loss              |
+| P3 — Noise + QC     | 7h                       | P2 (partial)        | Manual audit, coverage report                |
+| P4 — LoRA training  | 9h code + 5.5h GPU       | P2                  | ~$3.80 total GPU cost                        |
+| P5 — Deployment     | 4h                       | P4                  | Wire adapters, recalibrate                   |
+| P6 — Path A rewrite | 11h                      | P0 (parallel P1-P2) | Delete rules, add gosec/Gitleaks, heuristics |
+| P7 — Benchmarking   | 3h                       | P4 + P6             | make bench, CI gate                          |
+| **Total**           | **~45h code + 5.5h GPU** |                     | **~$3.80 cloud cost**                        |
 
 ---
 

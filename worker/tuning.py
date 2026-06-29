@@ -1,5 +1,11 @@
 # Single source of truth for all numeric tuning parameters in the Python worker.
 # Change values here; no other file needs to be touched.
+# At startup, ZT_CALIBRATION env var (set by the Go host) overrides the thresholds below
+# if a valid calibration JSON file exists (produced by scripts/calibrate.py).
+
+import json as _json
+import os as _os
+import pathlib as _pathlib
 
 # ── Classifier model ──────────────────────────────────────────────────────────
 # Shared thresholds used by all backbones (UniXcoder, CodeT5+, etc.).
@@ -29,3 +35,15 @@ OLLAMA_TIMEOUT_SECONDS = 30
 
 # ── Verdict schema validation ─────────────────────────────────────────────────
 VERDICT_MAX_JUSTIFICATION_LEN = 200
+
+# ── Runtime calibration override ──────────────────────────────────────────────
+# Applied at import time; any downstream module that imports these names gets
+# the calibrated values automatically.
+_cal_path = _os.getenv("ZT_CALIBRATION", "")
+if _cal_path and _pathlib.Path(_cal_path).exists():
+    _cal = _json.loads(_pathlib.Path(_cal_path).read_text())
+    CLASSIFIER_VULNERABLE_THRESHOLD = float(_cal.get("classifier_vulnerable_threshold", CLASSIFIER_VULNERABLE_THRESHOLD))
+    CLASSIFIER_SAFE_THRESHOLD = float(_cal.get("classifier_safe_threshold", CLASSIFIER_SAFE_THRESHOLD))
+    UNIXCODER_VULNERABLE_THRESHOLD = float(_cal.get("classifier_vulnerable_threshold", UNIXCODER_VULNERABLE_THRESHOLD))
+    UNIXCODER_SAFE_THRESHOLD = float(_cal.get("classifier_safe_threshold", UNIXCODER_SAFE_THRESHOLD))
+    ASC_CONFIDENCE_THRESHOLD = float(_cal.get("asc_confidence_threshold", ASC_CONFIDENCE_THRESHOLD))

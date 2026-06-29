@@ -187,6 +187,15 @@ func (h *eventsHandler) WithGroup(name string) slog.Handler {
 func newPipeline(ctx context.Context, cfg ScanConfig) (*pipeline, error) {
 	cfg.defaults()
 
+	cal, err := tuning.LoadCalibration(cfg.CalibrationPath)
+	if err != nil {
+		return nil, fmt.Errorf("load calibration: %w", err)
+	}
+	if cfg.CalibrationPath != "" {
+		// ponytail: parent env inherits to exec.Command subprocess
+		_ = os.Setenv("ZT_CALIBRATION", cfg.CalibrationPath)
+	}
+
 	absTarget, err := filepath.Abs(cfg.Target)
 	if err != nil {
 		return nil, fmt.Errorf("resolve target: %w", err)
@@ -275,7 +284,7 @@ func newPipeline(ctx context.Context, cfg ScanConfig) (*pipeline, error) {
 	clf := classifier.New(wm, logger)
 	asm := assembler.New(graph, tuning.AssemblerMaxDepth)
 	sum := summarizer.New(wm)
-	bud := budget.New(cfg.TokenCap, tuning.BudgetWeightCVSS, tuning.BudgetWeightUncert, tuning.BudgetWeightDepth)
+	bud := budget.New(cfg.TokenCap, cal.BudgetWeightCVSS, cal.BudgetWeightUncert, cal.BudgetWeightDepth)
 	sc := llmscan.New(wm)
 	store := scs.New()
 
