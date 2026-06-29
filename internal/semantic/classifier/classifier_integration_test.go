@@ -14,16 +14,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Integration tests for the UniXcoder classifier gate.
+// Integration tests for the CodeT5+ classifier gate.
 //
 // These tests require a live Python worker (worker/main.py) with the
-// UniXcoder model downloaded. Run with:
+// CodeT5+ model downloaded: Salesforce/codet5p-220m. Run with:
 //
 //	make test-integration
 //
 // Prerequisites:
 //  1. Python worker deps installed: cd worker && uv sync
-//  2. UniXcoder model downloaded: microsoft/unixcoder-base-nine
+//  2. CodeT5+ model downloaded: Salesforce/codet5p-220m: microsoft/unixcoder-base-nine
 //     (auto-downloaded on first run by HuggingFace; ~500 MB)
 //  3. ZEROTRUST_PYTHON set if not using uv (default: uv)
 //
@@ -236,7 +236,7 @@ func writeFunnelDoc(t *testing.T, total, toDedup, toAssembler, dismissed int, es
 
 ## Notes
 
-- A-18: UniXcoder operates in high-recall mode (ThresholdVulnerable=0.80).
+- A-18: CodeT5+ operates in high-recall mode (ThresholdVulnerable=0.80).
   Without CVEFixes fine-tuning, the model rarely commits to "safe" — expect
   a high escalation rate until A-18 is resolved.
 - "Surfaces" here are full source files, not CPG function nodes. Real funnel

@@ -16,8 +16,8 @@ package classifier
 
 import (
 	"log/slog"
-	"path/filepath"
 
+	"github.com/hoangharry-tm/zerotrust/internal/finding"
 	"github.com/hoangharry-tm/zerotrust/internal/tuning"
 )
 
@@ -43,21 +43,6 @@ type RouteResult struct {
 	// Dismissed receives surfaces classified as safe with high confidence.
 	// These exit Path B without further cost.
 	Dismissed []ClassifiedSurface
-}
-
-// unsupportedExts is the set of file extensions whose languages UniXcoder does
-// not support. Surfaces with these extensions bypass the classifier entirely.
-var unsupportedExts = map[string]struct{}{
-	".rs":    {},
-	".kt":    {},
-	".swift": {},
-	".cs":    {},
-}
-
-// isUnsupportedExt reports whether the file extension requires a classifier bypass.
-func isUnsupportedExt(file string) bool {
-	_, ok := unsupportedExts[filepath.Ext(file)]
-	return ok
 }
 
 // RouteAndLog calls Route then logs funnel stats via logger. If the fraction of
@@ -102,7 +87,7 @@ func RouteAndLog(surfaces []ClassifiedSurface, logger *slog.Logger) RouteResult 
 // Routing rules (evaluated in priority order):
 //  1. IDOR candidate → ToAssembler with EscalateReason "idor_candidate",
 //     regardless of classifier verdict or file extension.
-//  2. Unsupported language extension (.rs, .kt, .swift, .cs) → ToAssembler
+//  2. Unsupported language (not in classifier.supportedLanguages) → ToAssembler
 //     with BypassedClassifier=true, regardless of classifier verdict.
 //  3. LabelVulnerable → ToDedup (classifier confident; Assembler adds no value).
 //  4. LabelSafe, confidence ≥ ThresholdVulnerable → Dismissed.
@@ -113,7 +98,7 @@ func Route(surfaces []ClassifiedSurface) RouteResult {
 		switch {
 		case s.Escalate && s.EscalateReason == EscalateIDOR:
 			r.ToAssembler = append(r.ToAssembler, s)
-		case isUnsupportedExt(s.File):
+		case !IsSupported(finding.LangFromPath(s.File)):
 			s.BypassedClassifier = true
 			r.ToAssembler = append(r.ToAssembler, s)
 		case s.Label == LabelVulnerable:

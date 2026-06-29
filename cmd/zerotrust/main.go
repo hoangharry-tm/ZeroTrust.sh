@@ -44,6 +44,16 @@ import (
 	"github.com/hoangharry-tm/zerotrust/internal/report/mock"
 )
 
+// ExitError wraps an exit code for propagation through cobra RunE.
+// This ensures deferred cleanup runs before the process exits.
+type ExitError struct {
+	Code int
+}
+
+func (e *ExitError) Error() string {
+	return fmt.Sprintf("exit code %d", e.Code)
+}
+
 const (
 	engineImage   = "ghcr.io/hoangharry-tm/zerotrust-engine:latest"
 	ollamaHostURL = "http://localhost:11434"
@@ -66,7 +76,6 @@ run the pipeline directly with local toolchain installations.`,
 
 	root.Flags().StringP("model", "m", "", "Ollama model name (e.g. llama3.2)")
 	root.Flags().BoolP("offline", "o", false, "disable all network requests (Trivy offline mode)")
-	root.Flags().String("output", "minimal", "output mode: minimal (only; HTML report via --report)")
 	root.Flags().String("report", "", "HTML report output path (default: build/report.html)")
 	root.Flags().String("project-id", "", "override project ID used for scan-state caching")
 	root.Flags().String("mode", "Default", "scan scope mode: Default | Thorough | Full")
@@ -81,6 +90,10 @@ run the pipeline directly with local toolchain installations.`,
 	root.Flags().BoolP("verbose", "v", false, "enable debug-level logging to stderr")
 
 	if err := root.Execute(); err != nil {
+		var exitErr *ExitError
+		if errors.As(err, &exitErr) {
+			os.Exit(exitErr.Code)
+		}
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
@@ -217,8 +230,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 	if err := renderer.Render(ctx, events); err != nil {
 		return fmt.Errorf("render: %w", err)
 	}
-	os.Exit(renderer.ExitCode())
-	return nil
+	return &ExitError{Code: renderer.ExitCode()}
 }
 
 // runContainer orchestrates the engine inside a Docker container.
@@ -237,7 +249,10 @@ func runContainer(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("resolve target path: %w", err)
 	}
 
-	ollamaFound := checkDeps()
+	ollamaFound, err := checkDeps()
+	if err != nil {
+		return err
+	}
 
 	pull, _ := flags.GetBool("pull")
 	if pull {
@@ -291,7 +306,6 @@ func runContainer(cmd *cobra.Command, args []string) error {
 	// Forward relevant flags to the engine inside the container
 	addEngineFlag(&argsDocker, flags, "model", "model")
 	addEngineFlag(&argsDocker, flags, "offline", "offline")
-	addEngineFlag(&argsDocker, flags, "output", "output")
 	addEngineFlag(&argsDocker, flags, "report", "report")
 	addEngineFlag(&argsDocker, flags, "project-id", "project-id")
 	addEngineFlag(&argsDocker, flags, "mode", "mode")
@@ -311,8 +325,9 @@ func runContainer(cmd *cobra.Command, args []string) error {
 		"ollama_found", ollamaFound,
 	)
 	if err := dockerCmd.Run(); err != nil {
-		if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
-			os.Exit(exitErr.ExitCode())
+		var dockerExitErr *exec.ExitError
+		if errors.As(err, &dockerExitErr) {
+			return &ExitError{Code: dockerExitErr.ExitCode()}
 		}
 		slog.Error("container execution failed", "component", "main", "err", err)
 		return fmt.Errorf("container execution: %w", err)

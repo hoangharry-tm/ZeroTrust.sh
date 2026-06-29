@@ -25,7 +25,7 @@
 // resource ID heuristic — any function that reads an external ID (URL path
 // parameter, query parameter, request body field) and passes it to a database
 // or storage layer is flagged as an IDOR candidate. All IDOR candidates bypass
-// the UniXcoder classifier and escalate directly to the LLM tier.
+// the CodeT5+ classifier and escalate directly to the LLM tier.
 //
 // Design reference: BolaRay (CCS 2024) for zero-trust resource ID model.
 package targeting
@@ -289,7 +289,7 @@ func bfsHopDepths(cg CallGraph, seeds []cpg.Node) map[string]int {
 
 // AutoFlagCVESurfaces splits surfaces into auto-flagged (CVE match with CVSS ≥ 4.0)
 // and remainder. Auto-flagged surfaces have ConfidenceScore set and bypass the
-// UniXcoder classifier. Missing CVSS (0.0) is treated as 5.0.
+// CodeT5+ classifier. Missing CVSS (0.0) is treated as 5.0.
 func AutoFlagCVESurfaces(surfaces []Surface) (flagged []Surface, remaining []Surface) {
 	slog.Debug("targeting: auto-flagging CVE surfaces", slog.Int("surfaces", len(surfaces)))
 	for _, s := range surfaces {

@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package classifier wraps the UniXcoder-Base-Nine vulnerability classifier
+// Package classifier wraps the CodeT5+-Base-Nine vulnerability classifier
 // (Path B Tier 2) via the Python worker IPC boundary.
 //
-// UniXcoder-Base-Nine (~125M parameters, CPU-only) is a code understanding model
+// CodeT5+ (~220M parameters, pre-trained on 8 languages including Go/Python/Java/JS) is a code understanding model
 // fine-tuned on BigVul. It gates surfaces before the expensive LLM reasoning tier,
 // targeting ~75–85% elimination of surfaces that reach this stage.
 //
@@ -61,7 +61,7 @@ import (
 	"github.com/hoangharry-tm/zerotrust/internal/worker"
 )
 
-// Label is the 3-band classification output from UniXcoder.
+// Label is the 3-band classification output from the CodeT5+ classifier.
 type Label string
 
 const (
@@ -101,7 +101,7 @@ const ThresholdVulnerable = tuning.ClassifierVulnerableThreshold
 // A-18: conservative until CVEFixes multi-language benchmark is complete.
 const ThresholdSafe = tuning.ClassifierSafeThreshold
 
-// supportedLanguages is the set of language identifiers that UniXcoder handles.
+// supportedLanguages is the set of language identifiers that CodeT5+ handles.
 // Keys are normalised lowercase strings (e.g. "js" is not in the set; callers
 // should normalise before calling IsSupported).
 var supportedLanguages = map[string]struct{}{
@@ -114,7 +114,7 @@ var supportedLanguages = map[string]struct{}{
 	"php":        {},
 }
 
-// IsSupported reports whether lang is handled by the UniXcoder classifier.
+// IsSupported reports whether lang is handled by the CodeT5+ classifier.
 // Unsupported languages bypass the classifier and route directly to the LLM tier.
 // lang is normalised to lowercase before the lookup.
 func IsSupported(lang string) bool {
@@ -126,7 +126,7 @@ func IsSupported(lang string) bool {
 type Result struct {
 	// SurfaceID matches the input enrichment.EnrichedSurface.ID.
 	SurfaceID string
-	// Label is the 3-band classification from UniXcoder.
+	// Label is the 3-band classification from the CodeT5+ classifier.
 	Label Label
 	// Confidence is the model's probability for the winning label (0.0–1.0).
 	Confidence float64
@@ -136,7 +136,7 @@ type Result struct {
 	EscalateReason EscalateReason
 }
 
-// Gate applies the UniXcoder classifier to a batch of enriched surfaces.
+// Gate applies the CodeT5+ classifier to a batch of enriched surfaces.
 type Gate struct {
 	w                   *worker.Manager
 	escalationThreshold float64

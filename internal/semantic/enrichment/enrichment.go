@@ -33,7 +33,7 @@
 //     candidates and marked for mandatory LLM escalation.
 //
 // Auto-flagging: surfaces with an exact CVE match (CVSS ≥ 7.0) are promoted to
-// HIGH severity without going through the UniXcoder classifier.
+// HIGH severity without going through the CodeT5+ classifier.
 package enrichment
 
 import (
@@ -79,7 +79,7 @@ type EnrichedSurface struct {
 	// Surface is the base surface from Heuristic Targeting.
 	targeting.Surface
 	// Code is the full source text of the function at this surface, fetched from
-	// the Joern CPG. The UniXcoder classifier uses this as its primary input.
+	// the Joern CPG. The CodeT5+ classifier uses this as its primary input.
 	Code string
 	// Language is the programming language of the surface's source file, derived
 	// from the file extension (e.g. "go", "python", "java"). Used by the classifier
@@ -89,7 +89,7 @@ type EnrichedSurface struct {
 	// Sorted by descending CVSS score.
 	CVEMatches []CVEMatch
 	// AutoFlagged is true when at least one CVEMatch has CVSS ≥ 7.0.
-	// Auto-flagged surfaces bypass the UniXcoder classifier and go directly to dedup.
+	// Auto-flagged surfaces bypass the CodeT5+ classifier and go directly to dedup.
 	AutoFlagged bool
 	// CallerIDs are the CPG function IDs that directly call this surface's function.
 	CallerIDs []string
@@ -160,9 +160,13 @@ func (e *Enricher) Enrich(ctx context.Context, surfaces []targeting.Surface, pro
 		if e.graph != nil {
 			if callers, cerr := e.graph.GetCallers(s.ID); cerr == nil {
 				es.CallerIDs = nodeIDs(callers)
+			} else {
+				slog.Warn("enrichment: GetCallers failed", slog.String("surface_id", s.ID), "err", cerr)
 			}
 			if callees, cerr := e.graph.GetCallees(s.ID); cerr == nil {
 				es.CalleeIDs = nodeIDs(callees)
+			} else {
+				slog.Warn("enrichment: GetCallees failed", slog.String("surface_id", s.ID), "err", cerr)
 			}
 		}
 

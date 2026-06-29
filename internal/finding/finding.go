@@ -66,7 +66,9 @@ type SuppressReason string
 const (
 	// SuppressReasonUncertain means the LLM returned an uncertain verdict.
 	SuppressReasonUncertain SuppressReason = "uncertain"
-	// SuppressReasonBudgetExhausted means the surface exceeded the token budget cap.
+	// Deprecated: budget controller no longer gates analysis — surfaces are never
+	// suppressed for budget exhaustion. This constant remains for backward
+	// compatibility with existing DB records.
 	SuppressReasonBudgetExhausted SuppressReason = "budget_exhausted"
 	// SuppressReasonTestFile means the finding is in a recognised test file pattern.
 	SuppressReasonTestFile SuppressReason = "test_file"

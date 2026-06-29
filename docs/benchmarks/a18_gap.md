@@ -1,4 +1,4 @@
-# A-18 Gap Measurement — UniXcoder Multi-Language F1
+# A-18 Gap Measurement — Classifier Multi-Language F1 (UniXcoder → CodeT5+ transition)
 
 **Status: PENDING** — Run `python scripts/benchmarks/a18_eval.py` to populate.
 
@@ -6,7 +6,7 @@
 
 ## Context
 
-The UniXcoder-Base-Nine model's commonly cited F1=94.73% was measured on the
+The CodeT5+ model's commonly cited F1=94.73% was measured on the
 **BigVul C/C++ dataset only**. ZeroTrust.sh targets Python, Java, JavaScript,
 TypeScript, and Go — none of which are in BigVul's primary evaluation corpus.
 

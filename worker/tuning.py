@@ -1,12 +1,20 @@
 # Single source of truth for all numeric tuning parameters in the Python worker.
 # Change values here; no other file needs to be touched.
 
-# ── UniXcoder model ───────────────────────────────────────────────────────────
-UNIXCODER_VULNERABLE_THRESHOLD = 0.85
-UNIXCODER_SAFE_THRESHOLD = 0.15
+# ── Classifier model ──────────────────────────────────────────────────────────
+# Shared thresholds used by all backbones (UniXcoder, CodeT5+, etc.).
+CLASSIFIER_VULNERABLE_THRESHOLD = 0.85
+CLASSIFIER_SAFE_THRESHOLD = 0.15
+CLASSIFIER_BATCH_SIZE = 8
+CLASSIFIER_MAX_LENGTH = 1024
+# Architecture constant — change only when retraining with a different backbone.
+# CodeT5+ 220M: 1024 | UniXcoder (fallback): 768
+CLASSIFIER_HIDDEN_SIZE = 1024
+# Deprecated aliases kept for legacy model code.
+UNIXCODER_VULNERABLE_THRESHOLD = CLASSIFIER_VULNERABLE_THRESHOLD
+UNIXCODER_SAFE_THRESHOLD = CLASSIFIER_SAFE_THRESHOLD
 UNIXCODER_BATCH_SIZE = 16
 UNIXCODER_MAX_LENGTH = 512
-# Architecture constant — change only when retraining with a different backbone.
 UNIXCODER_HIDDEN_SIZE = 768
 
 # ── LLM verify / ASC ─────────────────────────────────────────────────────────

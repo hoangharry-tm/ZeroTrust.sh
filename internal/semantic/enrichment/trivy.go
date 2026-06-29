@@ -31,7 +31,7 @@ package enrichment
 //	CVSS ≥ 9.0  → AutoFlagged, maps to SeverityBlock
 //	CVSS 7.0–8.9 → AutoFlagged, maps to SeverityHigh
 //	CVSS 4.0–6.9 → AutoFlagged, maps to SeverityMedium
-//	CVSS < 4.0   → not auto-flagged (below threshold; UniXcoder still classifies)
+//	CVSS < 4.0   → not auto-flagged (below threshold; CodeT5+ still classifies)
 
 import (
 	"bytes"

@@ -352,7 +352,7 @@ However, a 7B model's knowledge of package ecosystems is limited to its training
 
 Path B is the second detection path introduced in Approach 2. It operates in parallel with Path A and never receives Path A findings as input. Its purpose is to detect vulnerabilities that have no syntactic signature — those that are wrong in context, not in code structure.
 
-**Classifier pre-gate (research-validated addition).** Before routing surfaces to the LLM, a small fine-tuned model (UniXcoder-Base-Nine, ~125M params, F1=94.73% on BigVul) scores each surface for vulnerability likelihood on CPU in milliseconds. Surfaces rated high-confidence vulnerable are flagged directly without an LLM call; surfaces rated high-confidence safe are dismissed. Only uncertain surfaces (~15–25% of the total) proceed to the LLM. This reduces LLM call volume by 70–80% with no material impact on recall. See `docs/project_architecture_cascading_intelligence.mmd` for the full three-tier design.
+**Classifier pre-gate (research-validated addition).** Before routing surfaces to the LLM, a small fine-tuned model (CodeT5+, ~125M params, F1=94.73% on BigVul) scores each surface for vulnerability likelihood on CPU in milliseconds. Surfaces rated high-confidence vulnerable are flagged directly without an LLM call; surfaces rated high-confidence safe are dismissed. Only uncertain surfaces (~15–25% of the total) proceed to the LLM. This reduces LLM call volume by 70–80% with no material impact on recall. See `docs/project_architecture_cascading_intelligence.mmd` for the full three-tier design.
 
 #### Heuristic Targeting
 

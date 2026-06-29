@@ -11,7 +11,7 @@
 ZeroTrust.sh requires:
 - A fast CLI binary with near-zero startup latency (pre-commit tool use case)
 - Parallel orchestration of Path A (Semgrep/Joern/ast-grep subprocesses) and Path B (heuristic targeting → classifier → LLM)
-- ML inference for UniXcoder-Base-Nine (PyTorch)
+- ML inference for CodeT5+ (PyTorch)
 - Grammar-constrained LLM output via XGrammar (Python/C++ binding)
 - LangGraph multi-agent orchestration in Approach 3
 - Single-binary distribution for Approaches 1 and 2
@@ -36,7 +36,7 @@ Three language candidates were evaluated: **Go**, **Python**, and **Rust**.
 | Docker API (PoE sandbox) | Go | Official Go Docker SDK |
 | SSVC deduplication + confidence scoring | Go | Algorithmic; no ML library needed |
 | HTML report + patch generation | Go | `html/template` + `embed` |
-| UniXcoder classifier (Tier 2) | Python | PyTorch — no Go port exists |
+| CodeT5+ classifier (Tier 2) | Python | PyTorch — no Go port exists |
 | XGrammar constrained decoding | Python | Python/C++ binding — no Go equivalent |
 | LangGraph 3-agent ensemble (Approach 3) | Python | Python-only framework |
 | LLMLingua-2 / Token Budget compression | Python | HuggingFace — native Python |
@@ -62,7 +62,7 @@ Three language candidates were evaluated: **Go**, **Python**, and **Rust**.
 - Eliminated in favour of Go for the orchestration layer
 
 ### Go-only
-- Eliminated because UniXcoder, XGrammar, and LangGraph are Python-only; no viable Go ports exist as of 2026
+- Eliminated because CodeT5+, XGrammar, and LangGraph are Python-only; no viable Go ports exist as of 2026
 
 ---
 

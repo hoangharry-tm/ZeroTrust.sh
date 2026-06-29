@@ -18,7 +18,7 @@
 
 ## Notes
 
-- A-18: UniXcoder operates in high-recall mode (ThresholdVulnerable=0.80).
+- A-18: CodeT5+ operates in high-recall mode (ThresholdVulnerable=0.80).
   Without CVEFixes fine-tuning, the model rarely commits to "safe" — expect
   a high escalation rate until A-18 is resolved.
 - "Surfaces" here are full source files, not CPG function nodes. Real funnel

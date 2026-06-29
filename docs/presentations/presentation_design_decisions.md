@@ -31,7 +31,7 @@
 
 **G3 key deliverables:**
 - CPG-based heuristic targeting (~5% of surfaces selected)
-- UniXcoder classifier gate (75–85% surfaces without LLM call)
+- CodeT5+ classifier gate (75–85% surfaces without LLM call)
 - Threat Feature Extractor (LLM sees structured summaries, never raw code)
 - Bounded ReAct loop (max 3 steps)
 

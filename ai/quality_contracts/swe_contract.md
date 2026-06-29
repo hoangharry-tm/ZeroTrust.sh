@@ -483,7 +483,7 @@ worker/
     classify.py            ← handle "classify" message type
     enrich.py              ← handle "enrich" message type
   models/
-    unixcoder.py           ← UniXcoder model wrapper
+    unixcoder.py           ← CodeT5+ model wrapper
     classifier.py          ← classifier interface + implementations
     registry.py            ← model registry (load, cache, evict)
 ```

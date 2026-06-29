@@ -120,7 +120,7 @@ func TaintPathsToFindings(paths []cpg.TaintPath, lang Language) []finding.Findin
 	result := make([]finding.Finding, 0, len(paths))
 	for _, p := range paths {
 		f := TaintPathToFinding(p, lang)
-		f.ID = finding.ComputeID(f.CWE, f.Path, f.Justification)
+		f.ID = finding.ComputeID(f.CWE, f.Path, f.MatchedCode)
 		result = append(result, f)
 	}
 	return result

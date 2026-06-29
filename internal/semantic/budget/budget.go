@@ -24,7 +24,7 @@
 //	priority = w1×cvss + w2×(1 - classifier_confidence) + w3×reachability_from_entry
 //
 //   - cvss: highest CVSS score among CVE matches for this surface (0.0–10.0, normalised to 0–1).
-//   - classifier_confidence: the UniXcoder classifier's confidence (0.0–1.0). High uncertainty
+//   - classifier_confidence: the CodeT5+ classifier's confidence (0.0–1.0). High uncertainty
 //     increases priority because uncertain surfaces are the most valuable LLM targets.
 //   - reachability_from_entry: inverse hop count from the nearest external-input node
 //     (1 / CallGraphDepth). Corrects the CVE-only bias of a simpler formula.
@@ -51,9 +51,12 @@ import (
 type Input struct {
 	// Summary is the structured semantic output from the Summarizer stage.
 	Summary summarizer.Summary
+	// File is the source file path (relative to project root) for this surface.
+	// Used by the LLM scan stage to populate finding.Path so cross-path dedup works.
+	File string
 	// CVSSScore is the highest CVSS v3 score among CVE matches for this surface (0.0–10.0).
 	CVSSScore float64
-	// ClassifierConfidence is the UniXcoder confidence for the winning label (0.0–1.0).
+	// ClassifierConfidence is the CodeT5+ classifier confidence for the winning label (0.0–1.0).
 	ClassifierConfidence float64
 	// CallGraphDepth is the hop count from the nearest external-input node (≥ 1).
 	// Surfaces with depth 0 (unknown) are treated as depth 1 by the ranker.
@@ -65,12 +68,14 @@ type Input struct {
 type RankedSurface struct {
 	// Summary is the semantic summary from the Summarizer stage.
 	summarizer.Summary
+	// File is the source file path (relative to project root) for this surface.
+	// Populated from Input by the controller, consumed by the LLM scan stage.
+	File string
 	// Priority is the computed priority score (higher = scanned first).
 	Priority float64
 	// EstimatedTokens is the estimated prompt token cost for this surface.
 	EstimatedTokens int
-	// ClassifierConfidence is the UniXcoder confidence score, carried forward
-	// from the classifier stage for use in the priority formula.
+	// ClassifierConfidence is the CodeT5+ classifier confidence for the winning label (0.0–1.0).
 	ClassifierConfidence float64
 }
 
@@ -101,8 +106,12 @@ type Controller struct {
 // New returns a Controller with the given token cap and ranking weights.
 // tokenCap ≤ 0 defaults to 50 000.
 //
+// Note: The Controller no longer gates analysis — it observes, ranks, and warns
+// about cost but never suppresses scanning. All surfaces reach the LLM tier
+// regardless of cap. See ExhaustedToRanked.
+//
 // Parameters:
-//   - tokenCap: hard per-scan token budget. Surfaces beyond the cap are exhausted.
+//   - tokenCap: per-scan token budget (warning threshold, not a hard gate).
 //   - w1: weight for CVSS normalised score (0.0–1.0).
 //   - w2: weight for classifier uncertainty (1 - classifier_confidence).
 //   - w3: weight for reachability from entry point (1 / CallGraphDepth).
@@ -116,8 +125,13 @@ func New(tokenCap int, w1, w2, w3 float64) *Controller {
 // Rank sorts inputs by priority (descending) and partitions them into ranked
 // (fits within token cap) and exhausted (exceeds cap) slices.
 //
-// The caller must emit a SUPPRESSED finding with SuppressReasonBudgetExhausted
-// for each entry in the exhausted slice — they must never be silently dropped.
+// Callers should merge both slices when all surfaces must be scanned:
+//
+//	ranked, exhausted, stats := c.RankWithStats(inputs)
+//	if stats.Exhausted > 0 {
+//	    warn("budget: %d surfaces exceed cap — scanning all", stats.Exhausted)
+//	}
+//	allSurfaces := append(ranked, c.ExhaustedToRanked(exhausted)...)
 func (c *Controller) Rank(inputs []Input) (ranked []RankedSurface, exhausted []Input) {
 	ranked, exhausted, _ = c.rank(inputs)
 	return
@@ -133,4 +147,24 @@ func (c *Controller) RankWithStats(inputs []Input) (ranked []RankedSurface, exha
 		slog.Int("tokens_used", stats.TokensUsed),
 	)
 	return
+}
+
+// ExhaustedToRanked converts exhausted Inputs to RankedSurfaces so they can be
+// appended to the ranked slice for the LLM scan. Each output surface has
+// Priority=0 (never ranked) and EstimatedTokens computed from the summary.
+//
+// This enables the observer-mode pattern: rank + warn about cost, then scan
+// every surface regardless of budget.
+func (c *Controller) ExhaustedToRanked(exhausted []Input) []RankedSurface {
+	out := make([]RankedSurface, len(exhausted))
+	for i, inp := range exhausted {
+		out[i] = RankedSurface{
+			Summary:              inp.Summary,
+			File:                 inp.File,
+			Priority:             0,
+			EstimatedTokens:      estimateTokens(inp.Summary),
+			ClassifierConfidence: inp.ClassifierConfidence,
+		}
+	}
+	return out
 }

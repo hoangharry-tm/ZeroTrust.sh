@@ -214,7 +214,7 @@ func (c *Client) IncrementalPatch(ctx context.Context, cfg IncrementalPatchConfi
 	}
 
 	// Check each changed function's caller count before patching.
-	g := c.Graph()
+	g := c.GraphWithContext(ctx)
 	for _, fn := range cfg.ChangedFunctions {
 		callers, err := g.GetCallers(fn)
 		if err != nil {

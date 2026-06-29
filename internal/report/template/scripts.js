@@ -38,12 +38,24 @@ class FindingsManager {
     this._wireFilters();
     this._wirePagination();
     this._wireSearchSort();
+    this._wireCardKeyboard();
     this.render();
   }
 
   toggleCard(el) {
     const card = el.closest('.finding-card');
     if (card) card.classList.toggle('expanded');
+  }
+
+  _wireCardKeyboard() {
+    document.getElementById('findingsList').addEventListener('keydown', (e) => {
+      const header = e.target.closest('.finding-header');
+      if (!header) return;
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        this.toggleCard(header);
+      }
+    });
   }
 
   switchTab(btn, tabName) {
@@ -283,7 +295,8 @@ class FileSidebar {
         const details = document.createElement('details');
         const summary = document.createElement('summary');
         summary.className = 'tree-folder';
-        summary.innerHTML = `<span class="folder-indicator"></span><span class="tree-name">${name}</span>`;
+        summary.appendChild(Object.assign(document.createElement('span'), {className:'folder-indicator'}));
+        summary.appendChild(Object.assign(document.createElement('span'), {className:'tree-name', textContent: name}));
         details.appendChild(summary);
         const childWrap = document.createElement('div');
         childWrap.className = 'tree-children';
@@ -295,8 +308,11 @@ class FileSidebar {
         div.className = 'tree-file';
         div.dataset.file = child.item.dataset.file;
         const badge = child.item.querySelector('.file-badge');
-        const badgeHtml = badge ? badge.outerHTML : '';
-        div.innerHTML = `<span class="tree-name">${name}</span>${badgeHtml}`;
+        const nameSpan = document.createElement('span');
+        nameSpan.className = 'tree-name';
+        nameSpan.textContent = name;
+        div.append(nameSpan);
+        if (badge) div.append(badge.cloneNode(true));
         div.addEventListener('click', (e) => {
           e.stopPropagation();
           findings.setFileFilter(child.item.dataset.file);

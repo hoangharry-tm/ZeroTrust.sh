@@ -29,7 +29,7 @@ const (
 	ConfLow    = 0.30
 )
 
-// ── UniXcoder classifier gates ───────────────────────────────────────────────
+// ── CodeT5+ classifier gates ───────────────────────────────────────────────
 // Go-side gates applied on top of the Python model output (worker/tuning.py).
 // A-18: conservative until CVEFixes multi-language benchmark is complete.
 
@@ -105,8 +105,9 @@ const (
 const (
 	AssemblerBatchSize  = 5
 	SummarizerBatchSize = 5
-	// UniXcoderBatchSize is mirrored in worker/tuning.py — keep in sync.
-	UniXcoderBatchSize = 16
+	// ClassifierBatchSize is the maximum surfaces per classify IPC call.
+	// Mirrored in worker/tuning.py — keep in sync.
+	ClassifierBatchSize = 8
 )
 
 // ── CPG / call-graph depth ───────────────────────────────────────────────────

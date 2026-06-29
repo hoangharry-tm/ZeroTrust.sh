@@ -6,6 +6,8 @@ Local, privacy-first CLI vulnerability scanner. Accepts a directory path, runs d
 
 AI coding assistants ship code faster and at higher volume — so vulnerabilities appear faster and in larger numbers. Traditional SAST tools require cloud upload, are too slow for developer loops, and lack the semantic depth to catch logic-level flaws. ZeroTrust.sh is an upgraded SAST: it scans source code for real, exploitable vulnerabilities and reports them with proof of exploitation. The developer decides what's intentional.
 
+> **AI-generated code is a risk amplifier, not a vulnerability category.** The detection targets are standard semantic and logic-level flaws — IDOR, missing auth checks, business logic bypasses — that appear at elevated frequency in AI-assisted codebases because LLMs generate syntactically plausible code without reasoning about security context. The tool detects these flaws regardless of authorship; AI assistance raises their base rate.
+
 ## Key Features
 
 - **Local & offline** — source code never leaves the machine; no VCS dependency required
@@ -13,11 +15,11 @@ AI coding assistants ship code faster and at higher volume — so vulnerabilitie
 - **Model Integrity Verifier** — cosign/Sigstore Rekor signed registry; WARN for unrecognized models, BLOCK on hash mismatch; gates LLM calls only
 - **Security regression detection** — Differential Indexer tracks auth/validate/sanitize AST nodes; removal of a security-critical function triggers Path B escalation
 - **Dual-path engine** — Path A (pattern, fast) runs in parallel with Path B (semantic, three-tier funnel); neither gates the other
-- **Three-tier cost funnel** — Heuristic Targeting → UniXcoder classifier (CPU) → bounded LLM; ~95% file elimination target; budget-exhausted surfaces emit SUPPRESSED, never silent drop
+- **Three-tier cost funnel** — Heuristic Targeting → CodeT5+ classifier (CPU) → bounded LLM; ~95% file elimination target; budget-exhausted surfaces emit SUPPRESSED, never silent drop
 - **SSVC-aligned output** — BLOCK/HIGH/MEDIUM/LOW/SUPPRESSED mapped to Exploitation/Automatable/Technical Impact; cross-path boost +15pp
 - **HTML report + patches** — self-contained dashboard with unified diff patches per finding
 
-> **A-18 blocking dependency**: UniXcoder F1 measured on BigVul C/C++ — not valid for Python/Java/JS/Go. CVEFixes benchmark required before publishing accuracy figures.
+> **A-18 classifier**: UniXcoder replaced by **CodeT5+** (`Salesforce/codet5p-220m`, 220M params, pre-trained on 8 languages). Fine-tune target: CVEFixes multilingual benchmark. Go CVE coverage in CVEFixes is thin — Go F1 must be measured and documented before publishing accuracy figures.
 
 ## Architecture
 
@@ -27,7 +29,7 @@ Two parallel detection paths (Path A + Path B) preceded by an integrity-checked 
 
 **Path A** — OpenGrep + ast-grep + Joern CPG taint in parallel. LLM Verifier (CoD + SCoT + XGrammar-2) filters FPs; high-confidence rules bypass to Dedup.
 
-**Path B** — Heuristic Targeting → CVE enrichment (Trivy) + BOLAZ dataflow → UniXcoder classifier → Call Chain Assembler (depth-3) → Threat Feature Extractor (batch-5, XGrammar-2 TagDispatch) → Token Budget Controller → LLM Semantic Scan (bounded ReAct, max 3 steps). Scan Security Context Store accumulates inferences for cross-surface detection.
+**Path B** — Heuristic Targeting → CVE enrichment (Trivy) + BOLAZ dataflow → CodeT5+ classifier → Call Chain Assembler (depth-3) → Threat Feature Extractor (batch-5, XGrammar-2 TagDispatch) → Token Budget Controller (observer: logs cost, never gates) → LLM Semantic Scan (bounded ReAct, max 3 steps). Scan Security Context Store accumulates inferences for cross-surface detection.
 
 ## Phased Implementation
 
@@ -44,7 +46,7 @@ Two parallel detection paths (Path A + Path B) preceded by an integrity-checked 
 | Layer | Language |
 |---|---|
 | CLI, orchestration, parallel dispatch, Trivy, HTML report, dedup | **Go** |
-| UniXcoder (PyTorch), XGrammar-2, LangGraph, Threat Feature Extractor | **Python** |
+| CodeT5+ (PyTorch), XGrammar-2, LangGraph, Threat Feature Extractor | **Python** |
 
 - Go module: `github.com/hoangharry-tm/zerotrust` · IPC: newline-delimited JSON (Approach 3: gRPC)
 - LLM: Ollama HTTP API (`localhost:11434`); llama-cpp-python in Python worker
@@ -119,7 +121,7 @@ This project is indexed by GitNexus as **ZeroTrust.sh** (4998 symbols, 10079 rel
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **ZeroTrust.sh** (5097 symbols, 10313 relationships, 161 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **ZeroTrust.sh** (5063 symbols, 10543 relationships, 162 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > Index stale? Run `node .gitnexus/run.cjs analyze` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? `npx gitnexus analyze` (npm 11 crash → `npm i -g gitnexus`; #1939).
 

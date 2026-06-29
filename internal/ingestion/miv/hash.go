@@ -26,6 +26,9 @@ import (
 )
 
 const (
+	maxGGUFKV    = 4096  // sanity limit on GGUF metadata KV pairs
+	maxGGUFDepth = 8     // maximum nesting depth for skipGGUFValue
+
 	ggufMagic = 0x46554747 // "GGUF" in little-endian
 
 	ggufTypeUINT8   = 0
@@ -115,6 +118,9 @@ func readGGUFModelID(modelPath string) (string, error) {
 		return "", fmt.Errorf("read kv count: %w", err)
 	}
 
+	if nKV > maxGGUFKV {
+		return "", fmt.Errorf("gguf kv count %d exceeds sanity limit %d", nKV, maxGGUFKV)
+	}
 	for range nKV {
 		key, err := readGGUFString(r)
 		if err != nil {
@@ -133,7 +139,7 @@ func readGGUFModelID(modelPath string) (string, error) {
 			return readGGUFString(r)
 		}
 
-		if err := skipGGUFValue(r, valueType); err != nil {
+		if err := skipGGUFValue(r, valueType, 0); err != nil {
 			return "", fmt.Errorf("skip value for %q: %w", key, err)
 		}
 	}
@@ -156,7 +162,10 @@ func readGGUFString(r io.Reader) (string, error) {
 	return string(b), nil
 }
 
-func skipGGUFValue(r io.Reader, valueType uint32) error {
+func skipGGUFValue(r io.Reader, valueType uint32, depth int) error {
+	if depth > maxGGUFDepth {
+		return fmt.Errorf("gguf value nesting depth %d exceeds sanity limit %d", depth, maxGGUFDepth)
+	}
 	var fixedSize int
 	switch valueType {
 	case ggufTypeUINT8, ggufTypeINT8, ggufTypeBOOL:
@@ -180,7 +189,7 @@ func skipGGUFValue(r io.Reader, valueType uint32) error {
 			return err
 		}
 		for range count {
-			if err := skipGGUFValue(r, elemType); err != nil {
+			if err := skipGGUFValue(r, elemType, depth+1); err != nil {
 				return err
 			}
 		}

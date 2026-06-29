@@ -44,10 +44,16 @@ _EMPTY_TAINT: dict[str, Any] = {
     "taint_propagates": False,
 }
 _EMPTY_AUTH: dict[str, Any] = {"check_present": False, "check_location": "unknown"}
-_EMPTY_LOGIC: dict[str, Any] = {"resource_id_source": "", "db_sink": "", "check_location": "unknown"}
+_EMPTY_LOGIC: dict[str, Any] = {
+    "resource_id_source": "",
+    "db_sink": "",
+    "check_location": "unknown",
+}
 
 
-def _summarize_function(client: ollama.Client, surface_id: str, fn: dict[str, Any]) -> dict[str, Any]:
+def _summarize_function(
+    client: ollama.Client, surface_id: str, fn: dict[str, Any]
+) -> dict[str, Any]:
     """Call Ollama once for one function, return a Summary dict."""
     node_id: str = fn.get("NodeID", "")
     name: str = fn.get("Name", "")
@@ -77,8 +83,13 @@ def _summarize_function(client: ollama.Client, surface_id: str, fn: dict[str, An
         '"check_location": "<before_query|after_query|unknown>"}}'
     )
 
-    log.debug("summarize: ollama request: %s", json.dumps({"model": MODEL, "messages": [{"role": "user", "content": prompt}], "format": "json"}, indent=2))
-    log.debug("summarize: final_prompt:\n%s", prompt)
+    log.debug(
+        "summarize: ollama request: %s",
+        json.dumps(
+            {"model": MODEL, "messages": [{"role": "user", "content": prompt}], "format": "json"},
+            indent=2,
+        ),
+    )
     try:
         resp = client.chat(
             model=MODEL,
@@ -124,7 +135,10 @@ def handle(payload: dict[str, Any]) -> list[dict[str, Any]]:
     for chain in chains:
         surface_id: str = chain.get("SurfaceID", "")
         functions: list[dict[str, Any]] = chain.get("Functions", [])
-        log.debug("summarize: processing chain", extra={"surface_id": surface_id, "num_functions": len(functions)})
+        log.debug(
+            "summarize: processing chain",
+            extra={"surface_id": surface_id, "num_functions": len(functions)},
+        )
         for fn in functions:
             results.append(_summarize_function(client, surface_id, fn))
     log.debug("summarize: done", extra={"num_results": len(results)})

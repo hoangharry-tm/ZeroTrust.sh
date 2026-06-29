@@ -258,6 +258,11 @@ func (l *Layer) gate3(ctx context.Context, survivors []finding.Finding) (
 	}
 
 	// Pairwise cosine similarity — O(N²) on gate-2 survivors (expected N < 50).
+	if len(survivors) > 200 {
+		slog.Warn("dedup gate3: large survivor set, O(N²) may be slow",
+			"component", "dedup",
+			"count", len(survivors))
+	}
 	merged := make([]bool, len(survivors))
 	var records []MergeRecord
 	var mergeCount int

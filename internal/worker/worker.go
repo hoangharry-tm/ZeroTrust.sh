@@ -16,7 +16,7 @@
 //
 // All Python-side operations communicate through this single process boundary:
 //   - LLM Verifier (Path A): verifies pattern findings with CoD + SCoT reasoning.
-//   - UniXcoder classifier (Path B Tier 2): classifies uncertain surfaces.
+//   - CodeT5+ classifier (Path B Tier 2): classifies uncertain surfaces.
 //   - Semantic Function Summarizer (Path B Tier 2): converts call chains to JSON summaries.
 //   - LLM Semantic Scan (Path B Tier 3): runs the bounded ReAct loop.
 //
@@ -37,7 +37,7 @@
 // Message type routing (worker/main.py dispatcher):
 //
 //	"llm_verify"  → handlers/llm_verify.py   (Path A LLM Verifier)
-//	"classify"    → handlers/classify.py      (UniXcoder classifier)
+//	"classify"    → handlers/classify.py      (CodeT5+ classifier)
 //	"summarize"   → handlers/summarize.py     (Semantic Summarizer)
 //	"llm_scan"    → handlers/llm_scan.py      (LLM Semantic Scan)
 //	"ping"        → built-in health check
@@ -72,7 +72,7 @@ type MessageType string
 const (
 	// MsgLLMVerify routes to the Path A LLM Verifier handler.
 	MsgLLMVerify MessageType = "llm_verify"
-	// MsgClassify routes to the UniXcoder classifier handler.
+	// MsgClassify routes to the CodeT5+ classifier handler.
 	MsgClassify MessageType = "classify"
 	// MsgSummarize routes to the Semantic Function Summarizer handler.
 	MsgSummarize MessageType = "summarize"

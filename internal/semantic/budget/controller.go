@@ -61,6 +61,7 @@ func (c *Controller) rank(inputs []Input) (ranked []RankedSurface, exhausted []I
 		}
 		ranked = append(ranked, RankedSurface{
 			Summary:              inp.Summary,
+			File:                 inp.File,
 			Priority:             priorities[idx],
 			EstimatedTokens:      tokens,
 			ClassifierConfidence: inp.ClassifierConfidence,

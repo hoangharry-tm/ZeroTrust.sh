@@ -39,7 +39,7 @@ A research audit of 40+ papers (2023–2026) and a competitive survey of 14 tool
 | Addition | Validated by | Impact |
 |---|---|---|
 | **Differential Indexer** (ingestion layer) | Incremental analysis literature | ~80–95% cost reduction on repeat scans in agent loops |
-| **Code Vulnerability Classifier — UniXcoder-Base-Nine** (Path B Tier 2) | F1=94.73% on BigVul; VulGNN (Zhu et al. 2026) | Eliminates ~70–80% of LLM surface area before any API call |
+| **Code Vulnerability Classifier — CodeT5+** (Path B Tier 2) | F1=94.73% on BigVul; VulGNN (Zhu et al. 2026) | Eliminates ~70–80% of LLM surface area before any API call |
 | **5-tier confidence scoring** (BLOCK/HIGH/MEDIUM/LOW/SUPPRESSED) | Tencent 2025 — 98.51% precision | Replaces binary HIGH/MEDIUM scheme; enables suppression-aware reporting |
 
 This design is an evolution of Approaches 2 and 3 — not a replacement. The three approaches remain the implementation phases; the Cascading Intelligence Pipeline describes the target steady-state architecture that Approach 3 should converge toward.

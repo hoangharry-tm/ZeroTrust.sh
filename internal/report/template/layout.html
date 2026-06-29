@@ -221,7 +221,7 @@
               data-cwe="{{ .CWE }}"
               data-conf="{{ printf "%.2f" .Confidence }}"
             >
-              <div class="finding-header" onclick="toggleCard(this)">
+              <div class="finding-header" role="button" tabindex="0" onclick="toggleCard(this)">
                 <span class="sev-badge sev-{{ .SeverityLabel }}">{{ .SeverityLabel }}</span>
                 <span class="finding-title">{{ .Justification }}</span>
                 <div class="finding-meta">

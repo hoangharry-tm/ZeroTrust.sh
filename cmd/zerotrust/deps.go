@@ -48,9 +48,9 @@ var (
 // ── public entry point ────────────────────────────────────────────────────────
 
 // checkDeps checks Docker (hard required) and Ollama (optional).
-// It prints a styled status block to stderr, then either exits 1 (Docker
-// missing) or returns (ollamaFound bool) so the caller can wire GPU passthrough.
-func checkDeps() bool {
+// It prints a styled status block to stderr, then returns (ollamaFound bool, error)
+// so the caller can wire GPU passthrough or propagate the error.
+func checkDeps() (bool, error) {
 	slog.Debug("checking runtime dependencies", "component", "deps")
 	dockerVer, dockerOK := dockerVersion()
 	ollamaOK := ollamaReachable(ollamaHostURL)
@@ -58,7 +58,7 @@ func checkDeps() bool {
 	if !dockerOK {
 		slog.Error("Docker not found on PATH", "component", "deps")
 		printDockerError()
-		os.Exit(1)
+		return false, fmt.Errorf("docker not found")
 	}
 
 	slog.Info("dependency check complete",
@@ -67,7 +67,7 @@ func checkDeps() bool {
 		"ollama_ok", ollamaOK,
 	)
 	printDepStatus(dockerVer, ollamaOK)
-	return ollamaOK
+	return ollamaOK, nil
 }
 
 // ── status block ─────────────────────────────────────────────────────────────

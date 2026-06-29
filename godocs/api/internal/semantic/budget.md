@@ -8,7 +8,7 @@ import "github.com/hoangharry-tm/zerotrust/internal/semantic/budget"
 
 Package budget implements the Token Budget Controller \(Path B Tier 3\).
 
-The Controller ranks semantic summaries by priority and enforces a hard per\-scan token cap. Surfaces that exceed the cap are never silently dropped — they are returned in the exhausted slice and the caller must emit a SUPPRESSED finding with SuppressReasonBudgetExhausted for each one.
+The Controller ranks semantic summaries by priority and warns about cost, but never suppresses analysis. It acts as an observer, not a gate — all surfaces reach the LLM tier regardless of the token cap. Use ExhaustedToRanked to convert exhausted inputs back to RankedSurfaces for the LLM scan call.
 
 Priority ranking formula:
 
@@ -32,6 +32,7 @@ Token estimation: each surface's token cost is estimated from the length of its 
   - [func New\(tokenCap int, w1, w2, w3 float64\) \*Controller](<#New>)
   - [func \(c \*Controller\) Rank\(inputs \[\]Input\) \(ranked \[\]RankedSurface, exhausted \[\]Input\)](<#Controller.Rank>)
   - [func \(c \*Controller\) RankWithStats\(inputs \[\]Input\) \(ranked \[\]RankedSurface, exhausted \[\]Input, stats Stats\)](<#Controller.RankWithStats>)
+  - [func \(c \*Controller\) ExhaustedToRanked\(exhausted \[\]Input\) \[\]RankedSurface](<#Controller.ExhaustedToRanked>)
 - [type Input](<#Input>)
 - [type RankedSurface](<#RankedSurface>)
 - [type Stats](<#Stats>)
@@ -57,9 +58,11 @@ func New(tokenCap int, w1, w2, w3 float64) *Controller
 
 New returns a Controller with the given token cap and ranking weights. tokenCap ≤ 0 defaults to 50 000.
 
+Note: The Controller no longer gates analysis — it observes, ranks, and warns about cost but never suppresses scanning. All surfaces reach the LLM tier regardless of cap. See ExhaustedToRanked.
+
 Parameters:
 
-- tokenCap: hard per\-scan token budget. Surfaces beyond the cap are exhausted.
+- tokenCap: per\-scan token budget \(warning threshold, not a hard gate\).
 - w1: weight for CVSS normalised score \(0.0–1.0\).
 - w2: weight for classifier uncertainty \(1 \- classifier\_confidence\).
 - w3: weight for reachability from entry point \(1 / CallGraphDepth\).
@@ -73,7 +76,7 @@ func (c *Controller) Rank(inputs []Input) (ranked []RankedSurface, exhausted []I
 
 Rank sorts inputs by priority \(descending\) and partitions them into ranked \(fits within token cap\) and exhausted \(exceeds cap\) slices.
 
-The caller must emit a SUPPRESSED finding with SuppressReasonBudgetExhausted for each entry in the exhausted slice — they must never be silently dropped.
+Callers should merge both slices via ExhaustedToRanked when all surfaces must be scanned \(observer mode\).
 
 <a name="Controller.RankWithStats"></a>
 ### func \(\*Controller\) [RankWithStats](<https://github.com/hoangharry-tm/ZeroTrust.sh/blob/main/internal/semantic/budget/budget.go#L122>)

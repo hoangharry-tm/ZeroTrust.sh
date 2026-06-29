@@ -221,7 +221,7 @@ func (s *Scanner) scanSurface(ctx context.Context, surface budget.RankedSurface,
 //
 // Step 1 (T3): transfer constraint — does tainted data flow from caller into this surface?
 // Step 2 (T4): callee taint — does this surface propagate taint to any callee?
-// Step 3 (T5, stub): trigger constraint at sink — implemented in ML3.4 T5.
+		// Step 3 (T5): trigger constraint at sink — validates exploit preconditions before confirming.
 func (s *Scanner) reactLoop(ctx context.Context, surface budget.RankedSurface, prior *scs.Result) (ScanResult, error) {
 	slog.Debug("llmscan: reactLoop starting", slog.String("surface_id", surface.SurfaceID))
 	var priorInfs []scs.Inference
@@ -361,7 +361,7 @@ func toFinding(result ScanResult, surface budget.RankedSurface) finding.Finding 
 
 	return finding.Finding{
 		ID:             finding.ComputeID(result.CWE, surface.SurfaceID, surface.FunctionID),
-		Path:           surface.SurfaceID, // ponytail: file path not threaded to this stage; SurfaceID used as proxy
+		Path:           surface.File,
 		CWE:            result.CWE,
 		SeverityLabel:  severity,
 		Confidence:     result.Confidence,

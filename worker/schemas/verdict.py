@@ -28,7 +28,7 @@ class LLMVerifierResult(BaseModel):
     asc_rounds: int = Field(default=0, ge=0)
 
 
-# ── UniXcoder Classifier ──────────────────────────────────────────────────────
+# ── CodeT5+ Classifier ──────────────────────────────────────────────────────
 
 class ClassifierLabel(str, Enum):
     VULNERABLE = "vulnerable"

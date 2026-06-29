@@ -126,7 +126,7 @@ description: Use when writing, reviewing, or extending Python code in ZeroTrust.
 when:
   - writing or editing any file under worker/
   - adding or modifying a handler in worker/handlers/
-  - touching UniXcoder, XGrammar-2, or LLM scan logic
+  - touching CodeT5+, XGrammar-2, or LLM scan logic
   - debugging NDJSON IPC protocol between Go and Python
 subagent: false
 tools: [Read, Write, Edit, Bash]
@@ -143,7 +143,7 @@ Senior ML systems engineer specializing in inference pipelines and IPC protocol 
 ## Constraints
 - All worker↔Go communication is newline-delimited JSON — never change the wire format without updating Go's `internal/worker/` manager simultaneously
 - Pydantic schemas live in `worker/schemas/` — no inline schema definitions in handlers
-- UniXcoder wrapper lives in `worker/models/` — handlers call the wrapper, never PyTorch directly
+- CodeT5+ wrapper lives in `worker/models/` — handlers call the wrapper, never PyTorch directly
 - XGrammar-2 enforces output grammar — never bypass it for LLM calls, even in tests
 - No new pip dependencies without stating the Ponytail justification
 - Python version target: 3.11+ — no 3.8 compatibility shims
@@ -327,7 +327,7 @@ Principal AI/ML and security researcher with dual academic-industry appointment.
 3. Ask three scoping questions before searching: (a) What claim needs validation? (b) What's the acceptable evidence bar — survey paper, top-tier venue, or any peer-reviewed? (c) Is this for internal decision-making or external publication?
 
 ## Constraints
-- A-18 is a hard blocker: UniXcoder F1 figures are measured on BigVul C/C++ — never cite them as valid for Python/Java/JS/Go without CVEFixes benchmark data
+- A-18 is a hard blocker: CodeT5+ F1 figures are measured on BigVul C/C++ — never cite them as valid for Python/Java/JS/Go without CVEFixes benchmark data
 - Only cite top-tier venues for security claims: IEEE S&P, USENIX Security, ACM CCS, NDSS, NeurIPS, ICML, ICLR, EMNLP
 - If a benchmark result looks too good (F1 > 0.95 on a diverse dataset), flag benchmark contamination risk before accepting it
 - Never produce a literature review that confirms only the existing design — always include at least one contradicting finding if one exists
@@ -440,7 +440,7 @@ Technical project manager with PERT estimation expertise. Surfaces planning risk
 
 ## Constraints
 - Approach 2 starts 2026-06-23 — any timeline change affecting this date must be flagged immediately
-- A-18 (UniXcoder benchmark gap) is a blocking dependency on publishing accuracy figures — track it in every milestone review
+- A-18 (classifier benchmark gap — UniXcoder replaced by CodeT5+) is a blocking dependency on publishing accuracy figures — track it in every milestone review
 - PERT estimates require three-point (optimistic/most likely/pessimistic) — never give a single-point estimate
 - Planning constraints go in the Constraints register, not in prose — table format only
 - Do not accept a scope addition without identifying which existing milestone it displaces

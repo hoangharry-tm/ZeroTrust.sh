@@ -22,7 +22,7 @@ package main
 //  2. PATH A  — OpenGrep + ast-grep + Joern CPG run in parallel goroutines.
 //     LLM Verifier filters false positives from pattern findings.
 //  3. PATH B  — Sequential tier pipeline:
-//     Heuristic Targeting → CVE Enrichment → UniXcoder Classifier →
+//     Heuristic Targeting → CVE Enrichment → CodeT5+ Classifier →
 //     Call Chain Assembler → Semantic Summarizer → Token Budget → LLM Scan.
 //     Each tier feeds directly into the next.
 //     Scan Security Context Store accumulates inferences across surfaces.
@@ -144,6 +144,39 @@ func (h *teeHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 
 func (h *teeHandler) WithGroup(name string) slog.Handler {
 	return &teeHandler{json: h.json.WithGroup(name), text: h.text.WithGroup(name)}
+}
+
+// eventsHandler wraps a slog.Handler and also sends Info+ records to the
+// pipeline events channel so they appear in the SSE dialog's console panel.
+type eventsHandler struct {
+	next   slog.Handler
+	events chan<- output.Event
+}
+
+func (h *eventsHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	return h.next.Enabled(ctx, level)
+}
+
+func (h *eventsHandler) Handle(ctx context.Context, r slog.Record) error {
+	if r.Level >= slog.LevelDebug && h.events != nil {
+		msg := fmt.Sprintf("%s  %s", r.Level, r.Message)
+		r.Attrs(func(a slog.Attr) bool {
+			if a.Value.Kind() == slog.KindString {
+				msg += " " + a.Key + "=" + a.Value.String()
+			}
+			return true
+		})
+		output.Emit(h.events, output.Event{Kind: output.EventLog, Log: msg})
+	}
+	return h.next.Handle(ctx, r)
+}
+
+func (h *eventsHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &eventsHandler{next: h.next.WithAttrs(attrs), events: h.events}
+}
+
+func (h *eventsHandler) WithGroup(name string) slog.Handler {
+	return &eventsHandler{next: h.next.WithGroup(name), events: h.events}
 }
 
 // newPipeline constructs the full pipeline from cfg.
@@ -283,46 +316,106 @@ func newPipeline(ctx context.Context, cfg ScanConfig) (*pipeline, error) {
 // The caller is responsible for closing events after run returns.
 func (p *pipeline) run(ctx context.Context, events chan<- output.Event) error {
 	start := time.Now()
-	p.logger.Info(
-		"scan started",
-		"component", "scan",
-		"target", p.cfg.Target,
-		"mode", p.cfg.ScanMode,
-	)
 
-	// ── 0. JOERN PRE-START ────────────────────────────────────────────────────
-	// Spawn the Joern subprocess before ingestion so the JVM is warm by the
-	// time Path A/B need it. Non-fatal: if Joern fails to start, taint analysis
-	// is skipped; OpenGrep + ast-grep + instrscan continue regardless.
-	if p.cfg.JoernBin != "" {
-		if err := p.joern.Start(ctx); err != nil {
-			if errors.Is(err, joern.ErrPortInUse) {
-				p.resolvePortConflict(ctx, events)
-			} else {
-				output.Emit(events, output.Event{
-					Kind: output.EventLog,
-					Log:  fmt.Sprintf("warn: joern start: %v — taint analysis disabled for this scan", err),
-				})
-			}
-		}
+	p.logger = slog.New(&eventsHandler{next: p.logger.Handler(), events: events})
+	slog.SetDefault(p.logger)
+
+	p.logger.Info("scan started",
+		"component", "scan", "target", p.cfg.Target, "mode", p.cfg.ScanMode)
+
+	// Step 0: Joern pre-start
+	p.startJoern(ctx, events)
+
+	// Step 1: Ingestion
+	ingResult, err := p.runIngestion(ctx, events)
+	if err != nil {
+		return err
+	}
+	changedCount := 0
+	if ingResult.ChangeSet != nil {
+		changedCount = len(ingResult.ChangeSet.Changed)
 	}
 
-	// ── 1. INGEST ────────────────────────────────────────────────────────────
+	// Register project and scan run
+	p.registerRun(ctx, ingResult)
+
+	// Step 1.5: CPG build/load + scope resolution
+	scopeFiles := p.resolveScope(ctx, ingResult, events)
+
+	// Steps 2+3: Path A ∥ Path B (parallel detection)
+	findCh := make(finding.Channel, 256)
+	g, gctx := errgroup.WithContext(ctx)
+	g.Go(func() error { return p.runPathA(gctx, ingResult, scopeFiles, findCh, events) })
+	g.Go(func() error { return p.runPathB(gctx, ingResult, findCh, events) })
+	var closeOnce sync.Once
+	go func() {
+		_ = g.Wait()
+		closeOnce.Do(func() { close(findCh) })
+	}()
+	var allFindings []finding.Finding
+	for f := range findCh {
+		fc := f
+		allFindings = append(allFindings, fc)
+		output.Emit(events, output.Event{Kind: output.EventFinding, Finding: &fc})
+	}
+	if err := g.Wait(); err != nil {
+		return fmt.Errorf("detection paths: %w", err)
+	}
+
+	// Step 4: Dedup + SSVC
+	scored, err := p.runDedup(ctx, allFindings, events)
+	if err != nil {
+		return err
+	}
+
+	// Step 4a: Persist findings
+	p.persistFindings(ctx, ingResult, scored)
+
+	// Step 5: Patch generation
+	if err := p.generatePatches(ctx, scored); err != nil {
+		return err
+	}
+
+	// Step 6: Report
+	p.generateReport(start, scored, events)
+
+	// Commit scan state + finalize
+	p.finalize(ctx, ingResult, start, changedCount, scored, events)
+	return nil
+}
+
+// startJoern spawns the Joern subprocess before ingestion so the JVM is warm.
+// Non-fatal: failures disable taint analysis but pattern matching continues.
+func (p *pipeline) startJoern(ctx context.Context, events chan<- output.Event) {
+	if p.cfg.JoernBin == "" {
+		return
+	}
+	if err := p.joern.Start(ctx); err != nil {
+		if errors.Is(err, joern.ErrPortInUse) {
+			p.resolvePortConflict(ctx, events)
+		} else {
+			output.Emit(events, output.Event{
+				Kind: output.EventLog,
+				Log:  fmt.Sprintf("warn: joern start: %v — taint analysis disabled for this scan", err),
+			})
+		}
+	}
+}
+
+// runIngestion runs the ingestion stage and gates LLM calls on MIV block.
+func (p *pipeline) runIngestion(ctx context.Context, events chan<- output.Event) (*ingestion.Result, error) {
 	output.Emit(events, output.Event{Kind: output.EventStageStart, Stage: "ingestion"})
 	ingResult, err := p.ingester.Run(ctx, ingestion.Config{
 		ProjectID:   p.cfg.ProjectID,
 		ProjectRoot: p.cfg.Target,
-		ModelPath:   "", // GGUF path resolved from cfg.ModelName in L0.3
+		ModelPath:   "",
 	})
 	if err != nil {
-		return fmt.Errorf("ingestion: %w", err)
+		return nil, fmt.Errorf("ingestion: %w", err)
 	}
-	// Gate all Go-side LLM calls when MIV detected a known model with a bad hash.
-	// CPG build and pattern matching proceed regardless.
 	if ingResult.BlockLLM {
 		p.llm.SetMIVBlocked()
 	}
-
 	changedCount := 0
 	if ingResult.ChangeSet != nil {
 		changedCount = len(ingResult.ChangeSet.Changed)
@@ -335,100 +428,41 @@ func (p *pipeline) run(ctx context.Context, events chan<- output.Event) error {
 			Detail: fmt.Sprintf("%d files changed", changedCount),
 		},
 	})
+	return ingResult, nil
+}
 
-	// Register project and scan run now that we have the resolved ProjectID.
-	// Must happen before UpsertFinding to satisfy the FK constraint.
-	if p.db != nil {
-		if upsertErr := p.db.UpsertProject(ctx, sqlite.ProjectRow{
-			ProjectID: ingResult.ProjectID,
-			RootPath:  p.cfg.Target,
-		}); upsertErr != nil {
-			p.logger.Warn("failed to upsert project record", "err", upsertErr)
-		}
-		if createErr := p.db.CreateScanRun(ctx, sqlite.ScanRunRow{
-			RunID:     p.runID,
-			ProjectID: ingResult.ProjectID,
-			ScanMode:  strings.ToLower(p.cfg.ScanMode),
-		}); createErr != nil {
-			p.logger.Warn("failed to create scan_run record", "err", createErr)
-		}
+// registerRun upserts the project record and creates a scan run in SQLite.
+func (p *pipeline) registerRun(ctx context.Context, ingResult *ingestion.Result) {
+	if p.db == nil {
+		return
 	}
+	if upsertErr := p.db.UpsertProject(ctx, sqlite.ProjectRow{
+		ProjectID: ingResult.ProjectID,
+		RootPath:  p.cfg.Target,
+	}); upsertErr != nil {
+		p.logger.Warn("failed to upsert project record", "err", upsertErr)
+	}
+	if createErr := p.db.CreateScanRun(ctx, sqlite.ScanRunRow{
+		RunID:     p.runID,
+		ProjectID: ingResult.ProjectID,
+		ScanMode:  strings.ToLower(p.cfg.ScanMode),
+	}); createErr != nil {
+		p.logger.Warn("failed to create scan_run record", "err", createErr)
+	}
+}
 
-	// ── 1.5. CPG BUILD / LOAD ──────────────────────────────────────────────────
-	// Build or load the CPG from the scope files. On first scan this is a full
-	// build; on repeat scans it loads a snapshot and applies incremental patches.
-	// Non-fatal: if the CPG cannot be built, taint analysis is skipped but
-	// OpenGrep + ast-grep + instrscan continue.
-	// On repeat scans with no changed files, still load the serialized CPG so
-	// that Path B taint analysis can run against the previously built graph.
+// resolveScope builds or loads the CPG and returns the scope file list.
+// Non-fatal: if the CPG cannot be built, scope falls back to the raw changeset
+// and taint analysis is disabled.
+func (p *pipeline) resolveScope(ctx context.Context, ingResult *ingestion.Result, events chan<- output.Event) []string {
+	// Load cached CPG on no-change scans.
 	if p.cfg.JoernBin != "" && (ingResult.ChangeSet == nil || len(ingResult.ChangeSet.Changed) == 0) {
-		cpgPath := cpgSnapshotPath(p.cfg.ProjectID)
-		if _, statErr := os.Stat(cpgPath); statErr == nil {
-			if loadErr := p.joern.LoadCPG(ctx, cpgPath); loadErr != nil {
-				p.logger.Warn("joern: failed to load cached CPG on no-change scan", "err", loadErr)
-			} else {
-				p.logger.Info("joern: loaded cached CPG for no-change scan", "path", cpgPath)
-			}
-		}
+		p.loadCachedCPG(ctx, ingResult, events)
 	}
 
 	var scopeFiles []string
 	if ingResult.ChangeSet != nil && len(ingResult.ChangeSet.Changed) > 0 {
-		changed := ingResult.ChangeSet.Changed
-
-		// Detect working modules and determine scope.
-		modules := joern.DetectWorkingModules(changed)
-		if p.cfg.JoernBin != "" {
-			graph := p.joern.GraphWithContext(ctx)
-
-			// Pre-flag dangerous sinks in the changed files so they are always
-			// in scope regardless of module segmentation mode. Best-effort:
-			// failures just mean no pre-flagged sinks for this scan.
-			if preFlagErr := p.joern.PreFlagSinks(ctx, changed); preFlagErr != nil {
-				p.logger.Warn(
-					"sink pre-flagging failed, continuing without pre-flagged sinks",
-					"component", "scan",
-					"err", preFlagErr,
-				)
-			} else {
-				p.logger.Info(
-					"sink pre-flagging complete",
-					"component", "scan",
-					"sinks", len(p.joern.PreFlaggedSinks()),
-				)
-			}
-
-			// Attempt CPG build or load + incremental patch.
-			cpgPath := cpgSnapshotPath(p.cfg.ProjectID)
-			buildErr := p.buildOrLoadCPG(ctx, cpgPath, changed, events)
-			if buildErr == nil {
-				// CPG ready — expand scope via modules.
-				depth := moduleDepthForMode(p.cfg.ScanMode)
-				if depth > 0 {
-					// First expand change set with one-hop CPG neighbours.
-					expanded, expandErr := diffindex.ExpandWithCPG(ctx, ingResult.ChangeSet, graph)
-					if expandErr != nil {
-						p.logger.Error(
-							"cpg scope expansion failed, using pre-expansion modules",
-							"component", "scan",
-							"err", expandErr,
-						)
-					} else {
-						modules = joern.DetectWorkingModules(expanded.Changed)
-					}
-					joern.ExpandModuleScope(modules, graph, depth)
-				}
-				scopeFiles = joern.FilterScopeByLanguage(joern.FlattenScope(modules))
-			} else {
-				output.Emit(events, output.Event{
-					Kind: output.EventLog,
-					Log:  fmt.Sprintf("warn: cpg build: %v — taint analysis disabled", buildErr),
-				})
-				scopeFiles = joern.FilterScopeByLanguage(changed)
-			}
-		} else {
-			scopeFiles = changed
-		}
+		scopeFiles = p.buildScopeFromChanges(ctx, ingResult, events)
 	}
 
 	output.Emit(events, output.Event{
@@ -439,46 +473,81 @@ func (p *pipeline) run(ctx context.Context, events chan<- output.Event) error {
 			Detail: fmt.Sprintf("%d files in scope after expansion", len(scopeFiles)),
 		},
 	})
+	return scopeFiles
+}
 
-	// ── 2 + 3. PATH A ∥ PATH B ───────────────────────────────────────────────
-	// Both paths write findings to a shared buffered channel; results are
-	// collected by the drain goroutine below. Neither path gates the other.
-	findCh := make(finding.Channel, 256)
+// loadCachedCPG attempts to load a serialized CPG snapshot for no-change scans.
+func (p *pipeline) loadCachedCPG(ctx context.Context, ingResult *ingestion.Result, events chan<- output.Event) {
+	cpgPath := cpgSnapshotPath(p.cfg.ProjectID)
+	if _, statErr := os.Stat(cpgPath); statErr == nil {
+		if loadErr := p.joern.LoadCPG(ctx, cpgPath); loadErr != nil {
+			p.logger.Warn("joern: failed to load cached CPG on no-change scan", "err", loadErr)
+		} else {
+			p.logger.Info("joern: loaded cached CPG for no-change scan", "path", cpgPath)
+		}
+	} else if ingResult.ChangeSet != nil && len(ingResult.ChangeSet.AllStates) > 0 {
+		allFiles := make([]string, 0, len(ingResult.ChangeSet.AllStates))
+		for _, s := range ingResult.ChangeSet.AllStates {
+			allFiles = append(allFiles, s.FilePath)
+		}
+		p.logger.Info("joern: cached CPG not found — building fresh CPG from all project files",
+			"files", len(allFiles))
+		if buildErr := p.buildOrLoadCPG(ctx, cpgPath, allFiles, events); buildErr != nil {
+			p.logger.Warn("joern: fresh CPG build failed on no-change scan", "err", buildErr)
+		}
+	}
+}
 
-	g, gctx := errgroup.WithContext(ctx)
+// buildScopeFromChanges builds the CPG for changed files and expands scope via modules.
+func (p *pipeline) buildScopeFromChanges(ctx context.Context, ingResult *ingestion.Result, events chan<- output.Event) []string {
+	changed := ingResult.ChangeSet.Changed
+	modules := joern.DetectWorkingModules(changed)
 
-	g.Go(func() error {
-		defer func() { /* Path A done; Path B may still be running */ }()
-		return p.runPathA(gctx, ingResult, scopeFiles, findCh, events)
-	})
-	g.Go(func() error {
-		return p.runPathB(gctx, ingResult, findCh, events)
-	})
-
-	// Close findCh once both paths finish so the drain loop can exit.
-	var closeOnce sync.Once
-	go func() {
-		_ = g.Wait() // errors surfaced below via the second g.Wait()
-		closeOnce.Do(func() { close(findCh) })
-	}()
-
-	// Drain findings; emit each one to the renderer.
-	var allFindings []finding.Finding
-	for f := range findCh {
-		fc := f
-		allFindings = append(allFindings, fc)
-		output.Emit(events, output.Event{Kind: output.EventFinding, Finding: &fc})
+	if p.cfg.JoernBin == "" {
+		return joern.FilterScopeByLanguage(changed)
 	}
 
-	if err := g.Wait(); err != nil {
-		return fmt.Errorf("detection paths: %w", err)
+	graph := p.joern.GraphWithContext(ctx)
+
+	// Pre-flag dangerous sinks in changed files.
+	if preFlagErr := p.joern.PreFlagSinks(ctx, changed); preFlagErr != nil {
+		p.logger.Warn("sink pre-flagging failed, continuing without pre-flagged sinks",
+			"component", "scan", "err", preFlagErr)
+	} else {
+		p.logger.Info("sink pre-flagging complete",
+			"component", "scan", "sinks", len(p.joern.PreFlaggedSinks()))
 	}
 
-	// ── 4. DEDUP ──────────────────────────────────────────────────────────────
+	cpgPath := cpgSnapshotPath(p.cfg.ProjectID)
+	buildErr := p.buildOrLoadCPG(ctx, cpgPath, changed, events)
+	if buildErr != nil {
+		output.Emit(events, output.Event{
+			Kind: output.EventLog,
+			Log:  fmt.Sprintf("warn: cpg build: %v — taint analysis disabled", buildErr),
+		})
+		return joern.FilterScopeByLanguage(changed)
+	}
+
+	depth := moduleDepthForMode(p.cfg.ScanMode)
+	if depth > 0 {
+		expanded, expandErr := diffindex.ExpandWithCPG(ctx, ingResult.ChangeSet, graph)
+		if expandErr != nil {
+			p.logger.Error("cpg scope expansion failed, using pre-expansion modules",
+				"component", "scan", "err", expandErr)
+		} else {
+			modules = joern.DetectWorkingModules(expanded.Changed)
+		}
+		joern.ExpandModuleScope(modules, graph, depth)
+	}
+	return joern.FilterScopeByLanguage(joern.FlattenScope(modules))
+}
+
+// runDedup applies Gate 1-4 dedup and SSVC scoring, emitting stage events.
+func (p *pipeline) runDedup(ctx context.Context, allFindings []finding.Finding, events chan<- output.Event) ([]finding.Finding, error) {
 	output.Emit(events, output.Event{Kind: output.EventStageStart, Stage: "dedup"})
 	scored, err := p.dd.Process(ctx, allFindings)
 	if err != nil {
-		return fmt.Errorf("dedup: %w", err)
+		return nil, fmt.Errorf("dedup: %w", err)
 	}
 	output.Emit(events, output.Event{
 		Kind:  output.EventStageEnd,
@@ -488,42 +557,44 @@ func (p *pipeline) run(ctx context.Context, events chan<- output.Event) error {
 			Detail: fmt.Sprintf("%d findings after dedup", len(scored)),
 		},
 	})
+	return scored, nil
+}
 
-	// ── 4a. PERSIST FINDINGS ─────────────────────────────────────────────────
-	if p.db != nil && p.runID != "" {
-		now := time.Now().Unix()
-		for i := range scored {
-			f := &scored[i]
-			row := sqlite.FindingRow{
-				FindingID:      f.ID,
-				ProjectID:      ingResult.ProjectID,
-				RunID:          p.runID,
-				FilePath:       f.Path,
-				LineStart:      f.LineRange.Start,
-				LineEnd:        f.LineRange.End,
-				CWE:            f.CWE,
-				Severity:       string(f.SeverityLabel),
-				Confidence:     f.Confidence,
-				SourcePath:     string(f.SourcePath),
-				RuleID:         f.RuleID,
-				MatchedCode:    f.MatchedCode,
-				Justification:  f.Justification,
-				SuppressReason: string(f.SuppressReason),
-				FirstSeenAt:    now,
-				LastSeenAt:     now,
-			}
-			if upsertErr := p.db.UpsertFinding(ctx, row); upsertErr != nil {
-				p.logger.Warn(
-					"failed to persist finding",
-					"component", "scan",
-					"finding_id", f.ID,
-					"err", upsertErr,
-				)
-			}
+// persistFindings writes deduped findings to the SQLite store.
+func (p *pipeline) persistFindings(ctx context.Context, ingResult *ingestion.Result, scored []finding.Finding) {
+	if p.db == nil || p.runID == "" {
+		return
+	}
+	now := time.Now().Unix()
+	for i := range scored {
+		f := &scored[i]
+		row := sqlite.FindingRow{
+			FindingID:      f.ID,
+			ProjectID:      ingResult.ProjectID,
+			RunID:          p.runID,
+			FilePath:       f.Path,
+			LineStart:      f.LineRange.Start,
+			LineEnd:        f.LineRange.End,
+			CWE:            f.CWE,
+			Severity:       string(f.SeverityLabel),
+			Confidence:     f.Confidence,
+			SourcePath:     string(f.SourcePath),
+			RuleID:         f.RuleID,
+			MatchedCode:    f.MatchedCode,
+			Justification:  f.Justification,
+			SuppressReason: string(f.SuppressReason),
+			FirstSeenAt:    now,
+			LastSeenAt:     now,
+		}
+		if upsertErr := p.db.UpsertFinding(ctx, row); upsertErr != nil {
+			p.logger.Warn("failed to persist finding",
+				"component", "scan", "finding_id", f.ID, "err", upsertErr)
 		}
 	}
+}
 
-	// ── 5. PATCH ──────────────────────────────────────────────────────────────
+// generatePatches runs patch generation for all scored findings.
+func (p *pipeline) generatePatches(ctx context.Context, scored []finding.Finding) error {
 	patches, err := p.gen.Generate(ctx, scored)
 	if err != nil {
 		return fmt.Errorf("patch generation: %w", err)
@@ -538,16 +609,21 @@ func (p *pipeline) run(ctx context.Context, events chan<- output.Event) error {
 			scored[i].PatchStatus = string(pp.Status)
 		}
 	}
+	return nil
+}
 
-	// ── 6. REPORT ─────────────────────────────────────────────────────────────
+// generateReport creates the HTML report file from scored findings.
+func (p *pipeline) generateReport(start time.Time, scored []finding.Finding, events chan<- output.Event) {
 	if err := os.MkdirAll(filepath.Dir(p.cfg.ReportPath), 0o750); err != nil {
-		return fmt.Errorf("mkdir report dir: %w", err)
+		p.logger.Error("failed to create report directory", "err", err)
+		return
 	}
 	f, err := os.Create(p.cfg.ReportPath)
 	if err != nil {
-		return fmt.Errorf("create report: %w", err)
+		p.logger.Error("failed to create report file", "err", err)
+		return
 	}
-	defer f.Close() //nolint:errcheck
+	defer f.Close()
 
 	info := report.ScanInfo{
 		ProjectName:  filepath.Base(p.cfg.Target),
@@ -556,11 +632,12 @@ func (p *pipeline) run(ctx context.Context, events chan<- output.Event) error {
 		ScanDuration: time.Since(start).Round(time.Millisecond).String(),
 	}
 	if err := p.rep.Render(f, info, scored); err != nil {
-		return fmt.Errorf("render report: %w", err)
+		p.logger.Error("failed to render report", "err", err)
 	}
+}
 
-	// Advance the differential-index baseline so the next run only re-scans changes.
-	// Non-fatal: a commit failure just means the next scan is a full scan.
+// finalize commits scan state, logs completion stats, and emits EventDone.
+func (p *pipeline) finalize(ctx context.Context, ingResult *ingestion.Result, start time.Time, changedCount int, scored []finding.Finding, events chan<- output.Event) {
 	if err := p.ingester.CommitScan(ctx, ingResult.ProjectID, ingResult.ChangeSet); err != nil {
 		output.Emit(events, output.Event{
 			Kind: output.EventLog,
@@ -568,19 +645,15 @@ func (p *pipeline) run(ctx context.Context, events chan<- output.Event) error {
 		})
 	}
 
-	// Build per-severity counts for the done summary.
 	bySeverity := make(map[finding.SeverityLabel]int, 5)
 	for _, s := range scored {
 		bySeverity[s.SeverityLabel]++
 	}
 	elapsed := time.Since(start)
-	p.logger.Info(
-		"scan complete",
-		"component", "scan",
-		"findings", len(scored),
-		"elapsed", elapsed,
-		"report", p.cfg.ReportPath,
-	)
+	p.logger.Info("scan complete",
+		"component", "scan", "findings", len(scored),
+		"elapsed", elapsed, "report", p.cfg.ReportPath)
+
 	if p.db != nil && p.runID != "" {
 		if finalErr := p.db.FinalizeScanRun(ctx, p.runID, time.Now().Unix(), changedCount, len(scored)); finalErr != nil {
 			p.logger.Warn("failed to finalize scan_run", "component", "scan", "err", finalErr)
@@ -596,7 +669,6 @@ func (p *pipeline) run(ctx context.Context, events chan<- output.Event) error {
 			ReportPath:    p.cfg.ReportPath,
 		},
 	})
-	return nil
 }
 
 // runPathA executes all Path A detectors concurrently, then runs the LLM Verifier
@@ -778,7 +850,7 @@ func (p *pipeline) runPathB(ctx context.Context, _ *ingestion.Result, ch finding
 		return fmt.Errorf("path b enrichment: %w", err)
 	}
 
-	// B3: UniXcoder Classifier — filter to surfaces that must escalate to LLM.
+	// B3: CodeT5+ Classifier — filter to surfaces that must escalate to LLM.
 	classified, err := p.clf.Classify(ctx, enriched)
 	if err != nil {
 		return fmt.Errorf("path b classifier: %w", err)
@@ -811,36 +883,26 @@ func (p *pipeline) runPathB(ctx context.Context, _ *ingestion.Result, ch finding
 		return fmt.Errorf("path b summarizer: %w", err)
 	}
 
-	// B6: Token Budget — rank surfaces by priority within the token cap.
+	// B6: Token Budget — now an observer, not a gate.
+	// Logs/warns about cost but never suppresses analysis.
+	// All surfaces below and above the cap are passed to the LLM scan.
 	inputs := buildBudgetInputs(summaries, enriched, clfByID, surfaceByID)
 	ranked, exhausted, budStats := p.bud.RankWithStats(inputs)
-
-	// Emit SUPPRESSED findings for surfaces that exceeded the token cap.
-	for _, ex := range exhausted {
-		s := surfaceByID[ex.Summary.SurfaceID]
-		f := finding.Finding{
-			SeverityLabel:  finding.SeveritySuppressed,
-			Path:           s.File,
-			Justification:  "token budget exhausted for " + s.FunctionName + "; increase --token-cap to scan",
-			SuppressReason: finding.SuppressReasonBudgetExhausted,
-			SourcePath:     finding.SourceSemantic,
-		}
-		select {
-		case ch <- f:
-		default:
-		}
+	if len(exhausted) > 0 {
+		slog.Warn("budget: surfaces exceed token cap — scanning all surfaces anyway",
+			"exhausted", len(exhausted), "total", budStats.Total,
+			"tokens_used_est", budStats.TokensUsed+len(exhausted)*200,
+		)
 	}
+	allSurfaces := append(ranked, p.bud.ExhaustedToRanked(exhausted)...)
 
 	// B7: LLM Semantic Scan.
-	llmFindings, err := p.scan.WithStore(p.store).Scan(ctx, ranked)
+	llmFindings, err := p.scan.WithStore(p.store).Scan(ctx, allSurfaces)
 	if err != nil {
 		return fmt.Errorf("path b llm scan: %w", err)
 	}
 	for _, f := range llmFindings {
-		select {
-		case ch <- f:
-		default:
-		}
+		ch <- f
 	}
 
 	output.Emit(events, output.Event{
@@ -896,6 +958,7 @@ func buildBudgetInputs(
 		}
 		if s, ok := surfaceByID[sum.SurfaceID]; ok {
 			inp.CallGraphDepth = s.CallGraphDepth
+			inp.File = s.File
 		}
 		inputs = append(inputs, inp)
 	}

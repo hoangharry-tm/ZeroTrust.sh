@@ -6,7 +6,7 @@
 </picture>
 
 <p align="center">
-  <strong>Local, offline SAST for code written by AI coding agents.</strong><br>
+  <strong>Local, offline SAST that catches semantic and logic-level flaws at elevated frequency in AI-assisted codebases.</strong><br>
   Source never leaves your machine. No VCS token. No cloud upload. No trust.
 </p>
 
@@ -24,9 +24,9 @@
 
 ## The Problem
 
-AI coding agents (Cursor, Cline, Aider, GitHub Copilot Workspace) generate functional code at speed. They also introduce vulnerabilities that existing SAST tools were not designed to catch.
+AI coding agents (Cursor, Cline, Aider, GitHub Copilot Workspace) generate syntactically plausible code without reasoning about security context. The result: standard semantic and logic-level flaws — IDOR, missing auth checks, business logic bypasses — appear at higher base rates. AI-generated code is a risk amplifier, not a new vulnerability class.
 
-AI-assisted development ships code faster and at higher volume — so vulnerabilities appear faster too. ZeroTrust.sh is an upgraded SAST: it scans **source code** for real, exploitable flaws and reports them with proof of exploitation. The developer decides what's intentional.
+ZeroTrust.sh is an upgraded SAST: it scans **source code** for real, exploitable flaws regardless of authorship and reports them with proof of exploitation. The developer decides what's intentional.
 
 <details>
 <summary><b>Phantom dependencies (slopsquatting)</b></summary>
@@ -49,7 +49,7 @@ The Differential Indexer tracks auth/validate/sanitize AST nodes across scans; r
 
 Pattern-only tools miss logic-level flaws: SSRF through indirect calls, IDOR in non-obvious data flows, broken auth that passes unit tests.
 
-ZeroTrust.sh's Path B runs a three-tier semantic funnel (heuristic → UniXcoder classifier → bounded LLM) to surface what regex can't.
+ZeroTrust.sh's Path B runs a three-tier semantic funnel (heuristic → CodeT5+ classifier → bounded LLM) to surface what regex can't.
 </details>
 
 > [!NOTE]
@@ -146,7 +146,7 @@ flowchart LR
 
 **Path A — fast, deterministic.** OpenGrep + ast-grep pattern matching across 42 rules. Joern CPG inter-file taint analysis. LLM Verifier (Chain-of-Doubt + SCoT + XGrammar-2) filters false positives. High-confidence rules bypass the verifier directly to Dedup.
 
-**Path B — three-tier cost funnel.** ~95% of files eliminated by heuristic targeting. Local UniXcoder classifier gates the remainder. Only uncertain surfaces reach bounded LLM reasoning (max 3 ReAct steps). Budget-exhausted surfaces emit `SUPPRESSED` — never silent drop.
+**Path B — three-tier cost funnel.** ~95% of files eliminated by heuristic targeting. Local CodeT5+ classifier gates the remainder. Only uncertain surfaces reach bounded LLM reasoning (max 3 ReAct steps). Budget-exhausted surfaces emit `SUPPRESSED` — never silent drop. Token Budget Controller is an observer: it logs cost and warns but never stops a scan.
 
 > [!IMPORTANT]
 > **Differential Indexer** — content-hash snapshot in local SQLite. Repeat scans process only changed files + one-hop CPG neighbours: **~80–95% cost reduction**.
@@ -164,7 +164,7 @@ flowchart LR
 | **Taint Analyzer** | Joern CPG — traces untrusted input to sensitive sinks |
 | **LLM Verifier** | CoD + SCoT + XGrammar-2; FP filter for pattern findings |
 | **Surface Selector** | CPG heuristics + Trivy CVE enrichment + BOLAZ IDOR tracking |
-| **Classifier Chain** | UniXcoder (CPU) — classifies surfaces as vulnerable or safe |
+| **Classifier Chain** | CodeT5+ (CPU) — classifies surfaces as vulnerable or safe |
 | **LLM Reasoner** | Bounded ReAct (max 3 steps) — only for uncertain cases |
 | **Dedup + SSVC** | Cross-path boost +15pp; BLOCK/HIGH/MEDIUM/LOW/SUPPRESSED |
 </details>
@@ -186,12 +186,12 @@ flowchart LR
 
 | Language | Pattern | Taint | Semantic |
 |---|---|---|---|
-| Python | ✅ OpenGrep | ✅ Joern | ✅ UniXcoder |
-| Java | ✅ OpenGrep | ✅ Joern | ✅ UniXcoder |
-| JavaScript / TypeScript | ✅ OpenGrep + ast-grep | ✅ Joern | ✅ UniXcoder |
-| Go | ✅ OpenGrep | ✅ Joern† | ✅ UniXcoder |
-| Ruby | ✅ OpenGrep + ast-grep | ✅ Joern | ✅ UniXcoder |
-| PHP | ✅ OpenGrep + ast-grep | ✅ Joern | ✅ UniXcoder |
+| Python | ✅ OpenGrep | ✅ Joern | ✅ CodeT5+ |
+| Java | ✅ OpenGrep | ✅ Joern | ✅ CodeT5+ |
+| JavaScript / TypeScript | ✅ OpenGrep + ast-grep | ✅ Joern | ✅ CodeT5+ |
+| Go | ✅ OpenGrep | ✅ Joern† | ✅ CodeT5+ |
+| Ruby | ✅ OpenGrep + ast-grep | ✅ Joern | ✅ CodeT5+ |
+| PHP | ✅ OpenGrep + ast-grep | ✅ Joern | ✅ CodeT5+ |
 | Kotlin | ✅ ast-grep | — | ✅ LLM direct |
 | C# | ✅ ast-grep | — | ✅ LLM direct |
 | Rust | ✅ ast-grep | — | ✅ LLM direct |
@@ -210,7 +210,7 @@ flowchart LR
 | CLI + orchestration | Go — cobra, goroutines, errgroup, Docker dispatch |
 | Pattern matching | OpenGrep + ast-grep |
 | Taint analysis | Joern CPG Engine |
-| ML classifier | UniXcoder (CPU, local Python worker) |
+| ML classifier | CodeT5+ `Salesforce/codet5p-220m` (CPU, local Python worker) |
 | Structured output | XGrammar-2 constrained decoding |
 | LLM runtime | Ollama HTTP API (model-agnostic, GPU passthrough) |
 | CVE enrichment | Trivy `fs` subprocess |

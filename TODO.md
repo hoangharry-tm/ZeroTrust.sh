@@ -33,7 +33,7 @@
 
 ### ML-DATA.2 — Normalizer (`pipeline/normalizer/`)
 
-- [ ] **T1** — Strip comments, normalise whitespace, clip functions to 512 tokens (match UniXcoder context window); write to `tests/corpus/normalized/{language}.jsonl`
+- [ ] **T1** — Strip comments, normalise whitespace, clip functions to 512 tokens (CodeT5+ context window); write to `tests/corpus/normalized/{language}.jsonl`
 - [ ] **T2** — Class balance audit: log vuln:safe ratio per language; apply random oversampling of minority class to reach ≤ 3:1 ratio (document in `docs/benchmarks/a18_gap.md`)
 - [ ] **T3** — Stratified 80/10/10 train/val/test split per language; write `{language}_{split}.jsonl`
 
@@ -99,7 +99,7 @@
 ## Completed
 
 - [x] L0 — Go skeleton, ingestion (MIV + DI), Path A wrappers, Python worker IPC, Dedup skeleton, HTML skeleton
-- [x] L1 — Heuristic Targeting (ML3.1), UniXcoder Classifier (ML3.2), CPG Assembler (ML3.3)
+- [x] L1 — Heuristic Targeting (ML3.1), CodeT5+ Classifier (ML3.2), CPG Assembler (ML3.3)
 - [x] L2 — OpenGrep + Joern CPG taint + instrscan + LLM Verifier (Path A complete)
 - [x] L3 — Summarizer, Budget Controller, LLM Semantic Scan (Path B complete)
 - [x] ML4.1 — Dedup complete: Gates 1–4, SSVC sourcing, cross-path boost, sidecar suppression

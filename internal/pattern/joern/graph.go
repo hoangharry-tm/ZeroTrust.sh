@@ -366,7 +366,7 @@ func parseNodes(raw []byte) ([]cpg.Node, error) {
 	for i, jn := range jns {
 		nodes[i] = cpg.Node{
 			ID:   jn.ID,
-			Type: cpg.NodeMethod, // refined per query type in the caller
+			Type: cpg.NodeType(jn.Type),
 			Name: jn.Name,
 			File: jn.File,
 			Line: jn.Line,

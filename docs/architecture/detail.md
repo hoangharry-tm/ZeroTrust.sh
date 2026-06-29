@@ -8,7 +8,9 @@
 
 ## Overview
 
-ZeroTrust.sh is a local, offline CLI security scanner that audits codebases modified by AI coding agents. It accepts a directory as input, runs all analysis on-device, and produces an interactive HTML vulnerability report with unified-diff patch suggestions.
+ZeroTrust.sh is a local, offline CLI security scanner that detects semantic and logic-level vulnerabilities — IDOR, missing auth checks, business logic bypasses — at the elevated base rates produced by AI-assisted development. AI-generated code is a risk amplifier, not a vulnerability category: LLMs generate syntactically plausible code without reasoning about security context, so standard flaw classes appear more frequently. ZeroTrust.sh detects these flaws regardless of authorship.
+
+It accepts a directory as input, runs all analysis on-device, and produces an interactive HTML vulnerability report with unified-diff patch suggestions.
 
 The core of the system is the **Cascading Intelligence Pipeline**: two independent detection paths that run in parallel against every file set that enters the pipeline. Neither path gates the other — both produce findings independently, which are then merged at a shared deduplication and confidence scoring layer.
 
@@ -47,7 +49,7 @@ Before either path runs, two ingestion components start in parallel. The Model I
 
 **What it does.** The Differential Indexer hash-compares all files in the input directory against a SQLite state cache from the previous scan. Only files that are new or have changed since the last scan enter the analysis pipeline. Directory input only — ZIP archive support is not provided. A full scan runs on the first invocation.
 
-**Performance scope.** The ~80–95% cost reduction claim applies to Semgrep/ast-grep pattern matching, UniXcoder classifier inference, LLM calls, and — from Approach 2 onward — CPG construction on repeat scans. The first scan always performs a full CPG build. Subsequent scans load the serialized CPG and patch only the changed subgraph (see Joern CPG Engine — Incremental CPG Mode), converting CPG construction from O(total LOC) to O(changed LOC) and bringing CPG cost within the same differential reduction envelope as the rest of the pipeline.
+**Performance scope.** The ~80–95% cost reduction claim applies to Semgrep/ast-grep pattern matching, CodeT5+ classifier inference, LLM calls, and — from Approach 2 onward — CPG construction on repeat scans. The first scan always performs a full CPG build. Subsequent scans load the serialized CPG and patch only the changed subgraph (see Joern CPG Engine — Incremental CPG Mode), converting CPG construction from O(total LOC) to O(changed LOC) and bringing CPG cost within the same differential reduction envelope as the rest of the pipeline.
 
 **Expansion depth and taint correctness.** The one-hop expansion used for file selection (which files to analyse) is not the same as the patch scope required for taint correctness. Joern stores inter-procedural data flow (DFG) edges as part of the CPG at build time. If Module B changes, the DFG edges on Module A (B's caller, 1 hop) are refreshed — but Module D (A's caller, 2 hops) still has stale incoming DFG edges from A, because A's outgoing taint behaviour depends on what B feeds into it. The incremental CPG patch scope is set to **depth 5** — intentionally exceeding the Call Chain Context Assembler's context window (depth 3), which is a separate token-budget constraint and not a correctness bound. See Incremental CPG Mode for the scientific basis and full correctness model.
 
@@ -218,7 +220,7 @@ Path B is structured as a three-tier funnel. Each tier eliminates surfaces that 
 
 #### Code Vulnerability Classifier
 
-**What it does.** The Code Vulnerability Classifier applies a fine-tuned UniXcoder-Base-Nine model (~125M parameters) to each surface that was not resolved or auto-flagged in Tier 1. The model runs locally on CPU and produces a confidence-scored verdict: high-confidence vulnerable, high-confidence safe, or uncertain.
+**What it does.** The Code Vulnerability Classifier applies CodeT5+ (`Salesforce/codet5p-220m`, ~220M parameters) to each surface that was not resolved or auto-flagged in Tier 1. CodeT5+ replaces UniXcoder (A-18 fix): it is pre-trained on 8 languages including Go, Python, Java, and JS, addressing the BigVul C/C++ benchmark invalidity. The model runs locally on CPU and produces a confidence-scored verdict: high-confidence vulnerable, high-confidence safe, or uncertain.
 
 - High-confidence vulnerable findings are sent directly to the deduplication layer — no LLM call needed.
 - High-confidence safe surfaces are dismissed.
@@ -227,11 +229,11 @@ Path B is structured as a three-tier funnel. Each tier eliminates surfaces that 
 
 **Why it exists.** A local CPU classifier is orders of magnitude cheaper per invocation than an LLM. Eliminating the majority of surfaces here before any LLM call is the primary cost reduction mechanism for Path B.
 
-**Benchmark status and A-18 (blocking dependency).** UniXcoder's published F1 figure (measured on BigVul, a C/C++-only dataset with documented label noise and temporal leakage) is not a valid performance claim for ZeroTrust.sh's target languages (Python, Java, JavaScript/TypeScript, Go). ICSE 2025 ("How Far Are We?") demonstrated that BigVul-trained models collapse on cleaner evaluation sets, and 72.1% of all vulnerability detection research targets C/C++ exclusively (SoK, arXiv:2412.11194). No peer-reviewed benchmark of UniXcoder on multi-language or AI-generated code exists. Assumption A-18 is a **blocking dependency**: the classifier must be fine-tuned on CVEFixes (multi-language, NVD-sourced, July 2024: 277,948 entries, temporal split) and evaluated per-language before any accuracy figure is published. The 75–85% surface elimination claim is a design target contingent on this benchmark.
+**Benchmark status and A-18.** UniXcoder's published F1 figure (measured on BigVul, a C/C++-only dataset) was not a valid performance claim for ZeroTrust.sh's target languages — this was A-18. CodeT5+ resolves the base-model gap: it is pre-trained on 8 languages and is fine-tuned on CVEFixes (multi-language, NVD-sourced, July 2024: 277,948 entries, temporal split). ICSE 2025 ("How Far Are We?") demonstrated that BigVul-trained models collapse on cleaner evaluation sets, and 72.1% of all vulnerability detection research targets C/C++ exclusively (SoK, arXiv:2412.11194). Residual risk: Go CVE coverage in CVEFixes is thin. Go F1 must be measured and documented per-language before any accuracy figure is published. The 75–85% surface elimination claim is a design target contingent on this benchmark.
 
-**Operating mode.** Until the CVEFixes benchmark is complete, UniXcoder operates in **high-recall/low-precision mode**: the uncertainty threshold is set conservatively so that borderline surfaces escalate to the LLM rather than being dismissed at the gate. A false negative (missed vulnerability silently dismissed) is worse than a false positive (extra LLM call on safe code).
+**Operating mode.** Until the CVEFixes benchmark is complete, CodeT5+ operates in **high-recall/low-precision mode**: the uncertainty threshold is set conservatively so that borderline surfaces escalate to the LLM rather than being dismissed at the gate. A false negative (missed vulnerability silently dismissed) is worse than a false positive (extra LLM call on safe code).
 
-**Language routing.** UniXcoder supports Python, Java, JavaScript/TypeScript, Go, Ruby, and PHP. Unsupported languages (Rust, Kotlin, Swift, C#) are routed directly to the LLM, skipping the classifier to avoid degraded out-of-distribution signal.
+**Language routing.** CodeT5+ supports Python, Java, JavaScript/TypeScript, Go, Ruby, and PHP. Unsupported languages (Rust, Kotlin, Swift, C#) are routed directly to the LLM, skipping the classifier to avoid degraded out-of-distribution signal.
 
 ---
 
@@ -291,9 +293,11 @@ The `authorization_check_location` field in both `auth_guard` and `logic_flaw` a
 
 ### Tier 3 — LLM Reasoning
 
-#### Token Budget Controller
+#### Token Budget Controller (observer)
 
-**What it does.** The Token Budget Controller manages the per-scan token budget before surfaces are passed to the LLM Semantic Scan. Its primary strategy is intelligent surface selection: it ranks uncertain surfaces by a composite priority score and, within the available budget, processes the highest-priority surfaces first. Compression is a secondary strategy, applied only after selection is exhausted.
+**What it does.** The Token Budget Controller is an observer: it logs per-scan token cost and warns when budget pressure is high, but it never gates or stops a scan. Suppressing a security scan to save tokens is the worst failure mode — a missed vulnerability is worse than an expensive run. Surface prioritization and compression are applied as throughput hints, not kill switches.
+
+When compression is needed, the controller ranks uncertain surfaces by a composite priority score and processes the highest-priority surfaces first. Compression is a secondary strategy, applied only after selection is exhausted.
 
 **Priority ranking function:**
 ```
@@ -348,7 +352,7 @@ Within each step the model may issue context requests — for additional call ch
 | Path A high-confidence rule bypass | Direct — LLM Verifier skipped | Assigned at scoring step |
 | Path A LLM Verifier output | `confirmed` or `uncertain` + float | Verifier confidence float |
 | Path B CVE auto-flagged (Tier 1) | Direct — classifier + LLM skipped | Auto-scored from CVSS |
-| Path B UniXcoder high-confidence vulnerable | Direct — LLM skipped | Classifier confidence float |
+| Path B CodeT5+ high-confidence vulnerable | Direct — LLM skipped | Classifier confidence float |
 | Path B LLM Semantic Scan output | `confirmed` or `uncertain` + float | Scan confidence float |
 | Path B budget-exhausted | SUPPRESSED · `reason: budget_exhausted` | 0.0 pass-through |
 
@@ -584,7 +588,7 @@ ZeroTrust.sh's effective capability is bounded by available RAM and the local mo
 | **2 — M3 Pro / 36 GB unified memory** | MacBook Pro M3 Pro/Max with 36 GB | Qwen2.5-7B-Q8 or Llama-3.1-8B-Q8 | Single-pass CoD + SCoT with higher instruction-following quality; marginal ReAct improvement | Slow (~60–90 s/surface); generally not worth enabling |
 | **3 — Workstation / 64 GB+ RAM or GPU** | Mac Studio M2 Ultra, Linux server with 80 GB VRAM | Qwen2.5-72B-Q4 or Llama-3.3-70B-Q4 | Full bounded ReAct loop (max 3 steps); reliable structured JSON output | Enabled; recommended minimum for Approach 3 agentic ensemble |
 
-**Tier 1 is the common case and is a well-defined operating mode, not a degraded one.** The single-pass CoD + SCoT call that activates at Tier 1 is the same technique used in Path A's LLM Verifier. It produces structured verdicts and is calibrated against the same XGrammar-2 output schema. Tier 1 users receive Path B semantic detection at reduced depth — cross-surface ReAct reasoning is unavailable, but the three-tier cost funnel, CPG-backed heuristic targeting, UniXcoder classification, and Threat Feature Extractor all operate normally.
+**Tier 1 is the common case and is a well-defined operating mode, not a degraded one.** The single-pass CoD + SCoT call that activates at Tier 1 is the same technique used in Path A's LLM Verifier. It produces structured verdicts and is calibrated against the same XGrammar-2 output schema. Tier 1 users receive Path B semantic detection at reduced depth — cross-surface ReAct reasoning is unavailable, but the three-tier cost funnel, CPG-backed heuristic targeting, CodeT5+ classification, and Threat Feature Extractor all operate normally.
 
 **Threat Feature Extractor latency (Tier 1).** Phi-3-mini or Qwen2.5-3B on CPU produces approximately 5–15 tokens/second. Generating three XGrammar-2-constrained JSON summaries per uncertain surface takes approximately 30–90 seconds per surface. For a codebase generating 10–20 uncertain surfaces, Path B end-to-end runtime at Tier 1 ranges from 5–30 minutes. Tier 3 hardware reduces this by approximately 10× via faster inference. For codebases under 20k LOC, CPG construction (Joern) typically dominates scan time, not LLM inference.
 
