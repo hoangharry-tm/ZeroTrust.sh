@@ -277,6 +277,15 @@ func WithConfidence(c float64) Option {
 	}
 }
 
+// WithSourcePath sets the detection path label.
+func WithSourcePath(sp SourcePath) Option { return func(f *Finding) { f.SourcePath = sp } }
+
+// WithSSVC sets the SSVC scoring dimensions.
+func WithSSVC(dims SSVCDimensions) Option { return func(f *Finding) { f.SSVC = dims } }
+
+// WithPoeContext sets the taint path context for PoE analysis.
+func WithPoeContext(pc *PoeContext) Option { return func(f *Finding) { f.PoeContext = pc } }
+
 // New constructs a Finding with the given path, line range, CWE, and
 // justification message. Optional metadata is applied via opts.
 // SeverityLabel defaults to SeverityLow; use WithConfidence to update both.

@@ -36,28 +36,23 @@ func TaintPathToFinding(path cpg.TaintPath, lang Language) finding.Finding {
 		justification += " [sanitized path]"
 	}
 
-	// Extract source snippet from the sink file at the sink line.
 	matchedCode := extractSnippet(path.Sink.File, path.Sink.Line)
 
-	confidence := 0.75
-	severityLabel := finding.SeverityFromConfidence(confidence)
-
-	return finding.Finding{
-		Path:      path.Sink.File,
-		LineRange: finding.LineRange{Start: path.Sink.Line, End: path.Sink.Line},
-		CWE:       cwe,
-		SeverityLabel: severityLabel,
-		Confidence:    confidence,
-		SourcePath:    finding.SourcePattern,
-		Justification: justification,
-		MatchedCode:   matchedCode,
-		RuleID:        fmt.Sprintf("JOERN-TAINT-%s", string(path.Sink.Kind)),
-		SSVC: finding.SSVCDimensions{
+	return finding.New(
+		path.Sink.File,
+		finding.LineRange{Start: path.Sink.Line, End: path.Sink.Line},
+		cwe,
+		justification,
+		finding.WithConfidence(0.75),
+		finding.WithSourcePath(finding.SourcePattern),
+		finding.WithRuleID(fmt.Sprintf("JOERN-TAINT-%s", string(path.Sink.Kind))),
+		finding.WithMatchedCode(matchedCode),
+		finding.WithSSVC(finding.SSVCDimensions{
 			Exploitation:    "None",
 			Automatable:     ssvcAutomatable(path.Sink.Kind),
 			TechnicalImpact: ssvcTechnicalImpact(path.Sink.Kind),
-		},
-		PoeContext: &finding.PoeContext{
+		}),
+		finding.WithPoeContext(&finding.PoeContext{
 			SourceNode: path.Source.NodeID,
 			SinkNode:   path.Sink.NodeID,
 			TaintPathSummary: fmt.Sprintf("source (%s:%d) → sink (%s:%d) via %d intermediate nodes",
@@ -66,8 +61,8 @@ func TaintPathToFinding(path cpg.TaintPath, lang Language) finding.Finding {
 				len(path.IntermediateNodes)),
 			RequiredConditions: fmt.Sprintf("Untrusted input reaches %s sink without validation",
 				string(path.Sink.Kind)),
-		},
-	}
+		}),
+	)
 }
 
 // ssvcAutomatable maps a sink kind to its SSVC Automatable dimension.
@@ -119,9 +114,7 @@ func TaintPathsToFindings(paths []cpg.TaintPath, lang Language) []finding.Findin
 	}
 	result := make([]finding.Finding, 0, len(paths))
 	for _, p := range paths {
-		f := TaintPathToFinding(p, lang)
-		f.ID = finding.ComputeID(f.CWE, f.Path, f.MatchedCode)
-		result = append(result, f)
+		result = append(result, TaintPathToFinding(p, lang))
 	}
 	return result
 }
