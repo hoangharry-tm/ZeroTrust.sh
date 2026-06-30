@@ -303,23 +303,16 @@ func (r *Runner) run(ctx context.Context, files []string) (*ScanOutput, error) {
 // normalise converts a RawFinding into a finding.Finding.
 // The CWE, confidence, and OWASP category are extracted from Extra.Metadata.
 func normalise(raw RawFinding) finding.Finding {
-	confidence := confidenceFromMetadata(raw.Extra.Metadata, raw.Extra.Severity)
-	cwe := cweFromMetadata(raw.Extra.Metadata)
-
-	id := finding.ComputeID(cwe, raw.Path, raw.Extra.Lines)
-
-	return finding.Finding{
-		ID:            id,
-		Path:          raw.Path,
-		LineRange:     finding.LineRange{Start: raw.Start.Line, End: raw.End.Line},
-		CWE:           cwe,
-		Confidence:    confidence,
-		SeverityLabel: finding.SeverityFromConfidence(confidence),
-		SourcePath:    finding.SourcePattern,
-		Justification: raw.Extra.Message,
-		MatchedCode:   raw.Extra.Lines,
-		RuleID:        raw.RuleID,
-	}
+	return finding.New(
+		raw.Path,
+		finding.LineRange{Start: raw.Start.Line, End: raw.End.Line},
+		cweFromMetadata(raw.Extra.Metadata),
+		raw.Extra.Message,
+		finding.WithMatchedCode(raw.Extra.Lines),
+		finding.WithConfidence(confidenceFromMetadata(raw.Extra.Metadata, raw.Extra.Severity)),
+		finding.WithSourcePath(finding.SourcePattern),
+		finding.WithRuleID(raw.RuleID),
+	)
 }
 
 // confidenceFromMetadata maps the rule's metadata.confidence string and severity
