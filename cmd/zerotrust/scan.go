@@ -58,8 +58,10 @@ import (
 	"github.com/hoangharry-tm/zerotrust/internal/ingestion"
 	"github.com/hoangharry-tm/zerotrust/internal/ingestion/diffindex"
 	"github.com/hoangharry-tm/zerotrust/internal/ingestion/miv"
+	"github.com/hoangharry-tm/zerotrust/internal/orchestrator"
 	"github.com/hoangharry-tm/zerotrust/internal/output"
 	"github.com/hoangharry-tm/zerotrust/internal/patch"
+	"github.com/hoangharry-tm/zerotrust/internal/scanner"
 	"github.com/hoangharry-tm/zerotrust/internal/scanner/joern"
 	"github.com/hoangharry-tm/zerotrust/internal/scanner/opengrep"
 	"github.com/hoangharry-tm/zerotrust/internal/report"
@@ -94,9 +96,11 @@ type pipeline struct {
 	// SetMIVBlocked() is called after ingestion when MIV returns StatusBlock.
 	llm *ollama.Client
 
-	// Path A
+	// Path A — legacy incremental flow
 	opengrep *opengrep.Runner
 	joern    *joern.Client
+	// orch runs the dynamic tool dispatcher concurrently with Joern CPG init.
+	orch *orchestrator.Engine
 
 	// Path B
 	target *targeting.Targeter
@@ -261,6 +265,11 @@ func newPipeline(ctx context.Context, cfg ScanConfig) (*pipeline, error) {
 
 	// Path A
 	og := opengrep.NewMulti("opengrep", logger)
+	orch := orchestrator.New(
+		og,
+		scanner.NewGitleaks("gitleaks"),
+		scanner.NewOSV("osv-scanner"),
+	)
 	joernOpts := []joern.Option{joern.WithServerURL(cfg.JoernURL)}
 	if cfg.JoernBin != "" {
 		joernOpts = append(joernOpts, joern.WithBinaryPath(cfg.JoernBin))
@@ -296,6 +305,7 @@ func newPipeline(ctx context.Context, cfg ScanConfig) (*pipeline, error) {
 		llm:      llmClient,
 		opengrep: og,
 		joern:    jc,
+		orch:     orch,
 		target:   tgt,
 		enrich:   enr,
 		clf:      clf,
@@ -342,11 +352,22 @@ func (p *pipeline) run(ctx context.Context, events chan<- output.Event) error {
 	// Step 1.5: CPG build/load + scope resolution
 	scopeFiles := p.resolveScope(ctx, ingResult, events)
 
-	// Steps 2+3: Path A ∥ Path B (parallel detection)
+	// Steps 2+3: Path A ∥ Path B ∥ Orchestrator (parallel detection)
 	findCh := make(finding.Channel, 256)
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error { return p.runPathA(gctx, ingResult, scopeFiles, findCh, events) })
 	g.Go(func() error { return p.runPathB(gctx, ingResult, findCh, events) })
+	g.Go(func() error {
+		fs, err := p.orch.Run(gctx, p.cfg.Target)
+		if err != nil {
+			p.logger.Warn("orchestrator error", "err", err)
+			return nil
+		}
+		for _, f := range fs {
+			findCh <- f
+		}
+		return nil
+	})
 	var closeOnce sync.Once
 	go func() {
 		_ = g.Wait()
@@ -732,7 +753,7 @@ func (p *pipeline) runPathA(ctx context.Context, res *ingestion.Result, scopeFil
 
 	// 1. OpenGrep — owns Python/Java/JS/TS/Go/Ruby/PHP
 	g.Go(func() error {
-		findings, err := p.opengrep.Scan(gctx, changed)
+		findings, err := p.opengrep.ScanFiles(gctx, changed)
 		if err != nil {
 			output.Emit(events, output.Event{
 				Kind: output.EventLog,

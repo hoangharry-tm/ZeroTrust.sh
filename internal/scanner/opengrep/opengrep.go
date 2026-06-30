@@ -13,23 +13,9 @@
 // limitations under the License.
 
 // Package opengrep wraps the OpenGrep CLI (LGPL-2.1, Semgrep CE fork).
-//
-// OpenGrep runs against the changed file set from the Differential Indexer and
-// emits structural pattern findings routed to the LLM Verifier.
-//
-// Language routing: OpenGrep owns its strong language rule packs (Python, Java,
-// JavaScript/TypeScript, Go, Ruby, PHP). ast-grep handles the gaps (Dart, Swift,
-// Rust, newer languages). The same file is never scanned by both tools.
-//
-// High-confidence rules (tagged confidence: high in the rule YAML) bypass the
-// LLM Verifier and are sent directly to the dedup layer as confirmed findings.
-// All other findings pass through the Verifier for false-positive filtering.
-//
-// Rule directories follow the layout in rules/:
-//
-//	rules/python/    PY-001–PY-010
-//	rules/java/      JV-001–JV-009
-//	rules/generic/   AI agent instruction file rules
+// Implements scanner.Scanner via Name/Supports/Scan.
+// When no custom rule dirs are configured, Supports() injects language-specific
+// Semgrep registry packs (p/python, p/go, etc.) based on the detected stack.
 package opengrep
 
 import (
@@ -42,6 +28,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/hoangharry-tm/zerotrust/internal/detector"
 	"github.com/hoangharry-tm/zerotrust/internal/finding"
 )
 
@@ -127,20 +114,87 @@ func NewMulti(binaryPath string, logger *slog.Logger, ruleDirs ...string) *Runne
 	return &Runner{binaryPath: binaryPath, ruleDirs: ruleDirs, logger: logger}
 }
 
-// Scan runs OpenGrep against files and returns normalised findings.
-//
-// It invokes: opengrep --json --config <rulesDir> <files...>
-// The subprocess stdout is parsed as ScanOutput JSON and each RawFinding is
-// normalised into a finding.Finding.
-//
-// Parameters:
-//   - ctx: cancellation context; the subprocess is killed if ctx is cancelled.
-//   - files: relative file paths to scan (the ChangeSet.Changed list).
-//
-// Returns:
-//   - []finding.Finding: normalised findings from all matched rules.
-//   - error: non-nil if the subprocess fails to start or returns a non-zero exit code.
-func (r *Runner) Scan(ctx context.Context, files []string) ([]finding.Finding, error) {
+// langToPack maps a detected language to its Semgrep registry rule pack.
+// Falls back to p/owasp-top-ten when no language-specific pack is available.
+var langToPack = map[string]string{
+	"python":     "p/python",
+	"go":         "p/golang",
+	"javascript": "p/javascript",
+	"typescript": "p/typescript",
+	"java":       "p/java",
+	"ruby":       "p/ruby",
+	"php":        "p/php",
+	"rust":       "p/rust",
+	"csharp":     "p/csharp",
+	"kotlin":     "p/kotlin",
+}
+
+// Name implements scanner.Scanner.
+func (r *Runner) Name() string { return "opengrep" }
+
+// Supports implements scanner.Scanner. Always true — opengrep covers every
+// language via the owasp-top-ten fallback pack, and adds language-specific
+// packs for any detected language.
+func (r *Runner) Supports(_ detector.StackProfile) bool { return true }
+
+// Scan implements scanner.Scanner. It detects the stack from target,
+// dynamically selects rule packs, then runs opengrep against the whole target dir.
+func (r *Runner) Scan(ctx context.Context, target string) ([]finding.Finding, error) {
+	// Derive rule flags: prefer configured dirs; fall back to registry packs.
+	configs := r.ruleDirs
+	if len(configs) == 0 {
+		stack, err := detector.Detect(target)
+		if err != nil {
+			return nil, fmt.Errorf("opengrep detect stack: %w", err)
+		}
+		seen := make(map[string]struct{})
+		for lang := range stack.Languages {
+			if pack, ok := langToPack[lang]; ok {
+				if _, dup := seen[pack]; !dup {
+					configs = append(configs, pack)
+					seen[pack] = struct{}{}
+				}
+			}
+		}
+		if len(configs) == 0 {
+			configs = []string{"p/owasp-top-ten"}
+		}
+	}
+
+	// Build args: --json [--config <cfg>]... <target>
+	args := []string{"--json"}
+	for _, c := range configs {
+		args = append(args, "--config", c)
+	}
+	args = append(args, target)
+
+	var stdout, stderr bytes.Buffer
+	cmd := exec.CommandContext(ctx, r.binaryPath, args...)
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		// exit 1 with JSON output = findings found; not an error.
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 && stdout.Len() > 0 {
+			// fall through to parse
+		} else {
+			return nil, fmt.Errorf("opengrep: %w (stderr: %s)", err, stderr.String())
+		}
+	}
+
+	var out ScanOutput
+	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
+		return nil, fmt.Errorf("opengrep decode: %w", err)
+	}
+	findings := make([]finding.Finding, 0, len(out.Results))
+	for _, raw := range out.Results {
+		findings = append(findings, normalise(raw))
+	}
+	return findings, nil
+}
+
+// ScanFiles runs OpenGrep against a specific file list and returns normalised findings.
+// Used by the legacy runPathA incremental flow.
+func (r *Runner) ScanFiles(ctx context.Context, files []string) ([]finding.Finding, error) {
 	if len(files) == 0 {
 		return nil, nil
 	}
@@ -184,7 +238,7 @@ func (r *Runner) Scan(ctx context.Context, files []string) ([]finding.Finding, e
 //   - []finding.Finding: only findings from high-confidence rules.
 //   - error: non-nil on subprocess or parse failure.
 func (r *Runner) ScanHighConfidence(ctx context.Context, files []string) ([]finding.Finding, error) {
-	all, err := r.Scan(ctx, files)
+	all, err := r.ScanFiles(ctx, files)
 	if err != nil {
 		return nil, err
 	}
