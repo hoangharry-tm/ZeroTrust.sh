@@ -3,6 +3,7 @@ module github.com/hoangharry-tm/zerotrust
 go 1.26.4
 
 require (
+	github.com/bluekeyes/go-gitdiff v0.8.1
 	github.com/charmbracelet/lipgloss v1.1.1-0.20250404203927-76690c660834
 	github.com/fatih/color v1.19.0
 	github.com/mattn/go-isatty v0.0.22
@@ -20,7 +21,6 @@ require (
 	github.com/Microsoft/go-winio v0.5.0 // indirect
 	github.com/VividCortex/ewma v1.2.0 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
-	github.com/bluekeyes/go-gitdiff v0.8.1 // indirect
 	github.com/charmbracelet/colorprofile v0.4.1 // indirect
 	github.com/charmbracelet/x/ansi v0.11.6 // indirect
 	github.com/charmbracelet/x/cellbuf v0.0.15 // indirect

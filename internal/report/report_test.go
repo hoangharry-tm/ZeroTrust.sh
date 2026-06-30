@@ -442,20 +442,6 @@ func TestDiffLinesParsesTypes(t *testing.T) {
 	}
 }
 
-func TestExtractDiffFencedBlock(t *testing.T) {
-	raw := "Here is the fix:\n```diff\n--- a/foo.go\n+++ b/foo.go\n@@ -1 +1 @@\n```"
-	got := extractDiff(raw)
-	if !strings.HasPrefix(got, "---") {
-		t.Errorf("expected diff starting with ---, got %q", got)
-	}
-}
-
-func TestExtractDiffBarePrefix(t *testing.T) {
-	raw := "--- a/foo.go\n+++ b/foo.go\n@@ -1 +1 @@"
-	if got := extractDiff(raw); got != raw {
-		t.Errorf("bare diff should be returned as-is, got %q", got)
-	}
-}
 
 func TestRenderSortsBeforeOutput(t *testing.T) {
 	findings := makeFindings([]struct {

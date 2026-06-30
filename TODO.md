@@ -97,49 +97,45 @@
 
 ---
 
-## P6 — Path A Rewrite: Pure Orchestrator (11h)
+## P6 — Path A Rewrite: Dynamic Tool Dispatcher Core
 
-> Runs in parallel with P1–P2. Path A currently ships custom YAML rules and ast-grep; revised architecture delegates all detection to community tooling.
+> Refactors Path A from a static rule-matcher into a decoupled, concurrent **Dynamic Tool Dispatcher**.
+> The core engine detects the codebase stack, filters which tools apply via a `.Supports()` contract, and fans them out concurrently.
+>
+> - **MVP Scope (Option 2):** Dispatching a streamlined open-source trifecta: OpenGrep (handling universal/exotic syntax rules), Gitleaks (secrets), and OSV-Scanner (dependencies).
+> - **Post-MVP Scope (Option 1 - Future):** Expanding this dispatcher into a "Mason-style" binary manager that pulls ecosystem-specific linters (like cargo-clippy or sobelow) dynamically.
 
-### 6a — Remove Custom Detection (2h)
+### 6a — Deprecate Legacy Static Architectures
 
-- [ ] **6a.1** — Delete entire `rules/` directory (~57 YAML files)
-- [ ] **6a.2** — Delete `internal/pattern/astgrep/` package
-- [ ] **6a.3** — Delete `internal/pattern/instrscan/` package
-- [ ] **6a.4** — Remove ast-grep and instrscan from `cmd/zerotrust/scan.go` pipeline wiring
-- [ ] **6a.5** — Remove unused deps from `go.mod`
+- [ ] **6a.1** — Delete the entire `rules/` directory tree (~57 custom YAML files).
+- [ ] **6a.2** — Rename `internal/pattern/` to `internal/scanner/`.
+- [ ] **6a.3** — Drop `astgrep/` and `verifier/` sub-packages completely to remove legacy custom code matching.
+- [ ] **6a.4** — Strip old static ruleset registration paths out of `cmd/zerotrust/scan.go`.
 
-### 6b — Dynamic Semgrep Ruleset via Heuristics (5h)
+### 6b — Build Stack Profiler & Orchestrator Core
 
-- [ ] **6b.1** — Build heuristic engine: scan target for file extensions, build files (`pom.xml`, `go.mod`, `package.json`, `requirements.txt`, `*.csproj`), content patterns (SQL keywords, API key patterns) → `internal/ingestion/heuristics/`
-- [ ] **6b.2** — Build ruleset mapper: heuristic → Semgrep `p/*` rulesets → `internal/pattern/semgrep/ruleset.go`
-- [ ] **6b.3** — Wire dynamic selection into Semgrep `Scan()` call → `internal/pattern/semgrep/semgrep.go`
-- [ ] **6b.4** — Cache selection per project in DI SQLite → same package
-- [ ] **6b.5** — Fallback: `p/owasp-top-ten` when no heuristics match → same package
+- [ ] **6b.1** — Implement `internal/detector/`: parses target directories for files and extensions (`go.mod`, `mix.exs`, `Cargo.toml`, etc.) to build a unified `StackProfile` struct.
+- [ ] **6b.2** — Define the core `Scanner` interface contract in `internal/scanner/scanner.go`:
+      `go
+      type Scanner interface {
+          Name() string
+          Supports(stack StackProfile) bool
+          Scan(ctx context.Context, target string) ([]Finding, error)
+      }
+      `
+- [ ] **6b.3** — Build `internal/orchestrator/engine.go`: reads the profile, filters active scanners using `.Supports()`, and dispatches them concurrently with a context deadline timeout.
 
-**Ruleset mapping**:
+### 6c — Streamlined Open-Source Integration Wrappers (MVP Tier)
 
-| Heuristic                      | Semgrep ruleset              |
-| ------------------------------ | ---------------------------- |
-| Python detected                | `p/python`, `p/flask`        |
-| Java detected                  | `p/java`, `p/spring`         |
-| JavaScript/TypeScript detected | `p/javascript`, `p/react`    |
-| C# detected                    | `p/csharp`                   |
-| SQL patterns in code           | `p/sql-injection`            |
-| Web framework detected         | Framework-specific ruleset   |
-| No match                       | `p/owasp-top-ten` (fallback) |
+- [ ] **6c.1** — **OpenGrep Dynamic Wrapper:** Read `StackProfile.Languages`. Map detected keys directly to standard registry configurations (e.g., `p/python`, `p/rust`, or fallback `p/owasp-top-ten`) inside a native Go string lookup map.
+- [ ] **6c.2** — **Gitleaks Wrapper:** Wire binary execution; returns `true` for all scans to perform universal hardcoded secret auditing across all target formats.
+- [ ] **6c.3** — **OSV-Scanner Wrapper:** Triggers fast dependency tracking against package manifest lockfiles if present.
 
-### 6c — New Tool Integrations (4.5h)
+### 6d — Pipeline Synthesis & Future Hooks (Option 1 Documentation)
 
-- [ ] **6c.1** — gosec: Go subprocess wrapper, JSON output, normalize → unified Finding struct → `internal/pattern/gosec/`
-- [ ] **6c.2** — Gitleaks: binary download check, subprocess wrapper, JSON output normalization → `internal/pattern/gitleaks/`
-
-### 6d — Orchestrator Wiring (2h)
-
-- [ ] **6d.1** — Wire gosec into Path A (Go targets only)
-- [ ] **6d.2** — Wire Gitleaks into Path A (all targets)
-- [ ] **6d.3** — Wire dynamic Semgrep into Path A (replaces fixed ruleset)
-- [ ] **6d.4** — Update dedup normalization for new tool sources
+- [ ] **6d.1** — Adapt `internal/dedup/` to handle standardized structural inputs originating from `opengrep`, `gitleaks`, and `osv`.
+- [ ] **6d.2** — Wire the new orchestrator directly into your central execution pipeline, firing concurrently while the asynchronous Joern CPG compiler runs in the background.
+- [ ] **6d.3** — Add a `FUTURE_DEVELOPMENT.md` or code-level comments in `internal/orchestrator/` detailing how the Option 1 Mason-style tool registry yaml will eventually hook into the established `Scanner` contract to dynamically fetch ecosystem-specific linter binaries.
 
 ---
 

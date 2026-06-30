@@ -61,7 +61,8 @@ func checkDeps() (bool, error) {
 		return false, fmt.Errorf("docker not found")
 	}
 
-	slog.Info("dependency check complete",
+	slog.Info(
+		"dependency check complete",
 		"component", "deps",
 		"docker_version", dockerVer,
 		"ollama_ok", ollamaOK,
@@ -74,7 +75,8 @@ func checkDeps() (bool, error) {
 
 func printDepStatus(dockerVer string, ollamaOK bool) {
 	// Docker — always OK here (checkDeps exits early otherwise)
-	fmt.Fprintf(os.Stderr, "  %s  %-10s %s\n",
+	fmt.Fprintf(
+		os.Stderr, "  %s  %-10s %s\n",
 		iconOK,
 		labelStyle("Docker"),
 		dimStyle(dockerVer),
@@ -82,18 +84,21 @@ func printDepStatus(dockerVer string, ollamaOK bool) {
 
 	// Ollama — soft warning when missing
 	if ollamaOK {
-		fmt.Fprintf(os.Stderr, "  %s  %-10s %s\n",
+		fmt.Fprintf(
+			os.Stderr, "  %s  %-10s %s\n",
 			iconOK,
 			labelStyle("Ollama"),
 			dimStyle("running  ·  GPU passthrough enabled"),
 		)
 	} else {
-		fmt.Fprintf(os.Stderr, "  %s  %-10s %s\n",
+		fmt.Fprintf(
+			os.Stderr, "  %s  %-10s %s\n",
 			iconWarn,
 			labelStyle("Ollama"),
 			warnColor("not detected  ·  LLM steps will run on CPU (slower)"),
 		)
-		fmt.Fprintf(os.Stderr, "     %s  %s\n",
+		fmt.Fprintf(
+			os.Stderr, "     %s  %s\n",
 			dimStyle("Install for faster scans →"),
 			urlStyle("https://ollama.com"),
 		)

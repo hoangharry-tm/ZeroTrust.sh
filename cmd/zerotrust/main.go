@@ -91,8 +91,7 @@ run the pipeline directly with local toolchain installations.`,
 	root.Flags().BoolP("verbose", "v", false, "enable debug-level logging to stderr")
 
 	if err := root.Execute(); err != nil {
-		var exitErr *ExitError
-		if errors.As(err, &exitErr) {
+		if exitErr, ok := errors.AsType[*ExitError](err); ok {
 			os.Exit(exitErr.Code)
 		}
 		fmt.Fprintln(os.Stderr, err)
@@ -207,7 +206,8 @@ func runScan(cmd *cobra.Command, args []string) error {
 	// a locally running Joern server (started externally by the user).
 	cfg.JoernURL = "http://127.0.0.1:8080"
 
-	slog.Info("starting native scan",
+	slog.Info(
+		"starting native scan",
 		"component", "main",
 		"target", cfg.Target,
 		"mode", cfg.ScanMode,
@@ -323,7 +323,8 @@ func runContainer(cmd *cobra.Command, args []string) error {
 	dockerCmd.Stdout = os.Stdout
 	dockerCmd.Stderr = os.Stderr
 
-	slog.Info("launching container scan",
+	slog.Info(
+		"launching container scan",
 		"component", "main",
 		"target", targetAbs,
 		"image", img,

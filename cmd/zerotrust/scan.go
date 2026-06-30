@@ -41,10 +41,10 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"net"
 	"strconv"
 	"strings"
 	"sync"
@@ -60,10 +60,8 @@ import (
 	"github.com/hoangharry-tm/zerotrust/internal/ingestion/miv"
 	"github.com/hoangharry-tm/zerotrust/internal/output"
 	"github.com/hoangharry-tm/zerotrust/internal/patch"
-	"github.com/hoangharry-tm/zerotrust/internal/pattern/astgrep"
-	"github.com/hoangharry-tm/zerotrust/internal/pattern/joern"
-	"github.com/hoangharry-tm/zerotrust/internal/pattern/opengrep"
-	"github.com/hoangharry-tm/zerotrust/internal/pattern/verifier"
+	"github.com/hoangharry-tm/zerotrust/internal/scanner/joern"
+	"github.com/hoangharry-tm/zerotrust/internal/scanner/opengrep"
 	"github.com/hoangharry-tm/zerotrust/internal/report"
 	"github.com/hoangharry-tm/zerotrust/internal/semantic/assembler"
 	"github.com/hoangharry-tm/zerotrust/internal/semantic/budget"
@@ -98,9 +96,7 @@ type pipeline struct {
 
 	// Path A
 	opengrep *opengrep.Runner
-	astgrep  *astgrep.Runner
 	joern    *joern.Client
-	verif    *verifier.Verifier
 
 	// Path B
 	target *targeting.Targeter
@@ -264,9 +260,7 @@ func newPipeline(ctx context.Context, cfg ScanConfig) (*pipeline, error) {
 	llmClient := ollama.New(cfg.OllamaURL, cfg.ModelName)
 
 	// Path A
-	// rules/astgrep/ uses ast-grep YAML format; opengrep rejects it. Pass only compatible dirs.
-	og := opengrep.NewMulti("opengrep", logger, "rules/java/", "rules/python/", "rules/generic/")
-	ag := astgrep.New("ast-grep", "rules/astgrep/")
+	og := opengrep.NewMulti("opengrep", logger)
 	joernOpts := []joern.Option{joern.WithServerURL(cfg.JoernURL)}
 	if cfg.JoernBin != "" {
 		joernOpts = append(joernOpts, joern.WithBinaryPath(cfg.JoernBin))
@@ -275,7 +269,6 @@ func newPipeline(ctx context.Context, cfg ScanConfig) (*pipeline, error) {
 	if err != nil {
 		return nil, fmt.Errorf("configure joern: %w", err)
 	}
-	vf := verifier.New(wm, logger)
 
 	// Path B — graph shared from Joern after CPG build
 	graph := jc.GraphWithContext(ctx)
@@ -302,9 +295,7 @@ func newPipeline(ctx context.Context, cfg ScanConfig) (*pipeline, error) {
 		ingester: ingester,
 		llm:      llmClient,
 		opengrep: og,
-		astgrep:  ag,
 		joern:    jc,
-		verif:    vf,
 		target:   tgt,
 		enrich:   enr,
 		clf:      clf,
@@ -753,65 +744,12 @@ func (p *pipeline) runPathA(ctx context.Context, res *ingestion.Result, scopeFil
 		return nil
 	})
 
-	// 2. ast-grep — owns Rust/Dart/Swift/Kotlin/C#
-	g.Go(func() error {
-		agFiles := astgrep.FilterFiles(changed)
-		findings, err := p.astgrep.Scan(gctx, agFiles)
-		if err != nil {
-			output.Emit(events, output.Event{
-				Kind: output.EventLog,
-				Log:  fmt.Sprintf("warn: ast-grep: %v", err),
-			})
-			return nil
-		}
-		collect(findings)
-		return nil
-	})
-
 	if err := g.Wait(); err != nil {
 		return fmt.Errorf("path a: %w", err)
 	}
 
-	// Partition into high-confidence bypass and LLM-verify candidates.
-	var bypass, needsVerify []finding.Finding
 	for _, f := range rawBuf {
-		if f.Confidence >= verifier.HighConfidenceThreshold {
-			bypass = append(bypass, f)
-		} else {
-			needsVerify = append(needsVerify, f)
-		}
-	}
-
-	// Send bypass findings directly to channel; drain loop emits EventFinding.
-	for _, f := range bypass {
 		ch <- f
-	}
-
-	// Verify the remainder; degrade gracefully on worker failure.
-	if len(needsVerify) > 0 {
-		verifyStart := time.Now()
-		results, err := p.verif.Verify(ctx, needsVerify)
-		verifyElapsed := time.Since(verifyStart)
-		if err != nil {
-			output.Emit(events, output.Event{
-				Kind: output.EventLog,
-				Log:  fmt.Sprintf("warn: llm verifier: %v — emitting unverified findings", err),
-			})
-			for _, f := range needsVerify {
-				ch <- f
-			}
-		} else {
-			verified := verifier.ApplyResults(needsVerify, results)
-			// ponytail: batch latency divided by count; per-finding p50/p95 needs the benchmark harness
-			perFindingMs := verifyElapsed.Milliseconds()
-			if len(needsVerify) > 0 {
-				perFindingMs = verifyElapsed.Milliseconds() / int64(len(needsVerify))
-			}
-			for _, f := range verified {
-				p.logger.Info("verifier latency", "finding_id", f.ID, "ms", perFindingMs)
-				ch <- f
-			}
-		}
 	}
 
 	output.Emit(events, output.Event{
@@ -819,13 +757,11 @@ func (p *pipeline) runPathA(ctx context.Context, res *ingestion.Result, scopeFil
 		Stage: "path a",
 		Summary: &output.StageSummary{
 			Stage: "path a",
-			Detail: fmt.Sprintf("%d findings (%d bypass, %d verified)",
-				len(rawBuf), len(bypass), len(needsVerify)),
+			Detail: fmt.Sprintf("%d findings", len(rawBuf)),
 		},
 	})
 	return nil
 }
-
 
 // runPathB executes the Path B semantic detection tier pipeline and writes
 // findings to ch. Returns nil when Joern CPG is unavailable (0 surfaces selected).
@@ -898,7 +834,8 @@ func (p *pipeline) runPathB(ctx context.Context, _ *ingestion.Result, ch finding
 	inputs := buildBudgetInputs(summaries, enriched, clfByID, surfaceByID)
 	ranked, exhausted, budStats := p.bud.RankWithStats(inputs)
 	if len(exhausted) > 0 {
-		slog.Warn("budget: surfaces exceed token cap — scanning all surfaces anyway",
+		slog.Warn(
+			"budget: surfaces exceed token cap — scanning all surfaces anyway",
 			"exhausted", len(exhausted), "total", budStats.Total,
 			"tokens_used_est", budStats.TokensUsed+len(exhausted)*200,
 		)
@@ -1417,7 +1354,8 @@ func runJoernTaint(_ context.Context, graph cpg.Graph, scopeFiles []string) ([]f
 	}
 
 	if len(sources) == 0 || len(sinks) == 0 {
-		slog.Debug("joern taint: no sources or sinks found, skipping",
+		slog.Debug(
+			"joern taint: no sources or sinks found, skipping",
 			"component", "joern",
 			"sources", len(sources),
 			"sinks", len(sinks),
@@ -1425,7 +1363,8 @@ func runJoernTaint(_ context.Context, graph cpg.Graph, scopeFiles []string) ([]f
 		return nil, nil
 	}
 
-	slog.Info("running joern taint analysis",
+	slog.Info(
+		"running joern taint analysis",
 		"component", "joern",
 		"lang", lang,
 		"sources", len(sources),

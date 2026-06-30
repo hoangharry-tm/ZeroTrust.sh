@@ -36,7 +36,7 @@
 //
 // Message type routing (worker/main.py dispatcher):
 //
-//	"llm_verify"  → handlers/llm_verify.py   (Path A LLM Verifier)
+//	"llm_verify"  → handlers/llm_verify.py    (Path A LLM Verifier)
 //	"classify"    → handlers/classify.py      (CodeT5+ classifier)
 //	"summarize"   → handlers/summarize.py     (Semantic Summarizer)
 //	"llm_scan"    → handlers/llm_scan.py      (LLM Semantic Scan)
@@ -329,7 +329,8 @@ func (m *Manager) readLoop(stdout io.Reader, cmd *exec.Cmd) {
 	for scanner.Scan() {
 		var resp Response
 		if err := json.Unmarshal(scanner.Bytes(), &resp); err != nil {
-			m.logger.Warn("worker: malformed NDJSON line, skipping",
+			m.logger.Warn(
+				"worker: malformed NDJSON line, skipping",
 				"component", "worker",
 				"err", err,
 			)
@@ -362,14 +363,16 @@ func (m *Manager) handleDeath() {
 	m.mu.Unlock()
 
 	if !alreadyRestarted && !isStopping {
-		m.logger.Error("python worker process exited unexpectedly, attempting restart",
+		m.logger.Error(
+			"python worker process exited unexpectedly, attempting restart",
 			"component", "worker",
 		)
 		if err := m.spawn(); err == nil {
 			pingCtx, cancel := context.WithTimeout(context.Background(), tuning.WorkerRestartPingTimeout)
 			defer cancel()
 			if err := m.Ping(pingCtx); err == nil {
-				m.logger.Info("python worker restarted successfully",
+				m.logger.Info(
+					"python worker restarted successfully",
 					"component", "worker",
 				)
 				m.mu.Lock()
@@ -384,7 +387,8 @@ func (m *Manager) handleDeath() {
 
 	// Restart failed, already restarted once, or deliberate Stop: mark dead.
 	if !m.stopping.Load() {
-		m.logger.Error("python worker restart failed; worker is permanently dead",
+		m.logger.Error(
+			"python worker restart failed; worker is permanently dead",
 			"component", "worker",
 		)
 	}
