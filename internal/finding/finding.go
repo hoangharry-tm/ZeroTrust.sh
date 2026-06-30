@@ -22,8 +22,15 @@ import (
 	"encoding/hex"
 	"path/filepath"
 	"strings"
+)
 
-	"github.com/hoangharry-tm/zerotrust/internal/tuning"
+// Confidence thresholds that map a score to a SeverityLabel.
+// Inline here so finding stays independent of tuning/policy packages.
+const (
+	confBlock  = 0.92
+	confHigh   = 0.75
+	confMedium = 0.60
+	confLow    = 0.30
 )
 
 // SeverityLabel is the SSVC-inspired five-tier output label.
@@ -205,13 +212,13 @@ type Channel chan Finding
 // stay in exactly one place.
 func SeverityFromConfidence(confidence float64) SeverityLabel {
 	switch {
-	case confidence >= tuning.ConfBlock:
+	case confidence >= confBlock:
 		return SeverityBlock
-	case confidence >= tuning.ConfHigh:
+	case confidence >= confHigh:
 		return SeverityHigh
-	case confidence >= tuning.ConfMedium:
+	case confidence >= confMedium:
 		return SeverityMedium
-	case confidence >= tuning.ConfLow:
+	case confidence >= confLow:
 		return SeverityLow
 	default:
 		return SeveritySuppressed
@@ -245,6 +252,50 @@ func LangFromPath(path string) string {
 	default:
 		return "unknown"
 	}
+}
+
+// Option is a functional option for New.
+type Option func(*Finding)
+
+// WithCVE sets the CVE identifier.
+func WithCVE(cve string) Option { return func(f *Finding) { f.CVE = cve } }
+
+// WithCVSS sets the CVSS v3 base score.
+func WithCVSS(score float64) Option { return func(f *Finding) { f.CVSS = score } }
+
+// WithRuleID sets the RuleID field.
+func WithRuleID(id string) Option { return func(f *Finding) { f.RuleID = id } }
+
+// WithMatchedCode stores the code snippet that triggered the finding.
+func WithMatchedCode(code string) Option { return func(f *Finding) { f.MatchedCode = code } }
+
+// WithConfidence overrides the default confidence score.
+func WithConfidence(c float64) Option {
+	return func(f *Finding) {
+		f.Confidence = c
+		f.SeverityLabel = SeverityFromConfidence(c)
+	}
+}
+
+// New constructs a Finding with the given path, line range, CWE, and
+// justification message. Optional metadata is applied via opts.
+// SeverityLabel defaults to SeverityLow; use WithConfidence to update both.
+func New(path string, lr LineRange, cwe, justification string, opts ...Option) Finding {
+	f := Finding{
+		Path:          path,
+		LineRange:     lr,
+		CWE:           cwe,
+		Justification: justification,
+		Confidence:    confLow,
+		SeverityLabel: SeverityLow,
+	}
+	f.ID = ComputeID(cwe, path, "")
+	for _, o := range opts {
+		o(&f)
+	}
+	// Recompute ID after opts may have set MatchedCode.
+	f.ID = ComputeID(f.CWE, f.Path, f.MatchedCode)
+	return f
 }
 
 // ComputeID returns the canonical stable dedup hash for a finding.
