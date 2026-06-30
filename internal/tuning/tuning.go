@@ -62,6 +62,8 @@ const (
 	DedupEmbeddingExact    = 0.95 // cosine ≥ this → definite duplicate (Gate 3)
 	DedupEmbeddingNearMiss = 0.85 // lower bound of near-miss range → escalate to Gate 4
 	DedupASTEdit           = 0.85 // AST token edit similarity ≥ this → duplicate (Gate 4)
+	// ponytail: circuit breaker — O(N²) pairs; raise when repos routinely exceed this
+	DedupGate3MaxSurvivors = 300 // skip Gate 3 and pass straight to Gate 4 above this count
 )
 
 // ── Confidence boosts ────────────────────────────────────────────────────────

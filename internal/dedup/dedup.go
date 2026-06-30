@@ -236,6 +236,12 @@ func (l *Layer) gate3(ctx context.Context, survivors []finding.Finding) (
 	if l.w == nil || len(survivors) == 0 {
 		return survivors, nil, 0, nil
 	}
+	// ponytail: circuit breaker — O(N²) pairs; DedupGate3MaxSurvivors controls the ceiling
+	if len(survivors) > tuning.DedupGate3MaxSurvivors {
+		slog.Warn("dedup gate3: survivor count exceeds circuit breaker threshold, skipping embedding pass",
+			"component", "dedup", "count", len(survivors), "threshold", tuning.DedupGate3MaxSurvivors)
+		return survivors, nil, 0, nil
+	}
 
 	// Collect codes for findings that have MatchedCode.
 	codeIdx := make([]int, 0, len(survivors)) // idx into survivors for each code

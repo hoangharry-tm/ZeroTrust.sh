@@ -127,9 +127,55 @@ def calibrate(csv_path: str, out_path: str) -> dict:
     return result
 
 
+def calibrate_from_eval_probs(probs_csv: str, out_path: str) -> dict:
+    """Threshold-only calibration from train_lora.py eval_probs.csv (columns: prob, label).
+
+    Skips Platt / budget fields (no CVSS / call_depth in the training eval set).
+    Merges with defaults so the output JSON is always complete.
+    """
+    df = pd.read_csv(probs_csv)
+    if not {"prob", "label"}.issubset(df.columns):
+        print("error: --eval-probs CSV must have 'prob' and 'label' columns", file=sys.stderr)
+        sys.exit(1)
+
+    y = df["label"].values
+    probs = df["prob"].values
+
+    vuln_thresh = _best_threshold(y, probs, beta=2.0)
+    safe_thresh = 1.0 - _best_threshold(1 - y, 1 - probs, beta=2.0)
+    conf_block, conf_high, conf_medium, conf_low = _severity_thresholds(y, probs)
+
+    result = {
+        "classifier_vulnerable_threshold": round(vuln_thresh, 4),
+        "classifier_safe_threshold": round(safe_thresh, 4),
+        # Platt / budget: carry through defaults (no CVSS in eval_probs)
+        "cvss_platt_slope": 0.0,
+        "cvss_platt_intercept": 0.0,
+        "budget_weight_cvss": 0.33,
+        "budget_weight_uncert": 0.33,
+        "budget_weight_depth": 0.34,
+        "conf_block": conf_block,
+        "conf_high": conf_high,
+        "conf_medium": conf_medium,
+        "conf_low": conf_low,
+    }
+
+    with open(out_path, "w") as f:
+        json.dump(result, f, indent=2)
+    print(f"calibration written to {out_path}")
+    print(json.dumps(result, indent=2))
+    return result
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input", required=True, help="labeled CSV file")
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--input", help="labeled CSV (surface_id, cvss, classifier_prob, call_depth, label)")
+    group.add_argument("--eval-probs", metavar="CSV", help="eval_probs.csv from train_lora.py (prob, label)")
     parser.add_argument("--out", default="tuning_calibrated.json", help="output JSON path")
     args = parser.parse_args()
-    calibrate(args.input, args.out)
+
+    if args.eval_probs:
+        calibrate_from_eval_probs(args.eval_probs, args.out)
+    else:
+        calibrate(args.input, args.out)

@@ -42,6 +42,9 @@ type ScanInfo struct {
 	ModulesScanned int    // number of modules in scope (0 = omit from display)
 	LOC            int    // lines of code scanned (0 = omit)
 	ScanDuration   string // e.g. "4.2s" (empty = omit)
+	// Alerts are operator-facing degradation notices (e.g. MIV block, CPG build failure).
+	// Non-empty entries are rendered as warning banners in the report header.
+	Alerts []string
 }
 
 // FileGroup is a pre-computed (file, count) pair used by the sidebar file list.

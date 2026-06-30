@@ -15,11 +15,13 @@ dependencies = [
     "accelerate>=0.30.0",
     "sentencepiece>=0.2.0",
     "protobuf>=4.25.0",
-    "tree-sitter>=0.21.0",  # tree-sitter-languages has no cp313 wheels; add per-lang grammars in P2
+    "tree-sitter>=0.21.0", # tree-sitter-languages has no cp313 wheels; add per-lang grammars in P2
     "datasets>=2.20.0",
     "peft>=0.11.0",
     "evaluate>=0.4.0",
     "cleanlab>=2.6.0",
+    "pandas>=3.0.4",
+    "scikit-learn>=1.9.0",
 ]
 
 [project.optional-dependencies]

@@ -112,6 +112,9 @@ type pipeline struct {
 	scan   *llmscan.Scanner
 	store  *scs.Store
 
+	// degradation alerts surfaced in the HTML report header
+	alerts []string
+
 	// shared
 	w   *worker.Manager
 	dd  *dedup.Layer
@@ -436,6 +439,7 @@ func (p *pipeline) runIngestion(ctx context.Context, events chan<- output.Event)
 	}
 	if ingResult.BlockLLM {
 		p.llm.SetMIVBlocked()
+		p.alerts = append(p.alerts, "MIV blocked LLM: analysis degraded to pattern-only path")
 	}
 	changedCount := 0
 	if ingResult.ChangeSet != nil {
@@ -546,6 +550,7 @@ func (p *pipeline) buildScopeFromChanges(ctx context.Context, ingResult *ingesti
 			Kind: output.EventLog,
 			Log:  fmt.Sprintf("warn: cpg build: %v — taint analysis disabled", buildErr),
 		})
+		p.alerts = append(p.alerts, fmt.Sprintf("CPG build failed (%v): taint analysis disabled, pattern-only path active", buildErr))
 		return joern.FilterScopeByLanguage(changed)
 	}
 
@@ -651,6 +656,7 @@ func (p *pipeline) generateReport(start time.Time, scored []finding.Finding, eve
 		ScannedAt:    start.UTC().Format("2006-01-02 15:04 UTC"),
 		ScanMode:     p.cfg.ScanMode,
 		ScanDuration: time.Since(start).Round(time.Millisecond).String(),
+		Alerts:       p.alerts,
 	}
 	if err := p.rep.Render(f, info, scored); err != nil {
 		p.logger.Error("failed to render report", "err", err)

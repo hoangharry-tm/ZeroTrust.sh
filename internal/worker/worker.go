@@ -57,6 +57,7 @@ import (
 	"path/filepath"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/hoangharry-tm/zerotrust/internal/tuning"
 )
@@ -227,10 +228,10 @@ type Manager struct {
 	pendMu  sync.Mutex
 	pending map[string]chan *Response
 
-	// mu guards dead and restarted.
-	mu        sync.Mutex
-	dead      bool
-	restarted bool
+	// mu guards dead and restartAttempts.
+	mu              sync.Mutex
+	dead            bool
+	restartAttempts int
 }
 
 // NewFromArgs spawns a Manager using an explicit command and argument list.
@@ -348,9 +349,11 @@ func (m *Manager) readLoop(stdout io.Reader, cmd *exec.Cmd) {
 	m.handleDeath()
 }
 
+const maxRestartAttempts = 3
+
 // handleDeath is called by the reader goroutine when the process exits.
-// It attempts one automatic restart (unless Stop was called). If the restart
-// fails, it marks the Manager as dead and drains all pending requests with errors.
+// It attempts up to maxRestartAttempts automatic restarts with exponential backoff
+// (attempt × 500ms). If all attempts fail, it marks the Manager as dead.
 func (m *Manager) handleDeath() {
 	// Clear the stdin pipe under writeMu so new writes fail immediately.
 	m.writeMu.Lock()
@@ -358,31 +361,36 @@ func (m *Manager) handleDeath() {
 	m.writeMu.Unlock()
 
 	m.mu.Lock()
-	alreadyRestarted := m.restarted
+	attempts := m.restartAttempts
 	isStopping := m.stopping.Load()
 	m.mu.Unlock()
 
-	if !alreadyRestarted && !isStopping {
+	if attempts < maxRestartAttempts && !isStopping {
+		attempt := attempts + 1
 		m.logger.Error(
 			"python worker process exited unexpectedly, attempting restart",
-			"component", "worker",
+			"component", "worker", "attempt", attempt, "max", maxRestartAttempts,
 		)
+		time.Sleep(time.Duration(attempt) * 500 * time.Millisecond)
 		if err := m.spawn(); err == nil {
 			pingCtx, cancel := context.WithTimeout(context.Background(), tuning.WorkerRestartPingTimeout)
 			defer cancel()
 			if err := m.Ping(pingCtx); err == nil {
 				m.logger.Info(
 					"python worker restarted successfully",
-					"component", "worker",
+					"component", "worker", "attempt", attempt,
 				)
 				m.mu.Lock()
-				m.restarted = true
+				m.restartAttempts = attempt
 				m.mu.Unlock()
 				// Drain the crash-window requests — callers must retry.
 				m.drainPending("worker restarted after crash; retry the request")
 				return
 			}
 		}
+		m.mu.Lock()
+		m.restartAttempts = attempt
+		m.mu.Unlock()
 	}
 
 	// Restart failed, already restarted once, or deliberate Stop: mark dead.

@@ -119,12 +119,14 @@ func (ix *Indexer) Diff(ctx context.Context, projectID, projectRoot string) (*Ch
 
 	err = filepath.WalkDir(projectRoot, func(absPath string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
-			ix.logger.Warn("diffindex: unreadable path, excluded from changeset",
+			ix.logger.Error("diffindex: unreadable path, aborting diff",
 				"component", "diffindex",
 				"path", absPath,
 				"err", walkErr,
 			)
-			return nil
+			// ponytail: propagate — a security scanner that silently skips
+			// unreadable directories gives a false-clean result.
+			return walkErr
 		}
 		if ctx.Err() != nil {
 			return ctx.Err()

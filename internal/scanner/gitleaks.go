@@ -83,6 +83,7 @@ func (g *GitleaksScanner) Scan(ctx context.Context, target string) ([]finding.Fi
 			r.Description,
 			finding.WithRuleID(r.RuleID),
 			finding.WithConfidence(0.90),
+			finding.WithSourcePath(finding.SourcePattern),
 		)
 		out = append(out, f)
 	}

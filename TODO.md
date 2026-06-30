@@ -27,12 +27,12 @@
 
 ## P1 — Data Collection (5h)
 
-- [ ] **1.1** — Load CVEFixes via HF Datasets: `load_dataset("hitoshura25/cvefixes")` → `pipeline/collectors/cvefixes.py`
-- [ ] **1.2** — Filter to Python, Java, JavaScript (covers TS), Go, C# → same file
-- [ ] **1.3** — Load Juliet C# 1.3 (28,942 synthetic cases, perfect labels) + SARD C# → `pipeline/collectors/juliet.py`
-- [ ] **1.4** — Extract vulnerable/fixed paired samples: `{code, label, cve_id, cwe_id, language, repo}` → both collector files
-- [ ] **1.5** — Dedup: `sha256(code)` within vuln set + across vuln/safe; log dropped count → `pipeline/collectors/dedup.py`
-- [ ] **1.6** — Output raw per-language JSONL → `tests/corpus/raw/{language}.jsonl`
+- [x] **1.1** — Load CVEFixes via HF Datasets: `load_dataset("hitoshura25/cvefixes")` → `pipeline/collectors/cvefixes.py`
+- [x] **1.2** — Filter to Python, Java, JavaScript (covers TS), Go, C# → same file
+- [x] **1.3** — Load Juliet C# 1.3 (28,942 synthetic cases, perfect labels) + SARD C# → `pipeline/collectors/juliet.py`
+- [x] **1.4** — Extract vulnerable/fixed paired samples: `{code, label, cve_id, cwe_id, language, repo}` → both collector files
+- [x] **1.5** — Dedup: `sha256(code)` within vuln set + across vuln/safe; log dropped count → `pipeline/collectors/dedup.py`
+- [x] **1.6** — Output raw per-language JSONL → `tests/corpus/raw/{language}.jsonl`
 
 **Checkpoint**: row counts logged per language. Expected: Java (~3-6K) · Python (~2-4K) · JS/TS (~2-4K) · C# (~30K with Juliet) · Go (~0.5-1.5K, thin — document gap).
 
@@ -40,24 +40,24 @@
 
 ## P2 — Normalization & Splits (4h)
 
-- [ ] **2.1** — Strip comments, normalize whitespace, clip to 1024 tokens → `pipeline/normalizer/normalize.py`
-- [ ] **2.2** — Class balance audit: log vuln:safe ratio per language → same file
-- [ ] **2.3** — Apply weighted loss strategy (not oversampling — avoids overfitting) → same file
-- [ ] **2.4** — CVE-aware stratified 80/10/10 split per language → same file
-- [ ] **2.5** — Write normalized splits → `tests/corpus/normalized/{language}_{split}.jsonl`
+- [x] **2.1** — Strip comments, normalize whitespace, clip to 1024 tokens → `pipeline/normalizer/normalize.py`
+- [x] **2.2** — Class balance audit: log vuln:safe ratio per language → same file
+- [x] **2.3** — Apply weighted loss strategy (not oversampling — avoids overfitting) → same file
+- [x] **2.4** — CVE-aware stratified 80/10/10 split per language → same file
+- [x] **2.5** — Write normalized splits → `tests/corpus/normalized/{language}_{split}.jsonl`
 - [ ] **2.6** — Write corpus statistics → `docs/benchmarks/corpus_stats.md`
 
 ---
 
 ## P3 — Label Noise Audit + Quality Checks (7h)
 
-- [ ] **3.1** — Sample 50 "vulnerable" functions per language for manual noise audit → `pipeline/labeler/noise_audit.py`
+- [x] **3.1** — Sample 50 "vulnerable" functions per language for manual noise audit → `pipeline/labeler/noise_audit.py`
 - [ ] **3.2** — Manual label verification (3 reviewers, independent) — external process
 - [ ] **3.3** — Compute noise rate; log to `corpus_stats.md`
-- [ ] **3.4** — If noise > 40%: apply confident learning via `cleanlab` → same file
-- [ ] **3.5** — Rule-based sanity check: remove CWE-0 placeholders, malformed code → `pipeline/labeler/check.py`
-- [ ] **3.6** — Overlap check: zero train/test overlap (hash + CVE-based); exit 1 on violation → same file
-- [ ] **3.7** — Coverage report: for each Semgrep `p/*` ruleset we dynamically select, confirm ≥ 1 corpus CWE covered; flag gaps → `pipeline/labeler/coverage_report.py`
+- [x] **3.4** — If noise > 40%: apply confident learning via `cleanlab` → same file
+- [x] **3.5** — Rule-based sanity check: remove CWE-0 placeholders, malformed code → `pipeline/labeler/check.py`
+- [x] **3.6** — Overlap check: zero train/test overlap (hash + CVE-based); exit 1 on violation → same file
+- [x] **3.7** — Coverage report: for each Semgrep `p/*` ruleset we dynamically select, confirm ≥ 1 corpus CWE covered; flag gaps → `pipeline/labeler/coverage_report.py`
 
 **Checkpoint**: `check.py` exits 0; coverage gaps documented in `docs/rules/coverage_gap.md`.
 
@@ -65,11 +65,11 @@
 
 ## P4 — LoRA Fine-Tuning of CodeT5+ (9h script + 5.5h GPU, ~$3.80)
 
-- [ ] **4.1** — Verify CodeT5+ attention module names: `model.named_modules()` → confirm `target_modules` (0.5h)
-- [ ] **4.2** — Training script: `LoraConfig(r=16, alpha=32, target_modules=all_attn, dropout=0.05)` + `BCEWithLogitsLoss` + fp16 mixed precision (3.0h) → `scripts/train_lora.py`
+- [x] **4.1** — Verify CodeT5+ attention module names: `model.named_modules()` → confirm `target_modules` (0.5h)
+- [x] **4.2** — Training script: `LoraConfig(r=16, alpha=32, target_modules=all_attn, dropout=0.05)` + `BCEWithLogitsLoss` + fp16 mixed precision (3.0h) → `scripts/train_lora.py`
 - [ ] **4.3–4.7** — Train per-language adapters: Python · Java · JavaScript · Go · C# (1.0-1.5h each, ~$0.70-1.04 each on A40 @ $0.69/h)
-- [ ] **4.8** — Save adapters → `~/.zerotrust/adapters/{language}/` (0.2h)
-- [ ] **4.9** — Evaluate per-language F1 on held-out test split (1.0h)
+- [x] **4.8** — Save adapters → `~/.zerotrust/adapters/{language}/` (0.2h)
+- [x] **4.9** — Evaluate per-language F1 on held-out test split (1.0h)
 - [ ] **4.10** — Cross-validate on PrimeVul: `load_dataset("colin/PrimeVul", split="test")` (1.0h)
 - [ ] **4.11** — Precision check on OWASP Benchmark (Java, 2,741 cases, ground truth) (1.0h)
 - [ ] **4.12** — Log all results → `docs/benchmarks/a18_gap.md` (0.5h)
@@ -89,10 +89,10 @@
 
 ## P5 — Deployment Integration (4h)
 
-- [ ] **5.1** — Wire LoRA into classifier: base CodeT5+ loads once; `set_adapter(language)` per classify request → `worker/handlers/classify.py`
-- [ ] **5.2** — Load adapters from `~/.zerotrust/adapters/` on worker startup → same file
-- [ ] **5.3** — Threshold recalibration: replace hardcoded 0.85/0.15 with per-language empirical values → `worker/tuning.py`
-- [ ] **5.5** ⚠️ **Severity gate calibration** — `ConfBlock/High/Medium/Low` (0.92/0.75/0.60/0.30) and CVSS-band confidence values (0.95/0.82/0.68) are all judgment-based guesses with no statistical backing. After P4 produces a labeled val-set, run `scripts/calibrate.py --input val.csv --out cal.json` to fit real thresholds from model outputs, then pass `--calibration cal.json` at scan time. See `docs/planning/implementation-plan.md` A18.T8 for full details.
+- [x] **5.1** — Wire LoRA into classifier: base CodeT5+ loads once; `set_adapter(language)` per classify request → `worker/handlers/classify.py`
+- [x] **5.2** — Load adapters from `~/.zerotrust/adapters/` on worker startup → same file
+- [x] **5.3** — Threshold recalibration: replace hardcoded 0.85/0.15 with per-language empirical values → `worker/tuning.py`
+- [x] **5.5** ⚠️ **Severity gate calibration** — `ConfBlock/High/Medium/Low` (0.92/0.75/0.60/0.30) and CVSS-band confidence values (0.95/0.82/0.68) are all judgment-based guesses with no statistical backing. After P4 produces a labeled val-set, run `scripts/calibrate.py --input val.csv --out cal.json` to fit real thresholds from model outputs, then pass `--calibration cal.json` at scan time. See `docs/planning/implementation-plan.md` A18.T8 for full details.
 - [ ] **5.4** — Update accuracy claims: replace A-18 caveat with validated per-language F1 → `CLAUDE.md`, `README.md`, report output
 
 ---
@@ -107,15 +107,15 @@
 
 ### 6a — Deprecate Legacy Static Architectures
 
-- [ ] **6a.1** — Delete the entire `rules/` directory tree (~57 custom YAML files).
-- [ ] **6a.2** — Rename `internal/pattern/` to `internal/scanner/`.
-- [ ] **6a.3** — Drop `astgrep/` and `verifier/` sub-packages completely to remove legacy custom code matching.
-- [ ] **6a.4** — Strip old static ruleset registration paths out of `cmd/zerotrust/scan.go`.
+- [x] **6a.1** — Delete the entire `rules/` directory tree (~57 custom YAML files).
+- [x] **6a.2** — Rename `internal/pattern/` to `internal/scanner/`.
+- [x] **6a.3** — Drop `astgrep/` and `verifier/` sub-packages completely to remove legacy custom code matching.
+- [x] **6a.4** — Strip old static ruleset registration paths out of `cmd/zerotrust/scan.go`.
 
 ### 6b — Build Stack Profiler & Orchestrator Core
 
-- [ ] **6b.1** — Implement `internal/detector/`: parses target directories for files and extensions (`go.mod`, `mix.exs`, `Cargo.toml`, etc.) to build a unified `StackProfile` struct.
-- [ ] **6b.2** — Define the core `Scanner` interface contract in `internal/scanner/scanner.go`:
+- [x] **6b.1** — Implement `internal/detector/`: parses target directories for files and extensions (`go.mod`, `mix.exs`, `Cargo.toml`, etc.) to build a unified `StackProfile` struct.
+- [x] **6b.2** — Define the core `Scanner` interface contract in `internal/scanner/scanner.go`:
       `go
       type Scanner interface {
           Name() string
@@ -123,19 +123,19 @@
           Scan(ctx context.Context, target string) ([]Finding, error)
       }
       `
-- [ ] **6b.3** — Build `internal/orchestrator/engine.go`: reads the profile, filters active scanners using `.Supports()`, and dispatches them concurrently with a context deadline timeout.
+- [x] **6b.3** — Build `internal/orchestrator/engine.go`: reads the profile, filters active scanners using `.Supports()`, and dispatches them concurrently with a context deadline timeout.
 
 ### 6c — Streamlined Open-Source Integration Wrappers (MVP Tier)
 
-- [ ] **6c.1** — **OpenGrep Dynamic Wrapper:** Read `StackProfile.Languages`. Map detected keys directly to standard registry configurations (e.g., `p/python`, `p/rust`, or fallback `p/owasp-top-ten`) inside a native Go string lookup map.
-- [ ] **6c.2** — **Gitleaks Wrapper:** Wire binary execution; returns `true` for all scans to perform universal hardcoded secret auditing across all target formats.
-- [ ] **6c.3** — **OSV-Scanner Wrapper:** Triggers fast dependency tracking against package manifest lockfiles if present.
+- [x] **6c.1** — **OpenGrep Dynamic Wrapper:** Read `StackProfile.Languages`. Map detected keys directly to standard registry configurations (e.g., `p/python`, `p/rust`, or fallback `p/owasp-top-ten`) inside a native Go string lookup map.
+- [x] **6c.2** — **Gitleaks Wrapper:** Wire binary execution; returns `true` for all scans to perform universal hardcoded secret auditing across all target formats.
+- [x] **6c.3** — **OSV-Scanner Wrapper:** Triggers fast dependency tracking against package manifest lockfiles if present.
 
 ### 6d — Pipeline Synthesis & Future Hooks (Option 1 Documentation)
 
-- [ ] **6d.1** — Adapt `internal/dedup/` to handle standardized structural inputs originating from `opengrep`, `gitleaks`, and `osv`.
-- [ ] **6d.2** — Wire the new orchestrator directly into your central execution pipeline, firing concurrently while the asynchronous Joern CPG compiler runs in the background.
-- [ ] **6d.3** — Add a `FUTURE_DEVELOPMENT.md` or code-level comments in `internal/orchestrator/` detailing how the Option 1 Mason-style tool registry yaml will eventually hook into the established `Scanner` contract to dynamically fetch ecosystem-specific linter binaries.
+- [x] **6d.1** — Adapt `internal/dedup/` to handle standardized structural inputs originating from `opengrep`, `gitleaks`, and `osv`.
+- [x] **6d.2** — Wire the new orchestrator directly into your central execution pipeline, firing concurrently while the asynchronous Joern CPG compiler runs in the background.
+- [x] **6d.3** — Add a `FUTURE_DEVELOPMENT.md` or code-level comments in `internal/orchestrator/` detailing how the Option 1 Mason-style tool registry yaml will eventually hook into the established `Scanner` contract to dynamically fetch ecosystem-specific linter binaries.
 
 ---
 

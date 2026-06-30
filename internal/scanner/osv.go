@@ -117,6 +117,7 @@ func (o *OSVScanner) Scan(ctx context.Context, target string) ([]finding.Finding
 				opts := []finding.Option{
 					finding.WithCVE(vuln.ID),
 					finding.WithConfidence(0.85),
+					finding.WithSourcePath(finding.SourcePattern),
 				}
 				if vuln.CVSS > 0 {
 					opts = append(opts, finding.WithCVSS(vuln.CVSS))
