@@ -22,6 +22,24 @@ import (
 	"github.com/hoangharry-tm/zerotrust/internal/finding"
 )
 
+// BinarySpec identifies a tool binary by name, pinned version, and resolved path.
+// Set Path to the absolute binary location; leave it empty to resolve via $PATH.
+// When Mason (Option 1) is adopted, it will populate Path from its local registry
+// so the rest of the codebase requires no changes.
+type BinarySpec struct {
+	Name    string
+	Version string // empty = any; Mason uses this to pin downloads
+	Path    string // empty = $PATH lookup
+}
+
+// Executable returns the effective binary path: Path when set, Name otherwise.
+func (b BinarySpec) Executable() string {
+	if b.Path != "" {
+		return b.Path
+	}
+	return b.Name
+}
+
 // Scanner is the contract every tool driver must satisfy.
 // Implementations live in sub-packages (opengrep, gitleaks, osv).
 //

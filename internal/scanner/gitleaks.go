@@ -30,10 +30,9 @@ type GitleaksScanner struct {
 	binaryPath string
 }
 
-// NewGitleaks returns a GitleaksScanner using the given binary path.
-// Pass "gitleaks" to rely on PATH resolution.
-func NewGitleaks(binaryPath string) *GitleaksScanner {
-	return &GitleaksScanner{binaryPath: binaryPath}
+// NewGitleaks returns a GitleaksScanner using the resolved binary from spec.
+func NewGitleaks(spec BinarySpec) *GitleaksScanner {
+	return &GitleaksScanner{binaryPath: spec.Executable()}
 }
 
 // Name implements Scanner.

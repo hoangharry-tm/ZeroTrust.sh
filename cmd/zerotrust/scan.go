@@ -264,11 +264,11 @@ func newPipeline(ctx context.Context, cfg ScanConfig) (*pipeline, error) {
 	llmClient := ollama.New(cfg.OllamaURL, cfg.ModelName)
 
 	// Path A
-	og := opengrep.NewMulti("opengrep", logger)
+	og := opengrep.NewMulti(scanner.BinarySpec{Name: "opengrep"}, logger)
 	orch := orchestrator.New(
 		og,
-		scanner.NewGitleaks("gitleaks"),
-		scanner.NewOSV("osv-scanner"),
+		scanner.NewGitleaks(scanner.BinarySpec{Name: "gitleaks"}),
+		scanner.NewOSV(scanner.BinarySpec{Name: "osv-scanner"}),
 	)
 	joernOpts := []joern.Option{joern.WithServerURL(cfg.JoernURL)}
 	if cfg.JoernBin != "" {

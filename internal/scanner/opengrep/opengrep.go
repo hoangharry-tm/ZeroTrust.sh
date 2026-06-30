@@ -30,6 +30,7 @@ import (
 
 	"github.com/hoangharry-tm/zerotrust/internal/detector"
 	"github.com/hoangharry-tm/zerotrust/internal/finding"
+	"github.com/hoangharry-tm/zerotrust/internal/scanner"
 )
 
 // RawFinding is the JSON structure emitted by OpenGrep's --json output.
@@ -89,29 +90,22 @@ type Runner struct {
 	logger   *slog.Logger
 }
 
-// New returns a Runner using the OpenGrep binary at binaryPath and rules at rulesDir.
+// New returns a Runner using the binary identified by spec and rules at rulesDir.
 // If logger is nil, slog.Default() is used.
-//
-// Parameters:
-//   - binaryPath: path to the opengrep binary (e.g. "opengrep" for PATH lookup).
-//   - rulesDir: path to the rules/ directory (e.g. "rules/").
-//   - logger: structured logger for per-file parse errors.
-// New returns a Runner. rulesDir may be a single directory or a glob-style pattern;
-// to use multiple directories pass them as separate New calls or use NewMulti.
-func New(binaryPath, rulesDir string, logger *slog.Logger) *Runner {
+func New(spec scanner.BinarySpec, rulesDir string, logger *slog.Logger) *Runner {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Runner{binaryPath: binaryPath, ruleDirs: []string{rulesDir}, logger: logger}
+	return &Runner{binaryPath: spec.Executable(), ruleDirs: []string{rulesDir}, logger: logger}
 }
 
 // NewMulti returns a Runner that passes each dir as a separate --config flag.
 // Use this to exclude non-opengrep rule formats (e.g. rules/astgrep/).
-func NewMulti(binaryPath string, logger *slog.Logger, ruleDirs ...string) *Runner {
+func NewMulti(spec scanner.BinarySpec, logger *slog.Logger, ruleDirs ...string) *Runner {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Runner{binaryPath: binaryPath, ruleDirs: ruleDirs, logger: logger}
+	return &Runner{binaryPath: spec.Executable(), ruleDirs: ruleDirs, logger: logger}
 }
 
 // langToPack maps a detected language to its Semgrep registry rule pack.

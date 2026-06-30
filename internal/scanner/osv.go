@@ -31,10 +31,9 @@ type OSVScanner struct {
 	binaryPath string
 }
 
-// NewOSV returns an OSVScanner using the given binary path.
-// Pass "osv-scanner" to rely on PATH resolution.
-func NewOSV(binaryPath string) *OSVScanner {
-	return &OSVScanner{binaryPath: binaryPath}
+// NewOSV returns an OSVScanner using the resolved binary from spec.
+func NewOSV(spec BinarySpec) *OSVScanner {
+	return &OSVScanner{binaryPath: spec.Executable()}
 }
 
 // Name implements Scanner.
