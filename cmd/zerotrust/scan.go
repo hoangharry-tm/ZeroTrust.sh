@@ -71,6 +71,7 @@ import (
 	"github.com/hoangharry-tm/zerotrust/internal/semantic/enrichment"
 	"github.com/hoangharry-tm/zerotrust/internal/semantic/llmscan"
 	"github.com/hoangharry-tm/zerotrust/internal/semantic/scs"
+	"github.com/hoangharry-tm/zerotrust/internal/config"
 	"github.com/hoangharry-tm/zerotrust/internal/semantic/summarizer"
 	"github.com/hoangharry-tm/zerotrust/internal/semantic/targeting"
 	"github.com/hoangharry-tm/zerotrust/internal/tuning"
@@ -190,13 +191,14 @@ func (h *eventsHandler) WithGroup(name string) slog.Handler {
 func newPipeline(ctx context.Context, cfg ScanConfig) (*pipeline, error) {
 	cfg.defaults()
 
-	cal, err := tuning.LoadCalibration(cfg.CalibrationPath)
+	ztCfg, err := config.Load(cfg.CalibrationPath)
 	if err != nil {
 		return nil, fmt.Errorf("load calibration: %w", err)
 	}
+	config.Set(ztCfg)
 	if cfg.CalibrationPath != "" {
 		// ponytail: parent env inherits to exec.Command subprocess
-		_ = os.Setenv("ZT_CALIBRATION", cfg.CalibrationPath)
+		_ = os.Setenv("ZT_CONFIG_PATH", cfg.CalibrationPath)
 	}
 
 	absTarget, err := filepath.Abs(cfg.Target)
@@ -277,6 +279,9 @@ func newPipeline(ctx context.Context, cfg ScanConfig) (*pipeline, error) {
 	if cfg.JoernBin != "" {
 		joernOpts = append(joernOpts, joern.WithBinaryPath(cfg.JoernBin))
 	}
+	if secs := ztCfg.JoernQueryTimeoutSeconds; secs > 0 {
+		joernOpts = append(joernOpts, joern.WithQueryTimeout(time.Duration(secs)*time.Second))
+	}
 	jc, err := joern.New(joernOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("configure joern: %w", err)
@@ -287,13 +292,13 @@ func newPipeline(ctx context.Context, cfg ScanConfig) (*pipeline, error) {
 	tgt := targeting.New(graph)
 	enr := enrichment.New(graph, "trivy", cfg.Offline)
 	clf := classifier.New(wm, logger)
-	asm := assembler.New(graph, tuning.AssemblerMaxDepth)
+	asm := assembler.New(graph, config.C.AssemblerMaxDepth)
 	sum := summarizer.New(wm)
-	bud := budget.New(cfg.TokenCap, cal.BudgetWeightCVSS, cal.BudgetWeightUncert, cal.BudgetWeightDepth)
+	bud := budget.New(cfg.TokenCap, config.C.BudgetWeightCVSS, config.C.BudgetWeightUncert, config.C.BudgetWeightDepth)
 	sc := llmscan.New(wm)
 	store := scs.New()
 
-	// Output
+	// Output — cross-scan dedup DB is wired after ingestion when projectID is resolved
 	dd := dedup.NewWithRoot(cfg.Target)
 	pg := patch.New(cfg.Target)
 	rg := report.New(cfg.ReportPath)
@@ -352,6 +357,13 @@ func (p *pipeline) run(ctx context.Context, events chan<- output.Event) error {
 	// Register project and scan run
 	p.registerRun(ctx, ingResult)
 
+	// Wire cross-scan dedup now that projectID is resolved.
+	// This enables the dedup layer to skip findings already persisted
+	// from prior scans using a lightweight SQLite query.
+	if p.db != nil {
+		p.dd.SetDB(p.db, ingResult.ProjectID)
+	}
+
 	// Step 1.5: CPG build/load + scope resolution
 	scopeFiles := p.resolveScope(ctx, ingResult, events)
 
@@ -399,6 +411,7 @@ func (p *pipeline) run(ctx context.Context, events chan<- output.Event) error {
 	if err := p.generatePatches(ctx, scored); err != nil {
 		return err
 	}
+	p.persistPatches(ctx, scored)
 
 	// Step 6: Report
 	p.generateReport(start, scored, events)
@@ -517,7 +530,7 @@ func (p *pipeline) loadCachedCPG(ctx context.Context, ingResult *ingestion.Resul
 		}
 		p.logger.Info("joern: cached CPG not found — building fresh CPG from all project files",
 			"files", len(allFiles))
-		if buildErr := p.buildOrLoadCPG(ctx, cpgPath, allFiles, events); buildErr != nil {
+		if buildErr := p.buildOrLoadCPG(ctx, ingResult.ProjectID, cpgPath, allFiles, events); buildErr != nil {
 			p.logger.Warn("joern: fresh CPG build failed on no-change scan", "err", buildErr)
 		}
 	}
@@ -544,7 +557,7 @@ func (p *pipeline) buildScopeFromChanges(ctx context.Context, ingResult *ingesti
 	}
 
 	cpgPath := cpgSnapshotPath(p.cfg.ProjectID)
-	buildErr := p.buildOrLoadCPG(ctx, cpgPath, changed, events)
+	buildErr := p.buildOrLoadCPG(ctx, ingResult.ProjectID, cpgPath, changed, events)
 	if buildErr != nil {
 		output.Emit(events, output.Event{
 			Kind: output.EventLog,
@@ -615,6 +628,23 @@ func (p *pipeline) persistFindings(ctx context.Context, ingResult *ingestion.Res
 		if upsertErr := p.db.UpsertFinding(ctx, row); upsertErr != nil {
 			p.logger.Warn("failed to persist finding",
 				"component", "scan", "finding_id", f.ID, "err", upsertErr)
+		}
+	}
+}
+
+// persistPatches writes generated patch text back to the DB so curate.py can
+// read them without re-invoking Ollama.
+func (p *pipeline) persistPatches(ctx context.Context, scored []finding.Finding) {
+	if p.db == nil {
+		return
+	}
+	for i := range scored {
+		f := &scored[i]
+		if f.Patch == "" {
+			continue
+		}
+		if err := p.db.UpdateFindingPatch(ctx, f.ID, f.Patch, f.PatchStatus); err != nil {
+			p.logger.Warn("failed to cache patch", "finding_id", f.ID, "err", err)
 		}
 	}
 }
@@ -723,6 +753,20 @@ func (p *pipeline) runPathA(ctx context.Context, res *ingestion.Result, scopeFil
 		for _, rel := range res.ChangeSet.Changed {
 			changed = append(changed, filepath.Join(p.cfg.Target, rel))
 		}
+	}
+
+	// Incremental bypass: no changed files and no scope → nothing to scan.
+	if len(changed) == 0 && len(scopeFiles) == 0 {
+		slog.Debug("path a: no files changed or in scope, skipping")
+		output.Emit(events, output.Event{
+			Kind:  output.EventStageEnd,
+			Stage: "path a",
+			Summary: &output.StageSummary{
+				Stage:  "path a",
+				Detail: "bypassed: no files changed",
+			},
+		})
+		return nil
 	}
 
 	// rawBuf collects findings from all detectors; protected by mu.
@@ -1113,7 +1157,6 @@ func stateDBPath(target string) (string, error) {
 // before the build is skipped. This keeps build times under the 60 s target.
 // If the scope exceeds this limit, a warning is logged and taint analysis is
 // skipped for this scan (OpenGrep / ast-grep / instrscan continue unaffected).
-const maxScopeLOC = tuning.CPGMaxScopeLOC
 
 // countLOC returns the total line count across all given files.
 // Files that cannot be read or opened are silently skipped.
@@ -1132,9 +1175,43 @@ func countLOC(files []string) (int, error) {
 // buildOrLoadCPG builds a fresh CPG or loads an existing snapshot and applies
 // incremental patches. Returns nil on success or an error if the CPG cannot be
 // prepared (non-fatal — callers proceed without taint analysis).
-func (p *pipeline) buildOrLoadCPG(ctx context.Context, cpgPath string, changedFiles []string, events chan<- output.Event) error {
+//
+// The projectID parameter is used to query/update the cpg_cache table for
+// fast bypass when no structural changes have occurred since the last scan.
+func (p *pipeline) buildOrLoadCPG(ctx context.Context, projectID, cpgPath string, changedFiles []string, events chan<- output.Event) error {
 	if p.joern == nil {
 		return fmt.Errorf("joern client not initialized")
+	}
+
+	// ── CPG cache gate: query cpg_cache before building ─────────────────────
+	// If a previous snapshot exists and changed_functions == 0, the CPG is
+	// already up to date — skip the full build/load/patch cycle.
+	if projectID != "" && p.db != nil {
+		cached, err := p.db.GetCPGCache(ctx, projectID)
+		if err == nil && cached.ChangedFunctions == 0 {
+			if _, statErr := os.Stat(cached.CPGPath); statErr == nil {
+				p.logger.Info("cpg_cache: verified — no structural changes, reusing cached CPG",
+					"component", "cpg",
+					"path", cached.CPGPath,
+					"built_at", cached.BuiltAt,
+				)
+				if err := p.joern.LoadCPG(ctx, cached.CPGPath); err != nil {
+					p.logger.Warn("cpg_cache: cached file not loadable, rebuilding",
+						"component", "cpg", "err", err)
+				} else {
+					return nil
+				}
+			} else {
+				p.logger.Warn("cpg_cache: cached CPG file missing, rebuilding",
+					"component", "cpg", "path", cached.CPGPath)
+			}
+		} else if err != nil {
+			p.logger.Debug("cpg_cache: no prior cache entry", "component", "cpg")
+		} else {
+			p.logger.Debug("cpg_cache: structural changes detected, rebuilding",
+				"component", "cpg",
+				"changed_functions", cached.ChangedFunctions)
+		}
 	}
 
 	// Query the current Joern version for snapshot invalidation.
@@ -1199,7 +1276,7 @@ func (p *pipeline) buildOrLoadCPG(ctx context.Context, cpgPath string, changedFi
 					Stage: "cpg",
 					Log:   fmt.Sprintf("no prior CPG nodes for %s — falling back to full build", f),
 				})
-				return p.buildFullCPG(ctx, cpgPath, changedFiles)
+				return p.buildFullCPG(ctx, projectID, cpgPath, changedFiles)
 			}
 			for _, n := range nodes {
 				changedFunctions = append(changedFunctions, n.ID)
@@ -1215,8 +1292,8 @@ func (p *pipeline) buildOrLoadCPG(ctx context.Context, cpgPath string, changedFi
 		err := p.joern.IncrementalPatch(ctx, joern.IncrementalPatchConfig{
 			ChangedFunctions:   changedFunctions,
 			RemovedFiles:       nil, // removed not tracked here
-			MaxDepth:           tuning.CPGDefaultMaxDepth,
-			HubCallerThreshold: tuning.CPGHubCallerThreshold,
+			MaxDepth:           config.C.CPGDefaultMaxDepth,
+			HubCallerThreshold: config.C.CPGHubCallerThreshold,
 			SerializedCPGPath:  cpgPath,
 		})
 		if err != nil {
@@ -1226,19 +1303,35 @@ func (p *pipeline) buildOrLoadCPG(ctx context.Context, cpgPath string, changedFi
 				Stage: "cpg",
 				Log:   fmt.Sprintf("incremental patch aborted (%v) — full rebuild", err),
 			})
-			return p.buildFullCPG(ctx, cpgPath, changedFiles)
+			return p.buildFullCPG(ctx, projectID, cpgPath, changedFiles)
+		}
+
+		// Update cpg_cache after successful incremental patch: mark
+		// changed_functions = 0 so the verification gate on the next scan
+		// can bypass the build entirely if no further changes occur.
+		if p.db != nil && projectID != "" {
+			if cacheErr := p.db.UpsertCPGCache(ctx, sqlite.CPGCacheRow{
+				ProjectID:        projectID,
+				CPGPath:          cpgPath,
+				ScopeMode:        p.cfg.ScanMode,
+				ChangedFunctions: 0,
+			}); cacheErr != nil {
+				p.logger.Warn("failed to update CPG cache after incremental patch",
+					"component", "cpg", "err", cacheErr)
+			}
 		}
 
 		return nil
 	}
 
 	// No prior snapshot — full build.
-	return p.buildFullCPG(ctx, cpgPath, changedFiles)
+	return p.buildFullCPG(ctx, projectID, cpgPath, changedFiles)
 }
 
 // buildFullCPG builds a complete CPG from the given files and saves the snapshot.
 // Returns nil on success or an error the caller should handle as non-fatal.
-func (p *pipeline) buildFullCPG(ctx context.Context, cpgPath string, scopeFiles []string) error {
+// The projectID parameter is used to update the cpg_cache table.
+func (p *pipeline) buildFullCPG(ctx context.Context, projectID, cpgPath string, scopeFiles []string) error {
 	if len(scopeFiles) == 0 {
 		return fmt.Errorf("no files in scope for CPG build")
 	}
@@ -1248,9 +1341,9 @@ func (p *pipeline) buildFullCPG(ctx context.Context, cpgPath string, scopeFiles 
 	if err != nil {
 		return fmt.Errorf("count loc: %w", err)
 	}
-	if loc > maxScopeLOC {
+	if loc > config.C.CPGMaxScopeLOC {
 		return fmt.Errorf("scope exceeds %d LOC (%d) — CPG build skipped; taint analysis disabled",
-			maxScopeLOC, loc)
+			config.C.CPGMaxScopeLOC, loc)
 	}
 
 	p.logger.Info(
@@ -1290,6 +1383,20 @@ func (p *pipeline) buildFullCPG(ctx context.Context, cpgPath string, scopeFiles 
 		"loc", loc,
 	)
 
+	// Persist CPG cache entry so the cpg_cache verification gate can skip
+	// future builds when no structural changes are detected.
+	if p.db != nil && projectID != "" {
+		if cacheErr := p.db.UpsertCPGCache(ctx, sqlite.CPGCacheRow{
+			ProjectID:        projectID,
+			CPGPath:          cpgPath,
+			ScopeMode:        p.cfg.ScanMode,
+			ChangedFunctions: 0,
+		}); cacheErr != nil {
+			p.logger.Warn("failed to persist CPG cache entry",
+				"component", "cpg", "err", cacheErr)
+		}
+	}
+
 	// Persist the Joern version alongside the snapshot for invalidation on
 	// repeat scans. Non-fatal: a write failure just means the next scan may
 	// rebuild unnecessarily.
@@ -1323,11 +1430,11 @@ func cpgSnapshotPath(projectID string) string {
 func moduleDepthForMode(mode string) int {
 	switch mode {
 	case "Thorough":
-		return tuning.ModuleDepthThorough
+		return config.C.ModuleDepthThorough
 	case "Full":
 		return 0 // 0 means no expansion needed — entire codebase is in scope
 	default: // Default
-		return tuning.ModuleDepthDefault
+		return config.C.ModuleDepthDefault
 	}
 }
 

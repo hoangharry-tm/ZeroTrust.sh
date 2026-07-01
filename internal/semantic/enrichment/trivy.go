@@ -45,7 +45,7 @@ import (
 	"strings"
 
 	"github.com/hoangharry-tm/zerotrust/internal/finding"
-	"github.com/hoangharry-tm/zerotrust/internal/tuning"
+	"github.com/hoangharry-tm/zerotrust/internal/config"
 )
 
 // trivyFSResult is the top-level JSON structure returned by `trivy fs --format json`.
@@ -237,7 +237,7 @@ func ApplyCVEMatches(surfaces []EnrichedSurface, cvesByPkg map[string][]CVEMatch
 		sortCVEMatches(matches)
 		s.CVEMatches = matches
 
-		if matches[0].CVSS >= tuning.AutoFlagCVSS {
+		if matches[0].CVSS >= config.C.AutoFlagCVSS {
 			s.AutoFlagged = true
 		}
 	}

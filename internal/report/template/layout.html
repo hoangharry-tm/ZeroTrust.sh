@@ -79,6 +79,21 @@
         </div>
       </div>
 
+      <!-- ALERTS (MIV blocks, CPG failures, operator notices) -->
+      {{if .Info.Alerts}}
+      <div class="alerts-bar">
+        {{range .Info.Alerts}}
+        <div class="alert-banner">
+          <svg class="note-icon" width="14" height="14" viewBox="0 0 16 16" fill="none">
+            <path d="M8 2L14 13H2L8 2Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+            <path d="M8 6v3M8 11v.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+          {{.}}
+        </div>
+        {{end}}
+      </div>
+      {{end}}
+
       <!-- MAIN -->
       <div class="content">
         <!-- SIDEBAR -->

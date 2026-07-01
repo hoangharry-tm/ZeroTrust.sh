@@ -21,7 +21,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/hoangharry-tm/zerotrust/internal/tuning"
+	"github.com/hoangharry-tm/zerotrust/internal/config"
 	"github.com/hoangharry-tm/zerotrust/pkg/cpg"
 )
 
@@ -65,7 +65,15 @@ func (m *mockGraph) QueryEdges(fromID, toID string) ([]cpg.Edge, error) {
 	return out, nil
 }
 
-func (m *mockGraph) GetCallGraph() (cpg.CallGraph, error) { return nil, nil }
+func (m *mockGraph) GetCallGraph() (cpg.CallGraph, error) {
+	cg := make(cpg.CallGraph)
+	for id, callees := range m.callees {
+		for _, c := range callees {
+			cg[id] = append(cg[id], c.ID)
+		}
+	}
+	return cg, nil
+}
 
 func (m *mockGraph) GetCallers(id string) ([]cpg.Node, error) {
 	return m.callers[id], nil
@@ -195,6 +203,11 @@ func TestBuildCallGraph_Connected(t *testing.T) {
 		},
 	}
 	tk := New(g)
+	// Pre-populate the in-memory call graph (as Run would do).
+	cgAll, err := g.GetCallGraph()
+	require.NoError(t, err)
+	tk.callGraph = cgAll
+
 	seeds := []cpg.Node{{ID: "root"}}
 	cg, err := tk.buildCallGraph(context.Background(), seeds)
 	require.NoError(t, err)
@@ -205,6 +218,10 @@ func TestBuildCallGraph_Connected(t *testing.T) {
 func TestBuildCallGraph_Disconnected(t *testing.T) {
 	g := &mockGraph{callees: map[string][]cpg.Node{}}
 	tk := New(g)
+	cgAll, err := g.GetCallGraph()
+	require.NoError(t, err)
+	tk.callGraph = cgAll
+
 	cg, err := tk.buildCallGraph(context.Background(), []cpg.Node{{ID: "isolated"}})
 	require.NoError(t, err)
 	assert.Empty(t, cg["isolated"])
@@ -218,6 +235,10 @@ func TestBuildCallGraph_Cycle(t *testing.T) {
 		},
 	}
 	tk := New(g)
+	cgAll, err := g.GetCallGraph()
+	require.NoError(t, err)
+	tk.callGraph = cgAll
+
 	cg, err := tk.buildCallGraph(context.Background(), []cpg.Node{{ID: "a"}})
 	require.NoError(t, err)
 	// must terminate; both nodes present
@@ -229,7 +250,7 @@ func TestBuildCallGraph_Cycle(t *testing.T) {
 
 func TestAutoFlagCVESurfaces_Block(t *testing.T) {
 	s := Surface{HasCVEMatch: true, CVSSScore: 9.0}
-	flagged, rem := AutoFlagCVESurfaces([]Surface{s}, tuning.DefaultCalibration())
+	flagged, rem := AutoFlagCVESurfaces([]Surface{s}, config.Default())
 	require.Len(t, flagged, 1)
 	assert.Empty(t, rem)
 	assert.InEpsilon(t, 0.95, flagged[0].ConfidenceScore, 1e-6)
@@ -239,8 +260,8 @@ func TestAutoFlagCVESurfaces_HighBoundary(t *testing.T) {
 	// 8.9 → HIGH (0.82), 9.0 → BLOCK (0.95)
 	s89 := Surface{HasCVEMatch: true, CVSSScore: 8.9}
 	s90 := Surface{HasCVEMatch: true, CVSSScore: 9.0}
-	f89, _ := AutoFlagCVESurfaces([]Surface{s89}, tuning.DefaultCalibration())
-	f90, _ := AutoFlagCVESurfaces([]Surface{s90}, tuning.DefaultCalibration())
+	f89, _ := AutoFlagCVESurfaces([]Surface{s89}, config.Default())
+	f90, _ := AutoFlagCVESurfaces([]Surface{s90}, config.Default())
 	assert.InEpsilon(t, 0.82, f89[0].ConfidenceScore, 1e-6)
 	assert.InEpsilon(t, 0.95, f90[0].ConfidenceScore, 1e-6)
 }
@@ -248,7 +269,7 @@ func TestAutoFlagCVESurfaces_HighBoundary(t *testing.T) {
 func TestAutoFlagCVESurfaces_MissingCVSSDefaultsToFive(t *testing.T) {
 	// CVSSScore == 0 → treated as 5.0 → medium (0.68)
 	s := Surface{HasCVEMatch: true, CVSSScore: 0}
-	flagged, rem := AutoFlagCVESurfaces([]Surface{s}, tuning.DefaultCalibration())
+	flagged, rem := AutoFlagCVESurfaces([]Surface{s}, config.Default())
 	require.Len(t, flagged, 1)
 	assert.Empty(t, rem)
 	assert.InEpsilon(t, 0.68, flagged[0].ConfidenceScore, 1e-6)
@@ -256,14 +277,14 @@ func TestAutoFlagCVESurfaces_MissingCVSSDefaultsToFive(t *testing.T) {
 
 func TestAutoFlagCVESurfaces_NoCVEMatchGoesToRemainder(t *testing.T) {
 	s := Surface{HasCVEMatch: false, CVSSScore: 9.0}
-	flagged, rem := AutoFlagCVESurfaces([]Surface{s}, tuning.DefaultCalibration())
+	flagged, rem := AutoFlagCVESurfaces([]Surface{s}, config.Default())
 	assert.Empty(t, flagged)
 	require.Len(t, rem, 1)
 }
 
 func TestAutoFlagCVESurfaces_BelowThresholdGoesToRemainder(t *testing.T) {
 	s := Surface{HasCVEMatch: true, CVSSScore: 3.9}
-	flagged, rem := AutoFlagCVESurfaces([]Surface{s}, tuning.DefaultCalibration())
+	flagged, rem := AutoFlagCVESurfaces([]Surface{s}, config.Default())
 	assert.Empty(t, flagged)
 	require.Len(t, rem, 1)
 }

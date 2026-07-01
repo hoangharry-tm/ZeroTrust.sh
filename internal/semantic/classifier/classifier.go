@@ -56,8 +56,8 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
+	"github.com/hoangharry-tm/zerotrust/internal/config"
 	"github.com/hoangharry-tm/zerotrust/internal/semantic/enrichment"
-	"github.com/hoangharry-tm/zerotrust/internal/tuning"
 	"github.com/hoangharry-tm/zerotrust/internal/worker"
 )
 
@@ -90,16 +90,6 @@ const (
 	EscalateVulnerable EscalateReason = "vulnerable"
 )
 
-// ThresholdVulnerable is the minimum confidence at which a classifier verdict
-// of "vulnerable" is accepted without down-grading to "uncertain".
-// A-18: conservative until CVEFixes multi-language benchmark is complete.
-const ThresholdVulnerable = tuning.ClassifierVulnerableThreshold
-
-// ThresholdSafe is the minimum confidence required for a "safe" verdict to
-// dismiss a surface without LLM escalation. Below this the verdict is treated
-// as "uncertain" and escalates to the LLM tier (high-recall guarantee).
-// A-18: conservative until CVEFixes multi-language benchmark is complete.
-const ThresholdSafe = tuning.ClassifierSafeThreshold
 
 // supportedLanguages is the set of language identifiers that CodeT5+ handles.
 // Keys are normalised lowercase strings (e.g. "js" is not in the set; callers
@@ -151,7 +141,7 @@ func New(w *worker.Manager, logger *slog.Logger) *Gate {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Gate{w: w, escalationThreshold: ThresholdVulnerable, logger: logger}
+	return &Gate{w: w, escalationThreshold: config.C.ClassifierVulnerableThreshold, logger: logger}
 }
 
 // NewWithThreshold returns a Gate with a custom escalation threshold.

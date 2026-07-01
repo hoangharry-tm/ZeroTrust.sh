@@ -26,6 +26,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hoangharry-tm/zerotrust/internal/config"
 	"github.com/hoangharry-tm/zerotrust/internal/finding"
 	"github.com/hoangharry-tm/zerotrust/internal/tuning"
 )
@@ -81,10 +82,9 @@ var cweTechnicalImpact = map[string]string{
 // ── CISA KEV cache ────────────────────────────────────────────────────────────
 
 const (
-	kevURL        = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
-	kevTTL        = tuning.KEVCacheTTL
-	epssURL       = "https://api.first.org/data/v1/epss?cve=%s"
-	epssThreshold = tuning.EPSSPoC
+	kevURL  = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
+	kevTTL  = tuning.KEVCacheTTL
+	epssURL = "https://api.first.org/data/v1/epss?cve=%s"
 )
 
 type kevStore struct {
@@ -253,7 +253,7 @@ func DeriveSSVC(ctx context.Context, f finding.Finding) finding.Finding {
 	// ── TechnicalImpact (CWE table + CVSS floor) ────────────────────────────
 	if v, ok := cweTechnicalImpact[f.CWE]; ok {
 		f.SSVC.TechnicalImpact = v
-	} else if f.CVSS >= tuning.CVSSHigh {
+	} else if f.CVSS >= config.C.CVSSHigh {
 		f.SSVC.TechnicalImpact = "Total"
 	} else {
 		f.SSVC.TechnicalImpact = "Partial"
@@ -271,9 +271,9 @@ func DeriveSSVC(ctx context.Context, f finding.Finding) finding.Finding {
 
 	epss := epssScore(netCtx, f.CVE)
 	switch {
-	case epss >= tuning.EPSSActive:
+	case epss >= config.C.EPSSActive:
 		f.SSVC.Exploitation = "Active"
-	case epss >= epssThreshold:
+	case epss >= config.C.EPSSPoC:
 		f.SSVC.Exploitation = "PoC"
 	default:
 		f.SSVC.Exploitation = "None"

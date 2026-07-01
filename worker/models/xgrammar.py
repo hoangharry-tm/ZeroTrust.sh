@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any, Generic, TypeVar
 
 from pydantic import BaseModel
@@ -112,6 +113,7 @@ class GrammarEnforcer(Generic[T]):
         Raises:
             ValueError: If *text* is not valid JSON or fails Pydantic validation.
         """
+        text = re.sub(r"```(?:json)?\n?|```", "", text).strip()
         try:
             data: Any = json.loads(text)
         except json.JSONDecodeError as exc:

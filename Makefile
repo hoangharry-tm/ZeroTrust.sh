@@ -86,5 +86,24 @@ docker-build:
 docker-push:
 	docker push $(DOCKER_REGISTRY)/zerotrust-engine:$(DOCKER_TAG)
 
-clean:
+## Training pipeline
+.PHONY: install
+install: ## Sync the environment using uv
+	@echo "🚀 Syncing environment with uv"
+	uv sync
+
+.PHONY: curate
+curate: ## Run curation using uv
+	uv run python -m worker.training.curate $(CURATE_ARGS)
+
+.PHONY: finetune
+finetune: ## Run finetuning using uv
+	uv run python pipeline/train/finetune.py $(FINETUNE_ARGS)
+
+.PHONY: train
+train: curate finetune
+
+.PHONY: clean
+clean: ## Remove the virtual environment and build artifacts
+	rm -rf .venv
 	rm -rf $(BUILD_DIR)

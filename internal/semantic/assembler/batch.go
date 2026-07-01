@@ -14,16 +14,11 @@
 
 package assembler
 
-import "github.com/hoangharry-tm/zerotrust/internal/tuning"
+import "github.com/hoangharry-tm/zerotrust/internal/config"
 
-// BatchSize is the maximum number of surfaces per LLM prompt batch.
-// Amortises model-load and context-window overhead; matches the summarizer's
-// Python worker batch size.
-const BatchSize = tuning.AssemblerBatchSize
-
-// Batch splits contexts into groups of at most BatchSize for batch inference.
+// Batch splits contexts into groups of at most config.C.AssemblerBatchSize for batch inference.
 // Each group becomes one prompt payload sent to the Python worker. The last
-// group may be smaller than BatchSize.
+// group may be smaller than the batch size.
 //
 // The input slice is not copied — each sub-slice shares the backing array.
 // Callers must not modify contexts concurrently with the returned batches.
@@ -31,9 +26,10 @@ func Batch(contexts []CallChainContext) [][]CallChainContext {
 	if len(contexts) == 0 {
 		return nil
 	}
-	batches := make([][]CallChainContext, 0, (len(contexts)+BatchSize-1)/BatchSize)
+	batchSize := config.C.AssemblerBatchSize
+	batches := make([][]CallChainContext, 0, (len(contexts)+batchSize-1)/batchSize)
 	for len(contexts) > 0 {
-		n := min(BatchSize, len(contexts))
+		n := min(batchSize, len(contexts))
 		batches = append(batches, contexts[:n])
 		contexts = contexts[n:]
 	}

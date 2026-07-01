@@ -17,8 +17,8 @@ package classifier
 import (
 	"log/slog"
 
+	"github.com/hoangharry-tm/zerotrust/internal/config"
 	"github.com/hoangharry-tm/zerotrust/internal/finding"
-	"github.com/hoangharry-tm/zerotrust/internal/tuning"
 )
 
 // ClassifiedSurface pairs an EnrichedSurface result with the classifier verdict.
@@ -69,11 +69,11 @@ func RouteAndLog(surfaces []ClassifiedSurface, logger *slog.Logger) RouteResult 
 		"dismissed", dismissed,
 	)
 	escalationRate := float64(toDedup+toAssembler) / float64(total)
-	if escalationRate > tuning.EscalationCap {
+	if escalationRate > config.C.EscalationCap {
 		logger.Warn("classifier funnel escalation rate exceeds cap",
 			"component", "classifier",
 			"escalation_rate", escalationRate,
-			"cap", tuning.EscalationCap,
+			"cap", config.C.EscalationCap,
 			"to_dedup", toDedup,
 			"to_assembler", toAssembler,
 			"total", total,
@@ -103,7 +103,7 @@ func Route(surfaces []ClassifiedSurface) RouteResult {
 			r.ToAssembler = append(r.ToAssembler, s)
 		case s.Label == LabelVulnerable:
 			r.ToDedup = append(r.ToDedup, s)
-		case s.Label == LabelSafe && s.Confidence >= ThresholdVulnerable:
+		case s.Label == LabelSafe && s.Confidence >= config.C.ClassifierVulnerableThreshold:
 			r.Dismissed = append(r.Dismissed, s)
 		default:
 			r.ToAssembler = append(r.ToAssembler, s)

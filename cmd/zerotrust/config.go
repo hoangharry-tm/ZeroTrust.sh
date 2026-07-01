@@ -14,7 +14,7 @@
 
 package main
 
-import "github.com/hoangharry-tm/zerotrust/internal/tuning"
+import "github.com/hoangharry-tm/zerotrust/internal/config"
 
 // ScanConfig holds the resolved, validated configuration for a single scan run.
 // It is populated from cobra flags in runScan before the pipeline is constructed.
@@ -101,6 +101,6 @@ func (c *ScanConfig) defaults() {
 		c.OllamaURL = "http://localhost:11434"
 	}
 	if c.TokenCap <= 0 {
-		c.TokenCap = tuning.DefaultTokenCap
+		c.TokenCap = config.C.DefaultTokenCap
 	}
 }

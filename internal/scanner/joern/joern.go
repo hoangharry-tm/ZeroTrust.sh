@@ -77,6 +77,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/hoangharry-tm/zerotrust/internal/config"
 	"github.com/hoangharry-tm/zerotrust/internal/tuning"
 	"github.com/hoangharry-tm/zerotrust/pkg/cpg"
 )
@@ -86,8 +87,6 @@ const (
 	defaultServerURL  = "http://127.0.0.1:8080"
 	defaultBinaryPath = "joern" // Homebrew installs as "joern", not "joern-server"
 	defaultHost       = "127.0.0.1"
-	defaultPort       = tuning.JoernDefaultPort
-	defaultPingRetries    = tuning.JoernPingRetries
 	defaultPingInterval   = tuning.JoernPingInterval
 	defaultPingTimeout    = tuning.JoernPingTimeout
 	defaultStopTimeout    = tuning.JoernStopTimeout
@@ -170,8 +169,8 @@ func New(opts ...Option) (*Client, error) {
 		serverURL:        defaultServerURL,
 		binaryPath:       defaultBinaryPath,
 		host:             defaultHost,
-		port:             defaultPort,
-		pingRetries:      defaultPingRetries,
+		port:             config.C.JoernDefaultPort,
+		pingRetries:      config.C.JoernPingRetries,
 		queryTimeout:     defaultQueryTimeout,
 		buildTimeout:     defaultBuildTimeout,
 		subprocessStderr: io.Discard,
@@ -437,14 +436,26 @@ func VersionSnapshotPath(projectID string) string {
 // Queries use context.Background(); use GraphWithContext for cancellation support.
 // Graph must be called after BuildCPG (or LoadCPG + IncrementalPatch) completes.
 func (c *Client) Graph() *joernGraph {
-	return &joernGraph{client: c, ctx: context.Background()}
+	return c.newGraph(context.Background())
 }
 
 // GraphWithContext returns a cpg.Graph that propagates ctx to every Joern query.
 // Use this in production so that scan cancellation (Ctrl-C, deadline) aborts
 // in-flight CPG queries promptly rather than waiting up to queryTimeout.
 func (c *Client) GraphWithContext(ctx context.Context) *joernGraph {
-	return &joernGraph{client: c, ctx: ctx}
+	return c.newGraph(ctx)
+}
+
+// newGraph creates a joernGraph with a fresh scan-scoped cache.
+func (c *Client) newGraph(ctx context.Context) *joernGraph {
+	return &joernGraph{
+		client: c,
+		ctx:    ctx,
+		cache: &joernGraphCache{
+			methodCache: make(map[cpg.NodeType][]cpg.Node),
+			edgeCache:   make(map[string][]cpg.Edge),
+		},
+	}
 }
 
 // waitReady polls POST /query with a trivial expression until the server

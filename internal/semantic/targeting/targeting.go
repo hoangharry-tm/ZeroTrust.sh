@@ -32,12 +32,18 @@ package targeting
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"math"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 
-	"github.com/hoangharry-tm/zerotrust/internal/tuning"
+	"golang.org/x/sync/errgroup"
+
+	"github.com/hoangharry-tm/zerotrust/internal/config"
 	"github.com/hoangharry-tm/zerotrust/pkg/cpg"
 )
 
@@ -100,7 +106,8 @@ func (cg CallGraph) CallGraphDepth(id string) int {
 
 // Targeter selects analysis surfaces from the CPG.
 type Targeter struct {
-	graph cpg.Graph
+	graph     cpg.Graph
+	callGraph cpg.CallGraph // bulk-fetched once per Run; used by buildCallGraph in-memory
 }
 
 // New returns a Targeter reading from graph.
@@ -202,37 +209,59 @@ func (t *Targeter) queryExternalInputNodes(ctx context.Context) ([]cpg.Node, err
 	return out, nil
 }
 
-// buildCallGraph performs a BFS from the seed nodes, following callee edges,
-// and returns a CallGraph mapping each visited node ID to its direct callee IDs.
+// buildCallGraph performs a BFS from the seed nodes, following callee edges
+// via the in-memory CallGraph map (bulk-fetched once by Run). No HTTP queries
+// are made — the full edge set is already in t.callGraph.
 // Cycles are handled via a visited set — each node is expanded at most once.
 func (t *Targeter) buildCallGraph(_ context.Context, seeds []cpg.Node) (CallGraph, error) {
-	slog.Debug("targeting: building call graph", slog.Int("seeds", len(seeds)))
+	slog.Info("targeting: building call graph (in-memory)", slog.Int("seeds", len(seeds)))
 	cg := make(CallGraph)
 	visited := make(map[string]bool)
-	queue := make([]cpg.Node, len(seeds))
-	copy(queue, seeds)
+	queue := make([]string, len(seeds))
+	for i, s := range seeds {
+		queue[i] = s.ID
+	}
 
+	expanded := 0
+	bfsStart := time.Now()
 	for len(queue) > 0 {
-		node := queue[0]
+		id := queue[0]
 		queue = queue[1:]
-		if visited[node.ID] {
+		if visited[id] {
 			continue
 		}
-		visited[node.ID] = true
+		visited[id] = true
+		expanded++
 
-		callees, err := t.graph.GetCallees(node.ID)
-		if err != nil {
-			return nil, err
+		if expanded%50 == 0 {
+			elapsed := time.Since(bfsStart)
+			elapsedSec := elapsed.Seconds()
+			rate := float64(expanded) / elapsedSec
+			remaining := len(queue)
+			eta := time.Duration(float64(remaining)/elapsedSec*float64(time.Second)) * time.Second
+			slog.Info("targeting: call graph BFS",
+				slog.Int("expanded", expanded),
+				slog.Int("queued", len(queue)),
+				slog.Float64("elapsed_seconds", elapsedSec),
+				slog.Float64("throughput_ops_per_sec", rate),
+				slog.String("eta", eta.Round(time.Second).String()),
+			)
 		}
-		ids := make([]string, 0, len(callees))
-		for _, c := range callees {
-			ids = append(ids, c.ID)
-			if !visited[c.ID] {
-				queue = append(queue, c)
+
+		calleeIDs := t.callGraph[id]
+		ids := make([]string, 0, len(calleeIDs))
+		for _, cid := range calleeIDs {
+			ids = append(ids, cid)
+			if !visited[cid] {
+				queue = append(queue, cid)
 			}
 		}
-		cg[node.ID] = ids
+		cg[id] = ids
 	}
+	slog.Info("targeting: call graph built",
+		slog.Int("nodes", expanded),
+		slog.Duration("elapsed", time.Since(bfsStart)),
+	)
 	return cg, nil
 }
 
@@ -293,8 +322,8 @@ func bfsHopDepths(cg CallGraph, seeds []cpg.Node) map[string]int {
 // CodeT5+ classifier. Missing CVSS (0.0) is treated as 5.0.
 //
 // cal controls the confidence mapping: Platt sigmoid when calibrated, band
-// bucketing otherwise. Use tuning.DefaultCalibration() when no file is loaded.
-func AutoFlagCVESurfaces(surfaces []Surface, cal tuning.Calibration) (flagged []Surface, remaining []Surface) {
+// bucketing otherwise. Use config.Default() when no file is loaded.
+func AutoFlagCVESurfaces(surfaces []Surface, cal config.Config) (flagged []Surface, remaining []Surface) {
 	slog.Debug("targeting: auto-flagging CVE surfaces", slog.Int("surfaces", len(surfaces)))
 	for _, s := range surfaces {
 		if !s.HasCVEMatch {
@@ -303,7 +332,7 @@ func AutoFlagCVESurfaces(surfaces []Surface, cal tuning.Calibration) (flagged []
 		}
 		cvss := s.CVSSScore
 		if cvss == 0 {
-			cvss = tuning.CVSSMissingDefault
+			cvss = config.C.CVSSMissingDefault
 		}
 		conf := cvssConfidence(cvss, cal)
 		if conf == 0 {
@@ -320,23 +349,23 @@ func AutoFlagCVESurfaces(surfaces []Surface, cal tuning.Calibration) (flagged []
 // When cal has non-zero Platt parameters, it applies σ(slope×cvss + intercept).
 // Otherwise it falls back to the three-band step function.
 // Returns 0 when the score is below the auto-flag threshold (4.0).
-func cvssConfidence(cvss float64, cal tuning.Calibration) float64 {
+func cvssConfidence(cvss float64, cal config.Config) float64 {
 	if cal.CVSSPlattSlope != 0 {
 		// ponytail: Platt sigmoid from calibration; replaces band bucketing once labeled data is available
 		p := 1.0 / (1.0 + math.Exp(-(cal.CVSSPlattSlope*cvss+cal.CVSSPlattIntercept)))
-		if cvss < tuning.CVSSMedium {
+		if cvss < config.C.CVSSMedium {
 			return 0
 		}
 		return p
 	}
 	// Band bucketing fallback (compile-time defaults).
 	switch {
-	case cvss >= tuning.CVSSCritical:
-		return tuning.ConfCVSSCritical
-	case cvss >= tuning.CVSSHigh:
-		return tuning.ConfCVSSHigh
-	case cvss >= tuning.CVSSMedium:
-		return tuning.ConfCVSSMedium
+	case cvss >= config.C.CVSSCritical:
+		return config.C.ConfCVSSCritical
+	case cvss >= config.C.CVSSHigh:
+		return config.C.ConfCVSSHigh
+	case cvss >= config.C.CVSSMedium:
+		return config.C.ConfCVSSMedium
 	default:
 		return 0
 	}
@@ -352,6 +381,10 @@ func cvssConfidence(cvss float64, cal tuning.Calibration) float64 {
 //
 // Duplicate node IDs are collapsed: IDOR > auth_boundary > external_input.
 func (t *Targeter) Run(ctx context.Context) ([]Surface, error) {
+	// Phase-level deadline: abort if the whole targeting phase exceeds budget.
+	ctx, cancel := context.WithTimeout(ctx, max(5*time.Minute, 10*time.Millisecond*time.Duration(1)))
+	defer cancel()
+
 	slog.Debug("targeting: querying CPG for method nodes")
 	methods, err := t.graph.QueryNodes(cpg.NodeMethod)
 	if err != nil {
@@ -359,30 +392,80 @@ func (t *Targeter) Run(ctx context.Context) ([]Surface, error) {
 		return nil, err
 	}
 
-	slog.Debug("targeting: methods from CPG", slog.Int("count", len(methods)))
+	total := len(methods)
+	slog.Info("targeting: scanning methods", slog.Int("total", total))
+
+	// Bulk-fetch the full call graph once; all downstream in-memory traversals
+	// read from this map instead of issuing per-node HTTP calls to Joern.
+	slog.Debug("targeting: fetching full call graph")
+	cg, err := t.graph.GetCallGraph()
+	if err != nil {
+		return nil, fmt.Errorf("targeting: GetCallGraph: %w", err)
+	}
+	t.callGraph = cg
 
 	type nodeResult struct {
 		node cpg.Node
 		kind SurfaceKind
 	}
-	var extInputNodes []cpg.Node
-	var candidates []nodeResult
+
+	// Concurrently classify every method using a fixed-size worker pool.
+	// Each iteration fires QueryEdges (PDG lookups) which are I/O-bound HTTP
+	// calls to Joern — the worker pool pipelines them for throughput.
+	limit := runtime.GOMAXPROCS(0) * 2
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(limit)
+
+	var (
+		mu           sync.Mutex
+		extInputNodes []cpg.Node
+		candidates   []nodeResult
+	)
+	loopStart := time.Now()
+	done := 0
 
 	for _, m := range methods {
-		isExt, err := t.IsExternalInputNode(ctx, m)
-		if err != nil {
-			return nil, err
-		}
-		isAuth, err := t.IsAuthBoundaryNode(ctx, m)
-		if err != nil {
-			return nil, err
-		}
-		if isExt {
-			extInputNodes = append(extInputNodes, m)
-			candidates = append(candidates, nodeResult{m, SurfaceExternalInput})
-		} else if isAuth {
-			candidates = append(candidates, nodeResult{m, SurfaceAuthBoundary})
-		}
+		m := m
+		g.Go(func() error {
+			isExt, err := t.IsExternalInputNode(gctx, m)
+			if err != nil {
+				return err
+			}
+			isAuth, err := t.IsAuthBoundaryNode(gctx, m)
+			if err != nil {
+				return err
+			}
+
+			mu.Lock()
+			done++
+			if done%100 == 0 {
+				elapsed := time.Since(loopStart)
+				elapsedSec := elapsed.Seconds()
+				rate := float64(done) / elapsedSec
+				remaining := total - done
+				eta := time.Duration(float64(remaining)/elapsedSec*float64(time.Second)) * time.Second
+				slog.Info("targeting: progress",
+					slog.Int("done", done),
+					slog.Int("total", total),
+					slog.Float64("pct", float64(done)/float64(total)*100),
+					slog.Float64("elapsed_seconds", elapsedSec),
+					slog.Float64("throughput_ops_per_sec", rate),
+					slog.String("eta", eta.Round(time.Second).String()),
+				)
+			}
+			if isExt {
+				extInputNodes = append(extInputNodes, m)
+				candidates = append(candidates, nodeResult{m, SurfaceExternalInput})
+			} else if isAuth {
+				candidates = append(candidates, nodeResult{m, SurfaceAuthBoundary})
+			}
+			mu.Unlock()
+			return nil
+		})
+	}
+
+	if err := g.Wait(); err != nil {
+		return nil, err
 	}
 	slog.Debug("targeting: candidates identified", slog.Int("external_input", len(extInputNodes)), slog.Int("total_candidates", len(candidates)))
 
@@ -393,11 +476,12 @@ func (t *Targeter) Run(ctx context.Context) ([]Surface, error) {
 	slog.Debug("targeting: IDOR candidates", slog.Int("count", len(idorSurfaces)))
 
 	// Build call graph and compute hop depths from entry-point seeds.
-	cg, err := t.buildCallGraph(ctx, extInputNodes)
+	// Uses the already-bulk-fetched t.callGraph — zero HTTP calls.
+	subCg, err := t.buildCallGraph(ctx, extInputNodes)
 	if err != nil {
 		return nil, err
 	}
-	depths := bfsHopDepths(cg, extInputNodes)
+	depths := bfsHopDepths(subCg, extInputNodes)
 
 	// Merge into deduped map; IDOR > auth_boundary > external_input.
 	kindPriority := map[SurfaceKind]int{

@@ -41,8 +41,8 @@ import (
 
 	"github.com/bluekeyes/go-gitdiff/gitdiff"
 
+	"github.com/hoangharry-tm/zerotrust/internal/config"
 	"github.com/hoangharry-tm/zerotrust/internal/finding"
-	"github.com/hoangharry-tm/zerotrust/internal/tuning"
 	"github.com/hoangharry-tm/zerotrust/pkg/ollama"
 )
 
@@ -200,8 +200,8 @@ func generateDiff(ctx context.Context, client *ollama.Client, f finding.Finding)
 	sb.WriteString("Output ONLY the unified diff, no explanation.")
 
 	raw, err := client.Generate(ctx, sb.String(), &ollama.Options{
-		Temperature: tuning.PatchLLMTemperature,
-		NumPredict:  tuning.PatchLLMMaxTokens,
+		Temperature: config.C.PatchLLMTemperature,
+		NumPredict:  config.C.PatchLLMMaxTokens,
 	})
 	if err != nil {
 		return "", fmt.Errorf("ollama generate: %w", err)

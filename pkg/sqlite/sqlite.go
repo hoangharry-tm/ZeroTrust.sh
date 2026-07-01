@@ -30,12 +30,13 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite" // register "sqlite" driver
 )
 
-const currentSchemaVersion = 2
+const currentSchemaVersion = 3
 
 // DB wraps a SQLite connection and owns schema migrations.
 type DB struct {
@@ -287,6 +288,8 @@ func (db *DB) runMigration(ver int) error {
 		err = migration1(ctx, tx)
 	case 2:
 		err = migration2(ctx, tx)
+	case 3:
+		err = migration3(ctx, tx)
 	default:
 		return fmt.Errorf("unknown migration version %d", ver)
 	}
@@ -395,4 +398,26 @@ func migration2(ctx context.Context, tx *sql.Tx) error {
 		);
 	`)
 	return err
+}
+
+func migration3(ctx context.Context, tx *sql.Tx) error {
+	for _, stmt := range []string{
+		`ALTER TABLE findings ADD COLUMN patch TEXT`,
+		`ALTER TABLE findings ADD COLUMN patch_status TEXT`,
+	} {
+		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+			// SQLite returns "duplicate column name" when the column already exists;
+			// treat that as a no-op so re-running the migration is safe.
+			if !isDuplicateColumn(err) {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// isDuplicateColumn reports whether err is a SQLite "duplicate column name" error.
+func isDuplicateColumn(err error) bool {
+	return err != nil && (strings.Contains(err.Error(), "duplicate column name") ||
+		strings.Contains(err.Error(), "already exists"))
 }

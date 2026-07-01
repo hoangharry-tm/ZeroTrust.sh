@@ -39,7 +39,12 @@ package enrichment
 import (
 	"context"
 	"log/slog"
+	"runtime"
 	"strings"
+	"sync"
+	"time"
+
+	"golang.org/x/sync/errgroup"
 
 	"github.com/hoangharry-tm/zerotrust/internal/finding"
 	"github.com/hoangharry-tm/zerotrust/internal/semantic/targeting"
@@ -140,7 +145,16 @@ func New(graph cpg.Graph, trivyPath string, offlineMode bool) *Enricher {
 //   - []EnrichedSurface: one enriched surface per input surface.
 //   - error: non-nil if Trivy fails to start or CPG queries fail.
 func (e *Enricher) Enrich(ctx context.Context, surfaces []targeting.Surface, projectRoot string) ([]EnrichedSurface, error) {
-	slog.Debug("enriching surfaces", slog.Int("surfaces", len(surfaces)), slog.String("project_root", projectRoot))
+	// Phase-level deadline: abort if enrichment exceeds budget.
+	total := len(surfaces)
+	timeout := 5 * time.Minute
+	if d := time.Duration(total) * 10 * time.Millisecond; d > timeout {
+		timeout = d
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	slog.Debug("enriching surfaces", slog.Int("surfaces", total), slog.String("project_root", projectRoot))
 	cvesByPkg, err := e.RunTrivy(ctx, projectRoot)
 	if err != nil {
 		// ponytail: non-fatal — CVE enrichment is best-effort; continue without CVEs.
@@ -148,40 +162,75 @@ func (e *Enricher) Enrich(ctx context.Context, surfaces []targeting.Surface, pro
 		cvesByPkg = make(map[string][]CVEMatch)
 	}
 
-	autoFlagged := 0
-	enriched := make([]EnrichedSurface, 0, len(surfaces))
-	for i, s := range surfaces {
-		slog.Debug("enrichment: processing surface", slog.Int("idx", i), slog.String("id", s.ID), slog.String("file", s.File))
-		es := EnrichedSurface{
-			Surface:  s,
-			Language: finding.LangFromPath(s.File),
-		}
+	limit := runtime.GOMAXPROCS(0) * 2
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(limit)
 
-		if e.graph != nil {
-			if callers, cerr := e.graph.GetCallers(s.ID); cerr == nil {
-				es.CallerIDs = nodeIDs(callers)
-			} else {
-				slog.Warn("enrichment: GetCallers failed", slog.String("surface_id", s.ID), "err", cerr)
+	var (
+		mu          sync.Mutex
+		autoFlagged int
+		enriched    = make([]EnrichedSurface, 0, total)
+		done        int
+	)
+	loopStart := time.Now()
+
+	for _, s := range surfaces {
+		s := s
+		g.Go(func() error {
+			es := EnrichedSurface{
+				Surface:  s,
+				Language: finding.LangFromPath(s.File),
 			}
-			if callees, cerr := e.graph.GetCallees(s.ID); cerr == nil {
-				es.CalleeIDs = nodeIDs(callees)
-			} else {
-				slog.Warn("enrichment: GetCallees failed", slog.String("surface_id", s.ID), "err", cerr)
+
+			if e.graph != nil {
+				if callers, cerr := e.graph.GetCallers(s.ID); cerr == nil {
+					es.CallerIDs = nodeIDs(callers)
+				} else {
+					slog.Warn("enrichment: GetCallers failed", slog.String("surface_id", s.ID), "err", cerr)
+				}
+				if callees, cerr := e.graph.GetCallees(s.ID); cerr == nil {
+					es.CalleeIDs = nodeIDs(callees)
+				} else {
+					slog.Warn("enrichment: GetCallees failed", slog.String("surface_id", s.ID), "err", cerr)
+				}
 			}
-		}
 
-		tmp := []EnrichedSurface{es}
-		ApplyCVEMatches(tmp, cvesByPkg)
-		es = tmp[0]
+			local := []EnrichedSurface{es}
+			ApplyCVEMatches(local, cvesByPkg)
+			es = local[0]
 
-		if flows, ferr := e.DetectIDORFlows(ctx, s); ferr == nil {
-			es.ResourceIDFlows = flows
-		}
+			if flows, ferr := e.DetectIDORFlows(gctx, s); ferr == nil {
+				es.ResourceIDFlows = flows
+			}
 
-		if es.AutoFlagged {
-			autoFlagged++
-		}
-		enriched = append(enriched, es)
+			mu.Lock()
+			done++
+			if done%10 == 0 {
+				elapsed := time.Since(loopStart)
+				elapsedSec := elapsed.Seconds()
+				rate := float64(done) / elapsedSec
+				remaining := total - done
+				eta := time.Duration(float64(remaining)/elapsedSec*float64(time.Second)) * time.Second
+				slog.Info("enrichment: progress",
+					slog.Int("done", done),
+					slog.Int("total", total),
+					slog.Float64("pct", float64(done)/float64(total)*100),
+					slog.Float64("elapsed_seconds", elapsedSec),
+					slog.Float64("throughput_ops_per_sec", rate),
+					slog.String("eta", eta.Round(time.Second).String()),
+				)
+			}
+			if es.AutoFlagged {
+				autoFlagged++
+			}
+			enriched = append(enriched, es)
+			mu.Unlock()
+			return nil
+		})
+	}
+
+	if err := g.Wait(); err != nil {
+		return nil, err
 	}
 	slog.Info("enrichment complete", slog.Int("enriched", len(enriched)), slog.Int("auto_flagged", autoFlagged))
 	return enriched, nil

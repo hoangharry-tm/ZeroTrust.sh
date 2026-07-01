@@ -24,6 +24,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/hoangharry-tm/zerotrust/internal/config"
 	"github.com/hoangharry-tm/zerotrust/internal/semantic/enrichment"
 	"github.com/hoangharry-tm/zerotrust/internal/semantic/targeting"
 	"github.com/hoangharry-tm/zerotrust/pkg/cpg"
@@ -37,9 +38,36 @@ type stubGraph struct {
 	pdgEdges map[string][]cpg.Edge // nodeID → outgoing edges
 }
 
-func (g *stubGraph) QueryNodes(cpg.NodeType) ([]cpg.Node, error)               { return nil, nil }
+func (g *stubGraph) QueryNodes(nt cpg.NodeType) ([]cpg.Node, error) {
+	if nt != cpg.NodeMethod {
+		return nil, nil
+	}
+	seen := make(map[string]bool)
+	var nodes []cpg.Node
+	add := func(n cpg.Node) {
+		if !seen[n.ID] {
+			seen[n.ID] = true
+			nodes = append(nodes, n)
+		}
+	}
+	for id, callees := range g.callees {
+		add(cpg.Node{ID: id, Name: id})
+		for _, c := range callees {
+			add(c)
+		}
+	}
+	return nodes, nil
+}
 func (g *stubGraph) QueryNodesByFile(string, cpg.NodeType) ([]cpg.Node, error) { return nil, nil }
-func (g *stubGraph) GetCallGraph() (cpg.CallGraph, error)                      { return nil, nil }
+func (g *stubGraph) GetCallGraph() (cpg.CallGraph, error) {
+	cg := make(cpg.CallGraph)
+	for id, callees := range g.callees {
+		for _, c := range callees {
+			cg[id] = append(cg[id], c.ID)
+		}
+	}
+	return cg, nil
+}
 func (g *stubGraph) GetCallers(string) ([]cpg.Node, error)                     { return nil, nil }
 func (g *stubGraph) GetNeighboursAtDepth(string, int) ([]cpg.Node, error)      { return nil, nil }
 func (g *stubGraph) TaintPaths([]cpg.TaintSource, []cpg.TaintSink) ([]cpg.TaintPath, error) {
@@ -152,10 +180,10 @@ func TestBatch(t *testing.T) {
 		if len(got) != tc.want {
 			t.Errorf("Batch(%d): got %d batches, want %d", tc.n, len(got), tc.want)
 		}
-		// All batches must be ≤ BatchSize
+		// All batches must be ≤ config.C.AssemblerBatchSize
 		for _, b := range got {
-			if len(b) > BatchSize {
-				t.Errorf("batch size %d exceeds BatchSize %d", len(b), BatchSize)
+			if len(b) > config.C.AssemblerBatchSize {
+				t.Errorf("batch size %d exceeds config.C.AssemblerBatchSize %d", len(b), config.C.AssemblerBatchSize)
 			}
 		}
 	}

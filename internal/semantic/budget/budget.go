@@ -41,8 +41,8 @@ package budget
 import (
 	"log/slog"
 
+	"github.com/hoangharry-tm/zerotrust/internal/config"
 	"github.com/hoangharry-tm/zerotrust/internal/semantic/summarizer"
-	"github.com/hoangharry-tm/zerotrust/internal/tuning"
 )
 
 // Input bundles a semantic summary with the ranking metadata that the Summarizer
@@ -117,7 +117,7 @@ type Controller struct {
 //   - w3: weight for reachability from entry point (1 / CallGraphDepth).
 func New(tokenCap int, w1, w2, w3 float64) *Controller {
 	if tokenCap <= 0 {
-		tokenCap = tuning.DefaultTokenCap
+		tokenCap = config.C.DefaultTokenCap
 	}
 	return &Controller{tokenCap: tokenCap, w1: w1, w2: w2, w3: w3}
 }

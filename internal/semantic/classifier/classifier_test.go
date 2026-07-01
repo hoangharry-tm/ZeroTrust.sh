@@ -26,6 +26,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/hoangharry-tm/zerotrust/internal/config"
 	"github.com/hoangharry-tm/zerotrust/internal/semantic/classifier"
 	"github.com/hoangharry-tm/zerotrust/internal/semantic/enrichment"
 	"github.com/hoangharry-tm/zerotrust/internal/semantic/targeting"
@@ -246,8 +247,8 @@ func TestErrWorkerDeadSentinel(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestThresholdConstants(t *testing.T) {
-	assert.InEpsilon(t, 0.80, classifier.ThresholdVulnerable, 1e-9)
-	assert.InEpsilon(t, 0.20, classifier.ThresholdSafe, 1e-9)
+	assert.InEpsilon(t, 0.80, config.C.ClassifierVulnerableThreshold, 1e-9)
+	assert.InEpsilon(t, 0.20, config.C.ClassifierSafeThreshold, 1e-9)
 }
 
 // ---------------------------------------------------------------------------
@@ -302,7 +303,7 @@ for line in sys.stdin:
 
 func TestClassify_BoundaryVulnerable_AtThreshold(t *testing.T) {
 	// confidence == ThresholdVulnerable → label "vulnerable" kept, surface escalates.
-	m := thresholdEchoManager(t, "vulnerable", classifier.ThresholdVulnerable)
+	m := thresholdEchoManager(t, "vulnerable", config.C.ClassifierVulnerableThreshold)
 	g := classifier.New(m, nil)
 	surfaces := []enrichment.EnrichedSurface{surface("s1", "go", false)}
 
@@ -316,7 +317,7 @@ func TestClassify_BoundaryVulnerable_AtThreshold(t *testing.T) {
 
 func TestClassify_BoundarySafe_AtThreshold(t *testing.T) {
 	// confidence == ThresholdVulnerable as "safe" → confidence >= threshold → not escalated.
-	m := thresholdEchoManager(t, "safe", classifier.ThresholdVulnerable)
+	m := thresholdEchoManager(t, "safe", config.C.ClassifierVulnerableThreshold)
 	g := classifier.New(m, nil)
 	surfaces := []enrichment.EnrichedSurface{surface("s1", "go", false)}
 
@@ -329,7 +330,7 @@ func TestClassify_BoundarySafe_AtThreshold(t *testing.T) {
 
 func TestClassify_BoundarySafe_BelowThreshold_BecomesUncertain(t *testing.T) {
 	// confidence just below ThresholdVulnerable as "safe" → down-graded to uncertain.
-	belowThreshold := classifier.ThresholdVulnerable - 0.01
+	belowThreshold := config.C.ClassifierVulnerableThreshold - 0.01
 	m := thresholdEchoManager(t, "safe", belowThreshold)
 	g := classifier.New(m, nil)
 	surfaces := []enrichment.EnrichedSurface{surface("s1", "go", false)}

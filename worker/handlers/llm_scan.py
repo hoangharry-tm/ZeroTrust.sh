@@ -5,12 +5,14 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import threading
 from typing import Any
 
 import ollama
 
 import tuning
+from schemas.verdict import LLMScanResult
 
 log = logging.getLogger(__name__)
 
@@ -67,12 +69,13 @@ def _build_context_block(payload: dict[str, Any]) -> str:
         f"check_location={logic.get('check_location', 'unknown')}",
     ]
 
+    _MAX_STEP_CHARS = 400
     if prior_steps:
         parts.append("Prior reasoning steps:")
         for s in prior_steps:
-            parts.append(
-                f"  Step {s.get('StepNum', '?')}: {s.get('Thought', '')} → {s.get('Observation', '')}"
-            )
+            thought = s.get("Thought", "")[:_MAX_STEP_CHARS]
+            observation = s.get("Observation", "")[:_MAX_STEP_CHARS]
+            parts.append(f"  Step {s.get('StepNum', '?')}: {thought} → {observation}")
 
     if prior_ctx:
         parts.append("Cross-surface context:")
@@ -116,27 +119,43 @@ def _call_step(client: ollama.Client, payload: dict[str, Any], step: int, is_fin
         "llm_scan: ollama request: %s",
         json.dumps({"model": MODEL, "messages": [{"role": "user", "content": prompt}], "format": "json"}, indent=2),
     )
-    try:
-        resp = client.chat(
-            model=MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            format="json",
-            options={"temperature": 0.1, "num_predict": tuning.LLM_VERIFY_MAX_PREDICT},
-        )
-        log.debug("llm_scan: ollama raw response: %s", resp.message.content)
-        result: dict[str, Any] = json.loads(resp.message.content or "{}")
-    except Exception as exc:
-        log.warning("llm_scan: step %d failed: %s", step, exc)
-        result = {}
+    resp = client.chat(
+        model=MODEL,
+        messages=[{"role": "user", "content": prompt}],
+        format="json",
+        options={"temperature": 0.1, "num_predict": tuning.LLM_VERIFY_MAX_PREDICT},
+    )
+    raw = resp.message.content or ""
+    log.debug("llm_scan: ollama raw response: %s", raw)
+    clean = re.sub(r"```(?:json)?\n?|```", "", raw).strip()
 
+    if not is_final:
+        # Intermediate steps: extract thought/observation only; no schema enforcement needed.
+        try:
+            partial: dict[str, Any] = json.loads(clean)
+        except json.JSONDecodeError:
+            partial = {}
+        return {
+            "thought": str(partial.get("thought", ""))[:400],
+            "action": str(partial.get("action", ""))[:400],
+            "observation": str(partial.get("observation", ""))[:400],
+            "verdict": "uncertain",
+            "confidence": 0.0,
+            "cwe": "",
+            "early_exit": False,
+        }
+
+    # Final step: strict Pydantic validation — propagates ValueError to dispatcher.
+    raw_dict: dict[str, Any] = json.loads(clean)
+    parsed = LLMScanResult.model_validate(raw_dict)
     return {
-        "thought": result.get("thought", ""),
-        "action": result.get("action", ""),
-        "observation": result.get("observation", ""),
-        "verdict": result.get("verdict", "uncertain"),
-        "confidence": float(result.get("confidence", 0.0)),
-        "cwe": result.get("cwe", ""),
-        "early_exit": bool(result.get("early_exit", False)),
+        "thought": str(raw_dict.get("thought", ""))[:400],
+        "action": str(raw_dict.get("action", ""))[:400],
+        "observation": parsed.justification,
+        "verdict": parsed.verdict.value,
+        "confidence": parsed.confidence,
+        "cwe": parsed.cwe,
+        "early_exit": bool(raw_dict.get("early_exit", False)),
     }
 
 

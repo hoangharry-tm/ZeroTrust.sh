@@ -23,6 +23,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/hoangharry-tm/zerotrust/internal/config"
 	"github.com/hoangharry-tm/zerotrust/internal/semantic/classifier"
 )
 
@@ -79,7 +80,7 @@ func TestRoute_UncertainGoesToAssembler(t *testing.T) {
 func TestRoute_SafeBelowThresholdGoesToAssembler(t *testing.T) {
 	// "safe" but confidence below ThresholdVulnerable — treated as uncertain.
 	surfaces := []classifier.ClassifiedSurface{
-		cs("s1", "dao.go", classifier.LabelSafe, classifier.ThresholdVulnerable-0.01, true, classifier.EscalateUncertain),
+		cs("s1", "dao.go", classifier.LabelSafe, config.C.ClassifierVulnerableThreshold-0.01, true, classifier.EscalateUncertain),
 	}
 	r := classifier.Route(surfaces)
 	require.Len(t, r.ToAssembler, 1)

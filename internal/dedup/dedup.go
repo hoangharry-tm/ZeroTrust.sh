@@ -49,9 +49,10 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/hoangharry-tm/zerotrust/internal/config"
 	"github.com/hoangharry-tm/zerotrust/internal/finding"
-	"github.com/hoangharry-tm/zerotrust/internal/tuning"
 	"github.com/hoangharry-tm/zerotrust/internal/worker"
+	"github.com/hoangharry-tm/zerotrust/pkg/sqlite"
 )
 
 // Strategy identifies which dedup gate resolved a duplicate pair.
@@ -89,17 +90,6 @@ type Stats struct {
 	AutoSuppressedCount int
 }
 
-// embeddingThreshold is the cosine similarity above which two findings are
-// considered duplicates by Gate 3 (MiniLM-L6-v2 embedding).
-const embeddingThreshold = tuning.DedupEmbeddingExact
-
-// astEditThreshold is the token-sequence similarity above which Gate 4
-// (AST edit distance) classifies two findings as duplicates.
-const astEditThreshold = tuning.DedupASTEdit
-
-// embeddingNearMiss is the lower bound of the "near-miss" range that triggers
-// Gate 4 escalation when Gate 3 similarity is below embeddingThreshold.
-const embeddingNearMiss = tuning.DedupEmbeddingNearMiss
 
 // Layer deduplicates and scores the merged finding set from both detection paths.
 type Layer struct {
@@ -111,6 +101,17 @@ type Layer struct {
 	root string
 	// sc is the sidecar loaded once per Layer from root. Nil when root is empty.
 	sc *Sidecar
+
+	// db is an optional SQLite connection for cross-scan dedup.
+	// When set, findings that already exist in the DB (checked by finding_id)
+	// are skipped before entering the gate cascade. This avoids re-processing
+	// known findings scan after scan.
+	// nil → cross-scan dedup is skipped.
+	db *sqlite.DB
+
+	// projectID identifies the current project in the SQLite store.
+	// Only used when db is non-nil.
+	projectID string
 }
 
 // New returns a Layer ready to process findings (Gates 3+4 skipped; no sidecar).
@@ -128,6 +129,18 @@ func NewWithRoot(root string) *Layer {
 func NewWithWorker(w *worker.Manager, root string) *Layer {
 	sc := LoadSidecar(root)
 	return &Layer{w: w, root: root, sc: &sc}
+}
+
+// SetDB attaches an optional SQLite store for cross-scan finding dedup.
+// When set, findings whose finding_id already exists in the DB are skipped
+// before entering the gate cascade. projectID is the project identifier used
+// to scope the DB queries.
+//
+// This is the preferred way to enable cross-scan dedup without changing the
+// Process signature.
+func (l *Layer) SetDB(db *sqlite.DB, projectID string) {
+	l.db = db
+	l.projectID = projectID
 }
 
 // Process deduplicates findings through all active gates, applies cross-path
@@ -151,22 +164,40 @@ func (l *Layer) process(ctx context.Context, input []finding.Finding) ([]finding
 	stats := Stats{InputCount: len(input)}
 	var records []MergeRecord
 
-	// ── Gate 1: exact key (CWE + path + start line) ──────────────────────────
-	keyMap := make(map[string]int, len(input)) // key → index in survivors
-	survivors := make([]finding.Finding, 0, len(input))
+	// ── Cross-scan dedup: skip findings already persisted from prior scans ──
+	// Uses a single targeted query per project (finding_id only, no full rows)
+	// instead of loading the entire findings table into memory.
+	survivors := input
+	if l.db != nil && l.projectID != "" {
+		s, recs, merged := l.dedupHistorical(ctx, input)
+		records = append(records, recs...)
+		stats.MergeCount += merged
+		survivors = s
+		slog.Debug("dedup: cross-scan historical dedup complete",
+			"component", "dedup",
+			"before", len(input),
+			"after", len(survivors),
+			"merged", merged,
+		)
+	}
 
-	for _, f := range input {
+	// ── Gate 1: exact key (CWE + path + start line) ──────────────────────────
+	keyMap := make(map[string]int, len(survivors)) // key → index in survivors
+	g1out := make([]finding.Finding, 0, len(survivors))
+
+	for _, f := range survivors {
 		k := gate1Key(f)
 		if idx, dup := keyMap[k]; dup {
-			merged, rec := merge(survivors[idx], f, StrategyExactKey)
-			survivors[idx] = merged
+			merged, rec := merge(g1out[idx], f, StrategyExactKey)
+			g1out[idx] = merged
 			records = append(records, rec)
 			stats.MergeCount++
 		} else {
-			keyMap[k] = len(survivors)
-			survivors = append(survivors, f)
+			keyMap[k] = len(g1out)
+			g1out = append(g1out, f)
 		}
 	}
+	survivors = g1out
 
 	// ── Gate 2: code fingerprint (SHA-256 of MatchedCode) ────────────────────
 	fpMap := make(map[string]int, len(survivors))
@@ -226,6 +257,43 @@ func (l *Layer) process(ctx context.Context, input []finding.Finding) ([]finding
 	return out, records, stats, nil
 }
 
+// dedupHistorical skips findings that already exist in the SQLite store
+// (matched by finding_id). Uses a single targeted query per project that
+// fetches only the finding_id column — avoids loading full rows into memory.
+//
+// Returns the survivors (findings not found in the DB), merge records for
+// skipped findings, and the count of skipped duplicates.
+func (l *Layer) dedupHistorical(ctx context.Context, input []finding.Finding) ([]finding.Finding, []MergeRecord, int) {
+	ids, err := l.db.ListFindingIDs(ctx, l.projectID)
+	if err != nil {
+		slog.Warn("dedup: cross-scan query failed, proceeding without historical dedup",
+			"component", "dedup", "err", err)
+		return input, nil, 0
+	}
+	known := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		known[id] = struct{}{}
+	}
+
+	var survivors []finding.Finding
+	var records []MergeRecord
+	var mergeCount int
+
+	for _, f := range input {
+		if _, exists := known[f.ID]; exists {
+			records = append(records, MergeRecord{
+				KeptID:    f.ID,
+				DroppedID: f.ID,
+				Strategy:  "historical",
+			})
+			mergeCount++
+		} else {
+			survivors = append(survivors, f)
+		}
+	}
+	return survivors, records, mergeCount
+}
+
 // gate3 runs embedding cosine similarity on findings with MatchedCode.
 // Returns: survivors after gate 3, merge records, merge count, and near-miss
 // index pairs (0.85 ≤ sim < 0.95) that gate 4 should evaluate.
@@ -237,9 +305,9 @@ func (l *Layer) gate3(ctx context.Context, survivors []finding.Finding) (
 		return survivors, nil, 0, nil
 	}
 	// ponytail: circuit breaker — O(N²) pairs; DedupGate3MaxSurvivors controls the ceiling
-	if len(survivors) > tuning.DedupGate3MaxSurvivors {
+	if len(survivors) > config.C.DedupGate3MaxSurvivors {
 		slog.Warn("dedup gate3: survivor count exceeds circuit breaker threshold, skipping embedding pass",
-			"component", "dedup", "count", len(survivors), "threshold", tuning.DedupGate3MaxSurvivors)
+			"component", "dedup", "count", len(survivors), "threshold", config.C.DedupGate3MaxSurvivors)
 		return survivors, nil, 0, nil
 	}
 
@@ -285,13 +353,13 @@ func (l *Layer) gate3(ctx context.Context, survivors []finding.Finding) (
 			sim := cosineSimilarity(vecs[a], vecs[b])
 			si, sj := codeIdx[a], codeIdx[b]
 			switch {
-			case sim >= embeddingThreshold:
+			case sim >= config.C.DedupEmbeddingExact:
 				m, rec := merge(survivors[si], survivors[sj], StrategyEmbedding)
 				survivors[si] = m
 				records = append(records, rec)
 				merged[sj] = true
 				mergeCount++
-			case sim >= embeddingNearMiss:
+			case sim >= config.C.DedupEmbeddingNearMiss:
 				nearMiss = append(nearMiss, [2]int{si, sj})
 			}
 		}
@@ -349,7 +417,7 @@ func (l *Layer) gate4(ctx context.Context, survivors []finding.Finding, nearMiss
 		if err != nil {
 			continue
 		}
-		if sim >= astEditThreshold {
+		if sim >= config.C.DedupASTEdit {
 			m, rec := merge(survivors[i], survivors[j], StrategyEditDistance)
 			survivors[i] = m
 			records = append(records, rec)
@@ -439,8 +507,8 @@ func merge(a, b finding.Finding, strategy Strategy) (finding.Finding, MergeRecor
 //  5. Derive SeverityLabel from final confidence.
 func applyBoostAndScore(f finding.Finding) finding.Finding {
 	// 1. Cross-path boost (+15 pp, capped at 1.0; skipped when already BLOCK).
-	if f.SourcePath == finding.SourceBoth && f.Confidence < tuning.ConfBlock {
-		f.Confidence = min(f.Confidence+tuning.BoostCrossPath, 1.0)
+	if f.SourcePath == finding.SourceBoth && f.Confidence < config.C.ConfBlock {
+		f.Confidence = min(f.Confidence+config.C.BoostCrossPath, 1.0)
 	}
 
 	// 2. CVE CVSS floor.
@@ -453,15 +521,15 @@ func applyBoostAndScore(f finding.Finding) finding.Finding {
 
 	// 3. SSVC boost.
 	if f.SSVC.Exploitation == "Active" {
-		f.Confidence = min(f.Confidence+tuning.BoostSSVCActive, 1.0)
+		f.Confidence = min(f.Confidence+config.C.BoostSSVCActive, 1.0)
 	}
 	if f.SSVC.Automatable == "Yes" {
-		f.Confidence = min(f.Confidence+tuning.BoostSSVCAutomatable, 1.0)
+		f.Confidence = min(f.Confidence+config.C.BoostSSVCAutomatable, 1.0)
 	}
 
 	// 4. Path A bypass MEDIUM floor.
-	if f.SourcePath == finding.SourcePattern && f.Confidence < tuning.FloorPatternPath {
-		f.Confidence = tuning.FloorPatternPath
+	if f.SourcePath == finding.SourcePattern && f.Confidence < config.C.FloorPatternPath {
+		f.Confidence = config.C.FloorPatternPath
 	}
 
 	f.SeverityLabel = finding.SeverityFromConfidence(f.Confidence)

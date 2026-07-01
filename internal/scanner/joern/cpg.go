@@ -24,7 +24,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/hoangharry-tm/zerotrust/internal/tuning"
+	"github.com/hoangharry-tm/zerotrust/internal/config"
 	"github.com/hoangharry-tm/zerotrust/pkg/cpg"
 )
 
@@ -204,12 +204,12 @@ func (c *Client) IncrementalPatch(ctx context.Context, cfg IncrementalPatchConfi
 		slog.Int("max_depth", cfg.MaxDepth),
 	)
 	if cfg.MaxDepth == 0 {
-		cfg.MaxDepth = tuning.CPGDefaultMaxDepth
+		cfg.MaxDepth = config.C.CPGDefaultMaxDepth
 	}
 	if cfg.HubCallerThreshold == 0 {
-		cfg.HubCallerThreshold = tuning.CPGHubCallerThreshold
+		cfg.HubCallerThreshold = config.C.CPGHubCallerThreshold
 	}
-	if cfg.MaxDepth > tuning.CPGHardMaxDepth {
+	if cfg.MaxDepth > config.C.CPGHardMaxDepth {
 		return ErrDepthExceeded
 	}
 

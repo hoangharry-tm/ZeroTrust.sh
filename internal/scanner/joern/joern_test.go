@@ -28,6 +28,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hoangharry-tm/zerotrust/internal/config"
 	"github.com/hoangharry-tm/zerotrust/internal/finding"
 	"github.com/hoangharry-tm/zerotrust/pkg/cpg"
 )
@@ -675,8 +676,8 @@ func TestTaintPaths_ParsesFindings(t *testing.T) {
 }
 
 func TestTaintPaths_CapsAtMaxTaintPaths(t *testing.T) {
-	// Build maxTaintPaths+5 flows, each with a source and sink (no intermediates).
-	flows := make([]joernFlow, maxTaintPaths+5)
+	// Build config.C.CPGMaxTaintPaths+5 flows, each with a source and sink (no intermediates).
+	flows := make([]joernFlow, config.C.CPGMaxTaintPaths+5)
 	for i := range flows {
 		flows[i] = joernFlow{
 			Source: joernNode{ID: fmt.Sprintf("src%d", i), Name: "param"},
@@ -696,8 +697,8 @@ func TestTaintPaths_CapsAtMaxTaintPaths(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TaintPaths: %v", err)
 	}
-	if len(paths) != maxTaintPaths {
-		t.Errorf("TaintPaths cap: got %d paths, want %d", len(paths), maxTaintPaths)
+	if len(paths) != config.C.CPGMaxTaintPaths {
+		t.Errorf("TaintPaths cap: got %d paths, want %d", len(paths), config.C.CPGMaxTaintPaths)
 	}
 }
 

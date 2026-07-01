@@ -20,10 +20,21 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 
-	"github.com/hoangharry-tm/zerotrust/internal/tuning"
+	"github.com/hoangharry-tm/zerotrust/internal/config"
 	"github.com/hoangharry-tm/zerotrust/pkg/cpg"
 )
+
+// joernGraphCache is a thread-safe lookaside cache bound to a single scan
+// execution context. Eliminates redundant HTTP round-trips when the same
+// node type or edge set is queried multiple times (e.g. QueryNodes called
+// by both Run and queryIDORCandidates in the same targeting pass).
+type joernGraphCache struct {
+	mu          sync.RWMutex
+	methodCache map[cpg.NodeType][]cpg.Node
+	edgeCache   map[string][]cpg.Edge // key is "from:"+fromID or "to:"+toID
+}
 
 // joernGraph implements cpg.Graph via Joern HTTP JSON queries (Joern DSL over HTTP).
 // ctx is the scan lifetime context propagated to every doQuery call so that
@@ -33,13 +44,13 @@ import (
 type joernGraph struct {
 	client *Client
 	ctx    context.Context //nolint:containedctx // intentional: scan lifetime, not request lifetime
+	cache  *joernGraphCache
 }
 
-// maxTaintPaths caps the number of taint paths returned by TaintPaths.
+// config.C.CPGMaxTaintPaths caps the number of taint paths returned by TaintPaths.
 // CPGs for large codebases can produce thousands of paths; this cap prevents
 // unbounded memory growth. Paths are ranked by source-to-sink hop count before
 // truncation — shorter (more direct) paths are kept.
-const maxTaintPaths = tuning.CPGMaxTaintPaths
 
 // ─── wire types ───────────────────────────────────────────────────────────────
 
@@ -73,14 +84,34 @@ type joernFlow struct {
 // ─── cpg.Graph implementation ─────────────────────────────────────────────────
 
 // QueryNodes returns all nodes of nodeType across all ingested source files.
+// Results are cached per nodeType so callers querying the same type (e.g. both
+// Run and queryIDORCandidates requesting NodeMethod) share a single HTTP round-trip.
 func (g *joernGraph) QueryNodes(nodeType cpg.NodeType) ([]cpg.Node, error) {
+	g.cache.mu.RLock()
+	if nodes, ok := g.cache.methodCache[nodeType]; ok {
+		g.cache.mu.RUnlock()
+		slog.Debug("joern: QueryNodes cache hit", "type", nodeType, "count", len(nodes))
+		return nodes, nil
+	}
+	g.cache.mu.RUnlock()
+
 	q := nodeTypeQuery(nodeType)
-	slog.Debug("joern: QueryNodes query", "query", q)
+	slog.Info("joern: QueryNodes — fetching all nodes", "type", nodeType)
 	raw, err := g.client.doQuery(g.ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("joern: QueryNodes(%s): %w", nodeType, err)
 	}
-	return parseNodes(raw)
+	nodes, err := parseNodes(raw)
+	if err != nil {
+		return nil, err
+	}
+
+	g.cache.mu.Lock()
+	g.cache.methodCache[nodeType] = nodes
+	g.cache.mu.Unlock()
+
+	slog.Info("joern: QueryNodes done", "type", nodeType, "count", len(nodes))
+	return nodes, nil
 }
 
 // QueryNodesByFile returns all nodes of nodeType in relPath.
@@ -105,10 +136,41 @@ func (g *joernGraph) QueryNodesByFile(relPath string, nodeType cpg.NodeType) ([]
 
 // QueryEdges returns directed edges where fromID and toID match.
 // Pass "" to match any node on that side (wildcard).
+// Results are cached per node ID so redundant per-method QueryEdges calls
+// (e.g. IsExternalInputNode + queryIDORCandidates on the same methods) hit
+// the cache after the first fetch.
 func (g *joernGraph) QueryEdges(fromID, toID string) ([]cpg.Edge, error) {
 	if fromID == "" && toID == "" {
 		return nil, fmt.Errorf("joern: QueryEdges: at least one of fromID or toID must be non-empty")
 	}
+
+	// Build a cache key matching the query direction.
+	var cacheKey string
+	switch {
+	case fromID != "" && toID == "":
+		cacheKey = "from:" + fromID
+	case toID != "" && fromID == "":
+		cacheKey = "to:" + toID
+	default:
+		cacheKey = "from:" + fromID // both set: query from-side
+	}
+
+	g.cache.mu.RLock()
+	if edges, ok := g.cache.edgeCache[cacheKey]; ok {
+		g.cache.mu.RUnlock()
+		// If both sides were specified, filter in Go from the cached result.
+		if fromID != "" && toID != "" {
+			filtered := make([]cpg.Edge, 0, len(edges))
+			for _, e := range edges {
+				if e.ToID == toID {
+					filtered = append(filtered, e)
+				}
+			}
+			return filtered, nil
+		}
+		return edges, nil
+	}
+	g.cache.mu.RUnlock()
 
 	var raw []byte
 	var err error
@@ -136,6 +198,12 @@ func (g *joernGraph) QueryEdges(fromID, toID string) ([]cpg.Edge, error) {
 		return nil, fmt.Errorf("joern: QueryEdges: %w", err)
 	}
 
+	// Store in cache before filtering so subsequent callers with the same
+	// fromID benefit from the full edge set.
+	g.cache.mu.Lock()
+	g.cache.edgeCache[cacheKey] = all
+	g.cache.mu.Unlock()
+
 	// Filter by toID if both sides were specified.
 	if fromID != "" && toID != "" {
 		filtered := make([]cpg.Edge, 0, len(all))
@@ -152,7 +220,7 @@ func (g *joernGraph) QueryEdges(fromID, toID string) ([]cpg.Edge, error) {
 // GetCallGraph returns the full inter-procedural call graph.
 func (g *joernGraph) GetCallGraph() (cpg.CallGraph, error) {
 	q := queryAllEdges()
-	slog.Debug("joern: GetCallGraph query", "query", q)
+	slog.Info("joern: GetCallGraph — querying all edges (may be slow on large CPGs)")
 	raw, err := g.client.doQuery(g.ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("joern: GetCallGraph: %w", err)
@@ -167,7 +235,7 @@ func (g *joernGraph) GetCallGraph() (cpg.CallGraph, error) {
 	for _, e := range edges {
 		cg[e.From] = append(cg[e.From], e.To)
 	}
-	slog.Debug("joern: GetCallGraph done", "edges", len(cg))
+	slog.Info("joern: GetCallGraph done", "edges", len(cg))
 	return cg, nil
 }
 
@@ -181,7 +249,10 @@ func (g *joernGraph) GetCallers(functionID string) ([]cpg.Node, error) {
 		return nil, nil // ponytail: synthetic/virtual node
 	}
 	q := queryCallersByID(functionID)
-	slog.Debug("joern: GetCallers query", "query", q, "functionID", functionID)
+	slog.Debug("joern: GetCallers",
+		"function", g.resolveNodeName(functionID),
+		"functionID", functionID,
+	)
 	raw, err := g.client.doQuery(g.ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("joern: GetCallers(%s): %w", functionID, err)
@@ -199,7 +270,10 @@ func (g *joernGraph) GetCallees(functionID string) ([]cpg.Node, error) {
 		return nil, nil // ponytail: synthetic/virtual node — no real callees
 	}
 	q := queryCalleesByID(functionID)
-	slog.Debug("joern: GetCallees query", "query", q, "functionID", functionID)
+	slog.Debug("joern: GetCallees",
+		"function", g.resolveNodeName(functionID),
+		"functionID", functionID,
+	)
 	raw, err := g.client.doQuery(g.ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("joern: GetCallees(%s): %w", functionID, err)
@@ -256,7 +330,7 @@ func (g *joernGraph) GetNeighboursAtDepth(rootID string, depth int) ([]cpg.Node,
 }
 
 // TaintPaths runs taint analysis using Joern's built-in reachableByFlows API
-// and returns all discovered source-to-sink paths, capped at maxTaintPaths.
+// and returns all discovered source-to-sink paths, capped at config.C.CPGMaxTaintPaths.
 //
 // Sources and sinks must be non-empty. The method uses the node ID from the
 // first source/sink to build the method-scoped reachability query. Only intra-
@@ -302,9 +376,9 @@ func (g *joernGraph) TaintPaths(sources []cpg.TaintSource, sinks []cpg.TaintSink
 		return nil, fmt.Errorf("joern: TaintPaths: %w: %w", ErrMalformedResponse, err)
 	}
 
-	paths := make([]cpg.TaintPath, 0, min(len(flows), maxTaintPaths))
+	paths := make([]cpg.TaintPath, 0, min(len(flows), config.C.CPGMaxTaintPaths))
 	for _, f := range flows {
-		if len(paths) >= maxTaintPaths {
+		if len(paths) >= config.C.CPGMaxTaintPaths {
 			break
 		}
 
@@ -391,6 +465,28 @@ func parseEdges(raw []byte) ([]cpg.Edge, error) {
 		}
 	}
 	return edges, nil
+}
+
+// resolveNodeName translates a Joern numeric node ID to a human-readable
+// "filename:function_name" string by scanning the method cache. Returns the
+// raw ID when the cache has not been populated yet or the ID is unknown.
+func (g *joernGraph) resolveNodeName(id string) string {
+	if id == "" {
+		return id
+	}
+	g.cache.mu.RLock()
+	defer g.cache.mu.RUnlock()
+	for _, nodes := range g.cache.methodCache {
+		for _, n := range nodes {
+			if n.ID == id {
+				if n.File != "" {
+					return n.File + ":" + n.Name
+				}
+				return n.Name
+			}
+		}
+	}
+	return id
 }
 
 // nodeTypeQuery returns the Joern DSL query for the given node type.

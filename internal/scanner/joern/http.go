@@ -67,11 +67,15 @@ func (c *Client) doQuery(ctx context.Context, query string) ([]byte, error) {
 	}
 	slog.Debug("joern: doQuery submitting", "query", query)
 
-	uuid, err := c.postQuery(ctx, query)
+	// Apply per-query deadline so a single slow traversal can't stall the scan.
+	qctx, cancel := context.WithTimeout(ctx, c.queryTimeout)
+	defer cancel()
+
+	uuid, err := c.postQuery(qctx, query)
 	if err != nil {
 		return nil, err
 	}
-	raw, err := c.fetchResult(ctx, uuid)
+	raw, err := c.fetchResult(qctx, uuid)
 	if err != nil {
 		return nil, err
 	}
