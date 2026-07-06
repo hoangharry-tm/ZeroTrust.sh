@@ -36,7 +36,7 @@ const (
 // Set below JoernQueryTimeout (30 s) so freeze detection fires before the
 // per-query context deadline — if Joern returns 202 for 20+ consecutive
 // seconds it is likely in a GC-deadlock or OOM state.
-const JoernIdleTimeout = 20 * time.Second
+const JoernIdleTimeout = 90 * time.Second
 
 // ── Network / worker timeouts ────────────────────────────────────────────────
 

@@ -69,9 +69,7 @@ func (e *Engine) Run(ctx context.Context, target string) ([]finding.Finding, err
 	)
 
 	for _, s := range eligible {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			fs, err := s.Scan(ctx, target)
 			if err != nil {
 				slog.WarnContext(ctx, "scanner error", "scanner", s.Name(), "err", err)
@@ -80,7 +78,7 @@ func (e *Engine) Run(ctx context.Context, target string) ([]finding.Finding, err
 			mu.Lock()
 			all = append(all, fs...)
 			mu.Unlock()
-		}()
+		})
 	}
 	wg.Wait()
 	return all, nil

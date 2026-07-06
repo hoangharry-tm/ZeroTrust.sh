@@ -43,6 +43,7 @@ import (
 
 	"github.com/hoangharry-tm/zerotrust/internal/finding"
 	"github.com/hoangharry-tm/zerotrust/pkg/cpg"
+	"github.com/hoangharry-tm/zerotrust/pkg/sqlite"
 )
 
 const (
@@ -673,4 +674,65 @@ func TestIntegration_PathA_E2E(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestIntegration_IngestCPGToSQLite_Parity verifies that SQLite-ingested CPG
+// data matches the same queries issued via HTTP to a live Joern server.
+func TestIntegration_IngestCPGToSQLite_Parity(t *testing.T) {
+	c := startIntegrationClient(t)
+	buildTestCPG(t, c)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	g := c.Graph()
+
+	httpMethods, err := g.QueryNodes(cpg.NodeMethod)
+	if err != nil {
+		t.Fatalf("QueryNodes (HTTP): %v", err)
+	}
+	t.Logf("HTTP CPG: %d METHOD nodes", len(httpMethods))
+
+	httpCallers, err := g.GetCallers(httpMethods[0].ID)
+	if err != nil {
+		t.Fatalf("GetCallers (HTTP): %v", err)
+	}
+	t.Logf("HTTP CPG: %d callers of %s", len(httpCallers), httpMethods[0].Name)
+
+	projectID := "integration-parity"
+	cpgVersion := "v1"
+	dbPath := filepath.Join(t.TempDir(), "parity.db")
+	db, err := sqlite.Open(dbPath)
+	if err != nil {
+		t.Fatalf("sqlite.Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	if err := g.IngestCPGToSQLite(ctx, db, projectID, cpgVersion); err != nil {
+		t.Fatalf("IngestCPGToSQLite: %v", err)
+	}
+	t.Log("CPG ingested into SQLite")
+
+	c.SetSQLiteBackend(db, projectID, cpgVersion)
+	g2 := c.Graph()
+
+	sqlMethods, err := g2.QueryNodes(cpg.NodeMethod)
+	if err != nil {
+		t.Fatalf("QueryNodes (SQLite): %v", err)
+	}
+	if len(sqlMethods) != len(httpMethods) {
+		t.Errorf("METHOD count mismatch: HTTP=%d, SQLite=%d", len(httpMethods), len(sqlMethods))
+	}
+
+	sqlCallers, err := g2.GetCallers(httpMethods[0].ID)
+	if err != nil {
+		t.Fatalf("GetCallers (SQLite): %v", err)
+	}
+	if len(sqlCallers) != len(httpCallers) {
+		t.Errorf("callers of %s mismatch: HTTP=%d, SQLite=%d",
+			httpMethods[0].Name, len(httpCallers), len(sqlCallers))
+	}
+
+	t.Logf("SQLite CPG: %d METHOD nodes, %d callers of %s",
+		len(sqlMethods), len(sqlCallers), httpMethods[0].Name)
 }

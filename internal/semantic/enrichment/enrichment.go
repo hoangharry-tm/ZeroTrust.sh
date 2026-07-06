@@ -40,7 +40,6 @@ import (
 	"context"
 	"log/slog"
 	"runtime"
-	"strings"
 	"sync"
 	"time"
 
@@ -50,7 +49,6 @@ import (
 	"github.com/hoangharry-tm/zerotrust/internal/semantic/targeting"
 	"github.com/hoangharry-tm/zerotrust/pkg/cpg"
 )
-
 
 // CVEMatch holds a single CVE finding from Trivy for a dependency used by a surface.
 type CVEMatch struct {
@@ -175,7 +173,7 @@ func (e *Enricher) Enrich(ctx context.Context, surfaces []targeting.Surface, pro
 	loopStart := time.Now()
 
 	for _, s := range surfaces {
-		s := s
+		// s := s
 		g.Go(func() error {
 			es := EnrichedSurface{
 				Surface:  s,
@@ -211,7 +209,8 @@ func (e *Enricher) Enrich(ctx context.Context, surfaces []targeting.Surface, pro
 				rate := float64(done) / elapsedSec
 				remaining := total - done
 				eta := time.Duration(float64(remaining)/elapsedSec*float64(time.Second)) * time.Second
-				slog.Info("enrichment: progress",
+				slog.Info(
+					"enrichment: progress",
 					slog.Int("done", done),
 					slog.Int("total", total),
 					slog.Float64("pct", float64(done)/float64(total)*100),
@@ -243,45 +242,19 @@ func (e *Enricher) DetectIDORFlows(_ context.Context, surface targeting.Surface)
 	if e.graph == nil {
 		return nil, nil
 	}
-	cfg := targeting.DefaultIDORConfig()
-	edges, err := e.graph.QueryEdges(surface.ID, "")
-	if err != nil {
-		return nil, err
-	}
-
-	var papiParams []string
-	var storageSinks []string
-	for _, edge := range edges {
-		for _, p := range cfg.PAPISources {
-			if strings.Contains(edge.Label, p) {
-				papiParams = append(papiParams, edge.Label)
-				break
-			}
-		}
-		for _, s := range cfg.StorageSinks {
-			if strings.Contains(edge.Label, s) {
-				storageSinks = append(storageSinks, edge.Label)
-				break
-			}
-		}
-	}
-
-	if len(papiParams) == 0 || len(storageSinks) == 0 {
+	// Surface classification is structural (import-boundary + call graph reachability).
+	// If targeting already flagged this surface as an IDOR candidate, report it directly
+	// rather than re-running pattern detection over PDG edge labels.
+	if !surface.IsIDORCandidate {
 		return nil, nil
 	}
-
-	var flows []ResourceIDFlow
-	for _, src := range papiParams {
-		for _, sink := range storageSinks {
-			flows = append(flows, ResourceIDFlow{
-				SourceParam: src,
-				StorageSink: sink,
-				// ponytail: ownership check detection requires taint path analysis;
-				// left false here (conservative) — the assembler/LLM confirm absence.
-				HasOwnershipCheck: false,
-			})
-		}
-	}
+	flows := []ResourceIDFlow{{
+		SourceParam: surface.FunctionName,
+		StorageSink: "unknown", // assembler/LLM confirm the specific sink
+		// ponytail: ownership check absence confirmed structurally by canReachAuth BFS;
+		// HasOwnershipCheck stays false until taint path analysis is added.
+		HasOwnershipCheck: false,
+	}}
 	slog.Debug("enrichment: IDOR flows detected", slog.String("surface_id", surface.ID), slog.Int("flows", len(flows)))
 	return flows, nil
 }
@@ -293,4 +266,3 @@ func nodeIDs(nodes []cpg.Node) []string {
 	}
 	return ids
 }
-

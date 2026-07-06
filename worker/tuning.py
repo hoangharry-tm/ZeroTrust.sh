@@ -14,7 +14,7 @@ CLASSIFIER_BATCH_SIZE = 8
 CLASSIFIER_MAX_LENGTH = 1024
 # Architecture constant — change only when retraining with a different backbone.
 # CodeT5+ 220M: 1024 | UniXcoder (fallback): 768
-CLASSIFIER_HIDDEN_SIZE = 1024
+CLASSIFIER_HIDDEN_SIZE = 768  # codet5p-220m actual hidden dim; 770m variant uses 1024
 # Deprecated aliases kept for legacy model code.
 UNIXCODER_VULNERABLE_THRESHOLD = CLASSIFIER_VULNERABLE_THRESHOLD
 UNIXCODER_SAFE_THRESHOLD = CLASSIFIER_SAFE_THRESHOLD

@@ -53,7 +53,11 @@ def _dispatch(msg: dict[str, Any]) -> dict[str, Any]:
         result = handler(msg.get("payload") or {})
         return {"id": msg_id, "status": "ok", "result": result}
     except NotImplementedError:
-        return {"id": msg_id, "status": "error", "error": f"{msg_type} not yet implemented"}
+        return {
+            "id": msg_id,
+            "status": "error",
+            "error": f"{msg_type} not yet implemented",
+        }
     except Exception as exc:
         log.exception("handler %s raised", msg_type)
         return {"id": msg_id, "status": "error", "error": str(exc)}

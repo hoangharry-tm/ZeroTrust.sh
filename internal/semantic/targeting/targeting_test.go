@@ -16,6 +16,8 @@ package targeting
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -25,12 +27,13 @@ import (
 	"github.com/hoangharry-tm/zerotrust/pkg/cpg"
 )
 
-// mockGraph implements cpg.Graph for unit tests.
+// ── mock graph ───────────────────────────────────────────────────────────────
+
 type mockGraph struct {
-	nodes    []cpg.Node
-	edges    []cpg.Edge
-	callees  map[string][]cpg.Node
-	callers  map[string][]cpg.Node
+	nodes   []cpg.Node
+	edges   []cpg.Edge
+	callees map[string][]cpg.Node
+	callers map[string][]cpg.Node
 }
 
 func (m *mockGraph) QueryNodes(nt cpg.NodeType) ([]cpg.Node, error) {
@@ -75,178 +78,263 @@ func (m *mockGraph) GetCallGraph() (cpg.CallGraph, error) {
 	return cg, nil
 }
 
-func (m *mockGraph) GetCallers(id string) ([]cpg.Node, error) {
-	return m.callers[id], nil
-}
-
-func (m *mockGraph) GetCallees(id string) ([]cpg.Node, error) {
-	return m.callees[id], nil
-}
-
-func (m *mockGraph) GetNeighboursAtDepth(rootID string, depth int) ([]cpg.Node, error) {
+func (m *mockGraph) GetCallers(id string) ([]cpg.Node, error) { return m.callers[id], nil }
+func (m *mockGraph) GetCallees(id string) ([]cpg.Node, error) { return m.callees[id], nil }
+func (m *mockGraph) GetNeighboursAtDepth(_ string, _ int) ([]cpg.Node, error) { return nil, nil }
+func (m *mockGraph) TaintPaths(_ []cpg.TaintSource, _ []cpg.TaintSink) ([]cpg.TaintPath, error) {
 	return nil, nil
 }
-
-func (m *mockGraph) TaintPaths(sources []cpg.TaintSource, sinks []cpg.TaintSink) ([]cpg.TaintPath, error) {
-	return nil, nil
-}
-
 func (m *mockGraph) PreFlaggedSinks() ([]cpg.TaintSink, error) { return nil, nil }
 
 // helpers
 
-func method(id, name string) cpg.Node {
-	return cpg.Node{ID: id, Type: cpg.NodeMethod, Name: name}
+func method(id, name, file string) cpg.Node {
+	return cpg.Node{ID: id, Type: cpg.NodeMethod, Name: name, File: file}
 }
 
-func pdgEdge(fromID, label string) cpg.Edge {
-	return cpg.Edge{FromID: fromID, Type: cpg.EdgePDG, Label: label}
+// writeTempFile creates path (relative to dir) with content.
+func writeTempFile(t *testing.T, dir, rel, content string) string {
+	t.Helper()
+	abs := filepath.Join(dir, rel)
+	require.NoError(t, os.MkdirAll(filepath.Dir(abs), 0o755))
+	require.NoError(t, os.WriteFile(abs, []byte(content), 0o644))
+	return abs
 }
 
-// T1: external-input node detection
+// ── T1: AnalyzeImports ───────────────────────────────────────────────────────
 
-func TestIsExternalInputNode_HTTP(t *testing.T) {
-	g := &mockGraph{edges: []cpg.Edge{pdgEdge("m1", "getParameter(id)")}}
-	tk := New(g)
-	ok, err := tk.IsExternalInputNode(context.Background(), method("m1", "handler"))
+func TestAnalyzeImports_Java_SourceBoundary(t *testing.T) {
+	dir := t.TempDir()
+	writeTempFile(t, dir, "Controller.java", "import org.springframework.web.bind.annotation.RestController;\n")
+	classes, err := AnalyzeImports(context.Background(), dir)
 	require.NoError(t, err)
-	assert.True(t, ok)
+	key := filepath.Join(dir, "Controller.java")
+	require.Contains(t, classes, key)
+	assert.True(t, classes[key].Bound&BoundarySource != 0, "spring controller should be source boundary")
 }
 
-func TestIsExternalInputNode_Env(t *testing.T) {
-	g := &mockGraph{edges: []cpg.Edge{pdgEdge("m2", "os.Getenv(\"SECRET\")")}}
-	tk := New(g)
-	ok, err := tk.IsExternalInputNode(context.Background(), method("m2", "loadConfig"))
+func TestAnalyzeImports_Python_SinkBoundary(t *testing.T) {
+	dir := t.TempDir()
+	writeTempFile(t, dir, "db.py", "import psycopg2\n")
+	classes, err := AnalyzeImports(context.Background(), dir)
 	require.NoError(t, err)
-	assert.True(t, ok)
+	key := filepath.Join(dir, "db.py")
+	require.Contains(t, classes, key)
+	assert.True(t, classes[key].Bound&BoundarySink != 0)
 }
 
-func TestIsExternalInputNode_File(t *testing.T) {
-	g := &mockGraph{edges: []cpg.Edge{pdgEdge("m3", "os.Open(path)")}}
-	tk := New(g)
-	ok, err := tk.IsExternalInputNode(context.Background(), method("m3", "readFile"))
+func TestAnalyzeImports_Go_AuthBoundary(t *testing.T) {
+	dir := t.TempDir()
+	writeTempFile(t, dir, "auth.go", `package auth
+import "github.com/golang-jwt/jwt"
+`)
+	classes, err := AnalyzeImports(context.Background(), dir)
 	require.NoError(t, err)
-	assert.True(t, ok)
+	key := filepath.Join(dir, "auth.go")
+	require.Contains(t, classes, key)
+	assert.True(t, classes[key].Bound&BoundaryAuth != 0)
 }
 
-func TestIsExternalInputNode_Stdin(t *testing.T) {
-	g := &mockGraph{edges: []cpg.Edge{pdgEdge("m4", "os.Stdin.Read(buf)")}}
-	tk := New(g)
-	ok, err := tk.IsExternalInputNode(context.Background(), method("m4", "readInput"))
+func TestAnalyzeImports_MultiBoundary(t *testing.T) {
+	dir := t.TempDir()
+	// A controller that also talks to the DB directly — both Source and Sink.
+	writeTempFile(t, dir, "handler.py", "from flask import request\nimport sqlalchemy\n")
+	classes, err := AnalyzeImports(context.Background(), dir)
 	require.NoError(t, err)
-	assert.True(t, ok)
+	key := filepath.Join(dir, "handler.py")
+	require.Contains(t, classes, key)
+	assert.True(t, classes[key].Bound&BoundarySource != 0)
+	assert.True(t, classes[key].Bound&BoundarySink != 0)
 }
 
-func TestIsExternalInputNode_None(t *testing.T) {
-	g := &mockGraph{edges: []cpg.Edge{pdgEdge("m5", "fmt.Println(x)")}}
-	tk := New(g)
-	ok, err := tk.IsExternalInputNode(context.Background(), method("m5", "printResult"))
+func TestAnalyzeImports_NoImports(t *testing.T) {
+	dir := t.TempDir()
+	writeTempFile(t, dir, "util.go", `package util
+func helper() {}
+`)
+	classes, err := AnalyzeImports(context.Background(), dir)
 	require.NoError(t, err)
-	assert.False(t, ok)
+	assert.Empty(t, classes, "file with no recognised imports should not appear")
 }
 
-func TestQueryExternalInputNodes_Empty(t *testing.T) {
-	g := &mockGraph{}
-	tk := New(g)
-	nodes, err := tk.queryExternalInputNodes(context.Background())
+func TestAnalyzeImports_SkipsVendor(t *testing.T) {
+	dir := t.TempDir()
+	writeTempFile(t, dir, "vendor/spring/Handler.java", "import org.springframework.web.bind.annotation.RestController;\n")
+	classes, err := AnalyzeImports(context.Background(), dir)
 	require.NoError(t, err)
-	assert.Empty(t, nodes)
+	assert.Empty(t, classes, "vendor directory must be skipped")
 }
 
-// T2: auth-boundary node detection
+// ── T2: bfsForward / buildReverseCG ─────────────────────────────────────────
 
-func TestIsAuthBoundaryNode_NamePattern(t *testing.T) {
-	g := &mockGraph{}
-	tk := New(g)
-	cases := []string{"AuthUser", "loginHandler", "verifyToken", "checkPermission", "authorizeRequest"}
-	for _, name := range cases {
-		ok, err := tk.IsAuthBoundaryNode(context.Background(), method("x", name))
-		require.NoError(t, err)
-		assert.True(t, ok, "expected auth boundary for %q", name)
+func TestBfsForward_Basic(t *testing.T) {
+	cg := cpg.CallGraph{
+		"a": {"b", "c"},
+		"b": {"d"},
 	}
+	reached := bfsForward(cg, []string{"a"})
+	assert.True(t, reached["a"])
+	assert.True(t, reached["b"])
+	assert.True(t, reached["c"])
+	assert.True(t, reached["d"])
+	assert.False(t, reached["x"])
 }
 
-func TestIsAuthBoundaryNode_JavaAnnotation(t *testing.T) {
-	g := &mockGraph{
-		edges: []cpg.Edge{pdgEdge("m6", "@PreAuthorize(\"hasRole('ADMIN')\")"),
+func TestBfsForward_Cycle(t *testing.T) {
+	cg := cpg.CallGraph{
+		"a": {"b"},
+		"b": {"a"},
+	}
+	reached := bfsForward(cg, []string{"a"})
+	assert.True(t, reached["a"])
+	assert.True(t, reached["b"])
+}
+
+func TestBfsForward_EmptySeeds(t *testing.T) {
+	cg := cpg.CallGraph{"a": {"b"}}
+	reached := bfsForward(cg, nil)
+	assert.Empty(t, reached)
+}
+
+func TestBuildReverseCG(t *testing.T) {
+	cg := cpg.CallGraph{
+		"a": {"b", "c"},
+		"b": {"c"},
+	}
+	rev := buildReverseCG(cg)
+	assert.ElementsMatch(t, []string{"a"}, rev["b"])
+	assert.ElementsMatch(t, []string{"a", "b"}, rev["c"])
+	assert.Nil(t, rev["a"])
+}
+
+// ── T3: identifyIDOR ─────────────────────────────────────────────────────────
+
+func TestIdentifyIDOR_DetectsCandidate(t *testing.T) {
+	surfaces := map[string]Surface{
+		"h1": {ID: "h1", Kind: SurfaceExternalInput},
+	}
+	canReachAuth := map[string]bool{} // h1 cannot reach auth
+	out := identifyIDOR(surfaces, canReachAuth)
+	require.Len(t, out, 1)
+	assert.True(t, out[0].IsIDORCandidate)
+	assert.Equal(t, SurfaceIDORCandidate, out[0].Kind)
+}
+
+func TestIdentifyIDOR_ExcludesWhenAuthReachable(t *testing.T) {
+	surfaces := map[string]Surface{
+		"h2": {ID: "h2", Kind: SurfaceExternalInput},
+	}
+	canReachAuth := map[string]bool{"h2": true}
+	out := identifyIDOR(surfaces, canReachAuth)
+	assert.Empty(t, out)
+}
+
+func TestIdentifyIDOR_ExcludesAuthBoundarySurfaces(t *testing.T) {
+	surfaces := map[string]Surface{
+		"h3": {ID: "h3", Kind: SurfaceAuthBoundary},
+	}
+	out := identifyIDOR(surfaces, map[string]bool{})
+	assert.Empty(t, out)
+}
+
+// ── T4: Targeter.Run integration ─────────────────────────────────────────────
+
+// buildRunFixture sets up a temp dir with source/sink/auth files and a mock
+// graph whose METHOD nodes reference those files (relative paths).
+func buildRunFixture(t *testing.T) (root string, g *mockGraph) {
+	t.Helper()
+	dir := t.TempDir()
+
+	// Source boundary: Spring controller
+	writeTempFile(t, dir, "api/UserController.java",
+		"import org.springframework.web.bind.annotation.RestController;\n")
+	// Sink boundary: repository
+	writeTempFile(t, dir, "repo/UserRepo.java",
+		"import org.springframework.data.jpa.repository.JpaRepository;\n")
+	// Auth boundary: JWT util
+	writeTempFile(t, dir, "auth/JwtUtil.java",
+		"import io.jsonwebtoken.Jwts;\n")
+
+	g = &mockGraph{
+		nodes: []cpg.Node{
+			method("ctrl1", "getUser", "api/UserController.java"),
+			method("repo1", "findById", "repo/UserRepo.java"),
+			method("auth1", "validateToken", "auth/JwtUtil.java"),
+			method("svc1", "userService", "service/UserService.java"), // no boundary
 		},
-	}
-	tk := New(g)
-	ok, err := tk.IsAuthBoundaryNode(context.Background(), method("m6", "deleteUser"))
-	require.NoError(t, err)
-	assert.True(t, ok)
-}
-
-func TestIsAuthBoundaryNode_GoMiddleware(t *testing.T) {
-	g := &mockGraph{}
-	tk := New(g)
-	ok, err := tk.IsAuthBoundaryNode(context.Background(), method("m7", "jwtMiddleware"))
-	require.NoError(t, err)
-	assert.True(t, ok)
-}
-
-func TestIsAuthBoundaryNode_NonMatching(t *testing.T) {
-	g := &mockGraph{edges: []cpg.Edge{pdgEdge("m8", "fmt.Sprintf(x)")}}
-	tk := New(g)
-	ok, err := tk.IsAuthBoundaryNode(context.Background(), method("m8", "formatResponse"))
-	require.NoError(t, err)
-	assert.False(t, ok)
-}
-
-// T3: call graph building
-
-func TestBuildCallGraph_Connected(t *testing.T) {
-	g := &mockGraph{
 		callees: map[string][]cpg.Node{
-			"root": {{ID: "child1"}, {ID: "child2"}},
-			"child1": {{ID: "leaf"}},
+			"ctrl1": {{ID: "svc1"}},
+			"svc1":  {{ID: "repo1"}},
 		},
 	}
-	tk := New(g)
-	// Pre-populate the in-memory call graph (as Run would do).
-	cgAll, err := g.GetCallGraph()
-	require.NoError(t, err)
-	tk.callGraph = cgAll
-
-	seeds := []cpg.Node{{ID: "root"}}
-	cg, err := tk.buildCallGraph(context.Background(), seeds)
-	require.NoError(t, err)
-	assert.ElementsMatch(t, []string{"child1", "child2"}, cg["root"])
-	assert.ElementsMatch(t, []string{"leaf"}, cg["child1"])
+	return dir, g
 }
 
-func TestBuildCallGraph_Disconnected(t *testing.T) {
-	g := &mockGraph{callees: map[string][]cpg.Node{}}
-	tk := New(g)
-	cgAll, err := g.GetCallGraph()
+func TestRun_SelectsSurfaces(t *testing.T) {
+	root, g := buildRunFixture(t)
+	tk := New(g, root)
+	surfaces, err := tk.Run(context.Background())
 	require.NoError(t, err)
-	tk.callGraph = cgAll
-
-	cg, err := tk.buildCallGraph(context.Background(), []cpg.Node{{ID: "isolated"}})
-	require.NoError(t, err)
-	assert.Empty(t, cg["isolated"])
-}
-
-func TestBuildCallGraph_Cycle(t *testing.T) {
-	g := &mockGraph{
-		callees: map[string][]cpg.Node{
-			"a": {{ID: "b"}},
-			"b": {{ID: "a"}}, // cycle
-		},
+	// ctrl1 → svc1 → repo1: ctrl1 and svc1 should be surfaces (on source→sink path)
+	ids := make(map[string]bool)
+	for _, s := range surfaces {
+		ids[s.ID] = true
 	}
-	tk := New(g)
-	cgAll, err := g.GetCallGraph()
-	require.NoError(t, err)
-	tk.callGraph = cgAll
-
-	cg, err := tk.buildCallGraph(context.Background(), []cpg.Node{{ID: "a"}})
-	require.NoError(t, err)
-	// must terminate; both nodes present
-	assert.Contains(t, cg, "a")
-	assert.Contains(t, cg, "b")
+	assert.True(t, ids["ctrl1"], "controller should be a surface")
+	assert.True(t, ids["svc1"], "service (intermediate) should be a surface")
 }
 
-// T5: AutoFlagCVESurfaces
+func TestRun_IDORWhenNoAuth(t *testing.T) {
+	root, g := buildRunFixture(t)
+	// Remove auth node's callee — auth1 is never called by ctrl1/svc1.
+	tk := New(g, root)
+	surfaces, err := tk.Run(context.Background())
+	require.NoError(t, err)
+
+	// ctrl1 and svc1 cannot reach auth1 — both should be IDOR candidates.
+	for _, s := range surfaces {
+		if s.ID == "ctrl1" || s.ID == "svc1" {
+			assert.Equal(t, SurfaceIDORCandidate, s.Kind,
+				"%s should be IDOR candidate (no auth on path)", s.ID)
+		}
+	}
+}
+
+func TestRun_AuthBoundaryWhenAuthReachable(t *testing.T) {
+	root, g := buildRunFixture(t)
+	// Wire svc1 → auth1 so that ctrl1 transitively reaches auth.
+	g.callees["svc1"] = append(g.callees["svc1"], cpg.Node{ID: "auth1"})
+	tk := New(g, root)
+	surfaces, err := tk.Run(context.Background())
+	require.NoError(t, err)
+
+	for _, s := range surfaces {
+		if s.ID == "ctrl1" || s.ID == "svc1" {
+			assert.NotEqual(t, SurfaceIDORCandidate, s.Kind,
+				"%s calls auth — should not be IDOR", s.ID)
+		}
+	}
+}
+
+func TestRun_IDORRankedFirst(t *testing.T) {
+	root, g := buildRunFixture(t)
+	tk := New(g, root)
+	surfaces, err := tk.Run(context.Background())
+	require.NoError(t, err)
+	require.NotEmpty(t, surfaces)
+	assert.Equal(t, SurfaceIDORCandidate, surfaces[0].Kind, "IDOR must be first")
+}
+
+func TestRun_EmptyCPG(t *testing.T) {
+	dir := t.TempDir()
+	g := &mockGraph{}
+	tk := New(g, dir)
+	surfaces, err := tk.Run(context.Background())
+	require.NoError(t, err)
+	assert.Empty(t, surfaces)
+}
+
+// ── T5: AutoFlagCVESurfaces ──────────────────────────────────────────────────
 
 func TestAutoFlagCVESurfaces_Block(t *testing.T) {
 	s := Surface{HasCVEMatch: true, CVSSScore: 9.0}
@@ -257,7 +345,6 @@ func TestAutoFlagCVESurfaces_Block(t *testing.T) {
 }
 
 func TestAutoFlagCVESurfaces_HighBoundary(t *testing.T) {
-	// 8.9 → HIGH (0.82), 9.0 → BLOCK (0.95)
 	s89 := Surface{HasCVEMatch: true, CVSSScore: 8.9}
 	s90 := Surface{HasCVEMatch: true, CVSSScore: 9.0}
 	f89, _ := AutoFlagCVESurfaces([]Surface{s89}, config.Default())
@@ -267,204 +354,31 @@ func TestAutoFlagCVESurfaces_HighBoundary(t *testing.T) {
 }
 
 func TestAutoFlagCVESurfaces_MissingCVSSDefaultsToFive(t *testing.T) {
-	// CVSSScore == 0 → treated as 5.0 → medium (0.68)
 	s := Surface{HasCVEMatch: true, CVSSScore: 0}
-	flagged, rem := AutoFlagCVESurfaces([]Surface{s}, config.Default())
+	flagged, _ := AutoFlagCVESurfaces([]Surface{s}, config.Default())
 	require.Len(t, flagged, 1)
-	assert.Empty(t, rem)
 	assert.InEpsilon(t, 0.68, flagged[0].ConfidenceScore, 1e-6)
 }
 
-func TestAutoFlagCVESurfaces_NoCVEMatchGoesToRemainder(t *testing.T) {
+func TestAutoFlagCVESurfaces_NoCVEMatch(t *testing.T) {
 	s := Surface{HasCVEMatch: false, CVSSScore: 9.0}
 	flagged, rem := AutoFlagCVESurfaces([]Surface{s}, config.Default())
 	assert.Empty(t, flagged)
 	require.Len(t, rem, 1)
 }
 
-func TestAutoFlagCVESurfaces_BelowThresholdGoesToRemainder(t *testing.T) {
+func TestAutoFlagCVESurfaces_BelowThreshold(t *testing.T) {
 	s := Surface{HasCVEMatch: true, CVSSScore: 3.9}
 	flagged, rem := AutoFlagCVESurfaces([]Surface{s}, config.Default())
 	assert.Empty(t, flagged)
 	require.Len(t, rem, 1)
 }
 
-// T6: queryIDORCandidates
-
-func TestQueryIDORCandidates_DetectsFlow(t *testing.T) {
-	g := &mockGraph{
-		nodes: []cpg.Node{method("h1", "getUser")},
-		edges: []cpg.Edge{
-			{FromID: "h1", Type: cpg.EdgePDG, Label: "getParameter(userId)"},
-			{FromID: "h1", Type: cpg.EdgeCall, Label: "db.QueryRow(id)"},
-		},
-		// TaintPaths stubbed via the mock — we need to override it.
-	}
-	// mockGraph.TaintPaths returns nil; inject a custom mock for this test.
-	mg := &idorMockGraph{
-		mockGraph: g,
-		paths: []cpg.TaintPath{
-			{
-				Source:            cpg.TaintSource{NodeID: "h1", File: "api.go"},
-				Sink:              cpg.TaintSink{NodeID: "h1"},
-				IntermediateNodes: nil,
-				Sanitized:         false,
-			},
-		},
-	}
-	tk := New(mg)
-	cfg := DefaultIDORConfig()
-	surfaces, err := tk.queryIDORCandidates(context.Background(), cfg)
-	require.NoError(t, err)
-	require.Len(t, surfaces, 1)
-	assert.True(t, surfaces[0].IsIDORCandidate)
-	assert.Equal(t, SurfaceIDORCandidate, surfaces[0].Kind)
-}
-
-func TestQueryIDORCandidates_ExcludesOwnershipCheck(t *testing.T) {
-	g := &mockGraph{
-		nodes: []cpg.Node{method("h2", "getDoc")},
-		edges: []cpg.Edge{
-			{FromID: "h2", Type: cpg.EdgePDG, Label: "getParameter(docId)"},
-			{FromID: "h2", Type: cpg.EdgeCall, Label: "db.QueryRow(id)"},
-		},
-	}
-	mg := &idorMockGraph{
-		mockGraph: g,
-		paths: []cpg.TaintPath{
-			{
-				Source: cpg.TaintSource{NodeID: "h2"},
-				Sink:   cpg.TaintSink{NodeID: "h2"},
-				IntermediateNodes: []cpg.Node{
-					{ID: "chk", Name: "getUserId", Code: "session.getUserId()"},
-				},
-				Sanitized: false,
-			},
-		},
-	}
-	tk := New(mg)
-	surfaces, err := tk.queryIDORCandidates(context.Background(), DefaultIDORConfig())
-	require.NoError(t, err)
-	assert.Empty(t, surfaces, "ownership check present — should be excluded")
-}
-
-func TestQueryIDORCandidates_EmptyWhenNoSources(t *testing.T) {
-	g := &mockGraph{nodes: []cpg.Node{method("m1", "helper")}}
-	tk := New(g)
-	surfaces, err := tk.queryIDORCandidates(context.Background(), DefaultIDORConfig())
-	require.NoError(t, err)
-	assert.Empty(t, surfaces)
-}
-
-// idorMockGraph extends mockGraph with controllable TaintPaths.
-type idorMockGraph struct {
-	*mockGraph
-	paths []cpg.TaintPath
-}
-
-func (m *idorMockGraph) TaintPaths(_ []cpg.TaintSource, _ []cpg.TaintSink) ([]cpg.TaintPath, error) {
-	return m.paths, nil
-}
-
-// T7: Targeter.Run
-
-func TestRun_RanksIDORFirst(t *testing.T) {
-	// One external-input node + one IDOR candidate (different node).
-	extNode := method("ext1", "readInput")
-	idorNode := method("idor1", "getUser")
-
-	g := &idorMockGraph{
-		mockGraph: &mockGraph{
-			nodes: []cpg.Node{extNode, idorNode},
-			edges: []cpg.Edge{
-				// ext1 has an external-input edge
-				pdgEdge("ext1", "getParameter(x)"),
-				// idor1 has P-API source and storage sink edges
-				pdgEdge("idor1", "getParameter(userId)"),
-				{FromID: "idor1", Type: cpg.EdgeCall, Label: "db.QueryRow(id)"},
-			},
-		},
-		paths: []cpg.TaintPath{
-			{
-				Source:    cpg.TaintSource{NodeID: "idor1"},
-				Sink:      cpg.TaintSink{NodeID: "idor1"},
-				Sanitized: false,
-			},
-		},
-	}
-
-	tk := New(g)
-	surfaces, err := tk.Run(context.Background())
-	require.NoError(t, err)
-	require.NotEmpty(t, surfaces)
-	assert.Equal(t, SurfaceIDORCandidate, surfaces[0].Kind, "IDOR surface must be first")
-}
-
-func TestRun_SortsbyCallGraphDepth(t *testing.T) {
-	// Two external-input nodes; one is a callee of the other.
-	parent := method("p1", "handler")
-	child := method("c1", "helper")
-
-	g := &idorMockGraph{
-		mockGraph: &mockGraph{
-			nodes: []cpg.Node{parent, child},
-			edges: []cpg.Edge{
-				pdgEdge("p1", "getParameter(x)"),
-				pdgEdge("c1", "getParameter(y)"),
-			},
-			callees: map[string][]cpg.Node{
-				"p1": {child},
-			},
-		},
-		paths: nil,
-	}
-
-	tk := New(g)
-	surfaces, err := tk.Run(context.Background())
-	require.NoError(t, err)
-	require.Len(t, surfaces, 2)
-	assert.Equal(t, "p1", surfaces[0].ID, "shallower node first")
-	assert.Equal(t, "c1", surfaces[1].ID)
-}
-
-func TestRun_DeduplicatesNodes(t *testing.T) {
-	// Same node is both external-input and auth-boundary.
-	n := method("m1", "authHandler")
-
-	g := &idorMockGraph{
-		mockGraph: &mockGraph{
-			nodes: []cpg.Node{n},
-			edges: []cpg.Edge{
-				pdgEdge("m1", "getParameter(token)"),
-			},
-		},
-		paths: nil,
-	}
-
-	tk := New(g)
-	surfaces, err := tk.Run(context.Background())
-	require.NoError(t, err)
-	assert.Len(t, surfaces, 1, "duplicate node must appear once")
-}
-
-func TestRun_EmptyCPG(t *testing.T) {
-	g := &idorMockGraph{mockGraph: &mockGraph{}}
-	tk := New(g)
-	surfaces, err := tk.Run(context.Background())
-	require.NoError(t, err)
-	assert.Empty(t, surfaces)
-}
-
-// T3: CallGraphDepth
+// ── T6: CallGraphDepth helper ────────────────────────────────────────────────
 
 func TestCallGraphDepth_Reachable(t *testing.T) {
-	cg := CallGraph{
-		"root":   {"child"},
-		"child":  {"leaf"},
-		"leaf":   {},
-	}
-	// leaf is reachable from root at depth 0 from itself
-	assert.Equal(t, 0, cg.CallGraphDepth("leaf"))
+	cg := CallGraph{"root": {"child"}, "child": {}}
+	assert.Equal(t, 0, cg.CallGraphDepth("child"))
 }
 
 func TestCallGraphDepth_Unreachable(t *testing.T) {

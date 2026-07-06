@@ -135,9 +135,6 @@ func TestDiffFirstScanAllChanged(t *testing.T) {
 	if !changed["main.go"] || !changed[filepath.Join("api", "auth.go")] {
 		t.Errorf("expected both files in Changed; got %v", cs.Changed)
 	}
-	if len(cs.AllStates) != 2 {
-		t.Errorf("expected 2 AllStates, got %d", len(cs.AllStates))
-	}
 }
 
 // ─── Diff — repeat scan ──────────────────────────────────────────────────────
@@ -293,7 +290,7 @@ func TestCommitNilChangeSetIsNoop(t *testing.T) {
 	// CommitScan in ingestion.go guards nil; test the underlying Commit directly.
 	ix, _ := tempIndexer(t)
 	ctx := t.Context()
-	// nil AllStates and Removed — should not panic or error.
+	// nil Removed — should not panic or error.
 	if err := ix.Commit(ctx, "proj", &ChangeSet{}); err != nil {
 		t.Errorf("Commit with empty ChangeSet: %v", err)
 	}

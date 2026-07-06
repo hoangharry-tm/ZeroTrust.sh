@@ -948,32 +948,27 @@ func TestPreFlagSinks_ContextCancellation(t *testing.T) {
 // ─── Version ───────────────────────────────────────────────────────────────────
 
 func TestVersion_ReturnsCached(t *testing.T) {
-	// Version should cache the queried value.
-	var callCount int
-	srv := mockServer(t, func(q string) (string, bool) {
-		callCount++
-		return `"4.0.550"`, true
-	})
-	c := newTestClient(t, srv)
-
+	// Version is now a no-op that returns "unknown" without querying the Joern server.
+	// Version checking was removed because: (1) joern.version is not a valid Scala identifier
+	// in this Joern build; (2) cpg.metaData.version requires a loaded CPG; (3) joern --version
+	// is not supported. Version is only used for CPG snapshot invalidation; "unknown" is safe.
+	c := newTestClient(t, mockServer(t, func(q string) (string, bool) {
+		t.Errorf("Version: unexpected server query %q", q)
+		return "", false
+	}))
 	v1, err := c.Version(context.Background())
 	if err != nil {
 		t.Fatalf("Version: %v", err)
 	}
-	if v1 != "4.0.550" {
-		t.Errorf("Version = %q, want %q", v1, "4.0.550")
+	if v1 != "unknown" {
+		t.Errorf("Version = %q, want %q", v1, "unknown")
 	}
-
-	// Second call should use cache, not query server.
 	v2, err := c.Version(context.Background())
 	if err != nil {
-		t.Fatalf("Version (cached): %v", err)
+		t.Fatalf("Version (second call): %v", err)
 	}
 	if v2 != v1 {
-		t.Errorf("Version cached = %q, want %q", v2, v1)
-	}
-	if callCount != 1 {
-		t.Errorf("Version: expected 1 query, got %d", callCount)
+		t.Errorf("Version second call = %q, want %q", v2, v1)
 	}
 }
 

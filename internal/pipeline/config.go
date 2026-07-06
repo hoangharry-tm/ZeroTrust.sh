@@ -12,11 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+package pipeline
 
 import "github.com/hoangharry-tm/zerotrust/internal/config"
 
-// ScanConfig holds the resolved, validated configuration for a single scan run.
+// Config holds the resolved, validated configuration for a single scan run.
 // It is populated from cobra flags in runScan before the pipeline is constructed.
 //
 // Flag → field mapping:
@@ -30,7 +30,7 @@ import "github.com/hoangharry-tm/zerotrust/internal/config"
 //	--joern-url     → JoernURL      (Joern HTTP API URL; default "http://localhost:8080")
 //	--ollama-url    → OllamaURL     (Ollama HTTP API URL; default "http://localhost:11434")
 //	--token-cap     → TokenCap      (token budget cap for Path B Tier 3; default 50 000)
-type ScanConfig struct {
+type Config struct {
 	// Target is the absolute or relative path to the codebase to scan.
 	Target string
 
@@ -84,7 +84,7 @@ type ScanConfig struct {
 }
 
 // defaults fills zero-value fields with safe production defaults.
-func (c *ScanConfig) defaults() {
+func (c *Config) defaults() {
 	if c.Target == "" {
 		c.Target = "."
 	}

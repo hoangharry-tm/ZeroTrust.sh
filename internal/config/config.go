@@ -89,12 +89,14 @@ type Config struct {
 	BudgetWeightCVSS    float64 `json:"budget_weight_cvss"`
 	BudgetWeightUncert  float64 `json:"budget_weight_uncert"`
 	BudgetWeightDepth   float64 `json:"budget_weight_depth"`
+	BudgetWeightKind    float64 `json:"budget_weight_kind"`
 	TokenEstCharsPerTok float64 `json:"token_est_chars_per_tok"`
 	TokenEstOverhead    int     `json:"token_est_overhead"`
 
 	// ── Batch sizes ──────────────────────────────────────────────────────────────
-	AssemblerBatchSize  int `json:"assembler_batch_size"`
-	SummarizerBatchSize int `json:"summarizer_batch_size"`
+	AssemblerBatchSize             int `json:"assembler_batch_size"`
+	SummarizerBatchSize            int `json:"summarizer_batch_size"`
+	SummarizerMaxFunctionsPerBatch int `json:"summarizer_max_functions_per_batch"`
 
 	// ── CPG / call-graph depth ───────────────────────────────────────────────────
 	AssemblerMaxDepth     int `json:"assembler_max_depth"`
@@ -184,6 +186,7 @@ func Default() Config {
 		BudgetWeightCVSS:    0.4,
 		BudgetWeightUncert:  0.4,
 		BudgetWeightDepth:   0.2,
+		BudgetWeightKind:    0.3,
 		TokenEstCharsPerTok: 0.3,
 		TokenEstOverhead:    50,
 
@@ -194,7 +197,7 @@ func Default() Config {
 		CPGDefaultMaxDepth:    5,
 		CPGHardMaxDepth:       6,
 		CPGHubCallerThreshold: 50,
-		CPGMaxScopeLOC:        5_000,
+		CPGMaxScopeLOC:        100_000,
 		CPGMaxTaintPaths:      1_000,
 		ModuleDepthDefault:    2,
 		ModuleDepthThorough:   3,

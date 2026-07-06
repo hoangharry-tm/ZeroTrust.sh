@@ -181,7 +181,7 @@ func (c *Client) fetchResult(ctx context.Context, uuid string) ([]byte, error) {
 			}
 		}
 
-		raw, readErr := io.ReadAll(io.LimitReader(resp.Body, 4<<20)) // 4 MB cap
+		raw, readErr := io.ReadAll(io.LimitReader(resp.Body, 64<<20)) // 64 MB cap
 		_ = resp.Body.Close()                                        //nolint:errcheck
 		if readErr != nil {
 			return nil, fmt.Errorf("joern: read GET /result body: %w", readErr)
@@ -284,8 +284,10 @@ func parseStdout(s string) string {
 	// Strip ANSI escape sequences before further processing.
 	s = stripANSI(s)
 
-	// REPL annotation: "resN: Type = <value>" — strip prefix up to " = "
-	if idx := strings.LastIndex(s, " = "); idx != -1 {
+	// REPL annotation: "resN: Type = <value>" — strip prefix up to " = ".
+	// Use ` = "` instead of ` = ` to avoid matching ` = ` inside JSON code
+	// values (e.g. Java "x = y"). The REPL string value always starts with '"'.
+	if idx := strings.LastIndex(s, ` = "`); idx != -1 {
 		// Use LastIndex to find the assignment closest to the actual value,
 		// skipping any preamble from the REPL session.
 		candidate := strings.TrimSpace(s[idx+3:])

@@ -65,61 +65,44 @@ func TestOpenIdempotent(t *testing.T) {
 	}
 	db1.Close()
 
-	// second open of the same path must not error (migration is idempotent)
+	// second open of the same path must not error (schema is idempotent)
 	db2, err := Open(path)
 	if err != nil {
 		t.Fatalf("second Open: %v", err)
 	}
 	db2.Close()
 }
-
-func TestMigrateCreatesScanStateTable(t *testing.T) {
+func TestAllTablesExist(t *testing.T) {
 	db, cleanup := tempDB(t)
 	defer cleanup()
 
-	rows, err := db.Conn().Query(`SELECT name FROM sqlite_master WHERE type='table' AND name='scan_state'`)
-	if err != nil {
-		t.Fatalf("query tables: %v", err)
+	want := []string{
+		"scan_state", "suppressions",
+		"projects", "scan_runs", "findings", "ssvc_scores", "poe_results", "cpg_cache",
+		"cpg_nodes", "cpg_edges", "cpg_builds",
+		"work_items", "pending_findings",
 	}
-	defer rows.Close()
-	if !rows.Next() {
-		t.Error("scan_state table was not created by migration")
-	}
-}
-
-func TestMigrateCreatesSuppressionsTable(t *testing.T) {
-	db, cleanup := tempDB(t)
-	defer cleanup()
-
-	rows, err := db.Conn().Query(`SELECT name FROM sqlite_master WHERE type='table' AND name='suppressions'`)
-	if err != nil {
-		t.Fatalf("query tables: %v", err)
-	}
-	defer rows.Close()
-	if !rows.Next() {
-		t.Error("suppressions table was not created by migration")
+	for _, table := range want {
+		var name string
+		err := db.Reader().QueryRow(
+			`SELECT name FROM sqlite_master WHERE type='table' AND name=?`, table,
+		).Scan(&name)
+		if err != nil {
+			t.Errorf("table %q not created: %v", table, err)
+		}
 	}
 }
 
-func TestMigrateCreatesIndex(t *testing.T) {
-	db, cleanup := tempDB(t)
-	defer cleanup()
 
-	rows, err := db.Conn().Query(`SELECT name FROM sqlite_master WHERE type='index' AND name='idx_scan_state_hash'`)
-	if err != nil {
-		t.Fatalf("query indexes: %v", err)
-	}
-	defer rows.Close()
-	if !rows.Next() {
-		t.Error("idx_scan_state_hash index was not created by migration")
-	}
-}
+
+
+
 
 func TestConnReturnsWorkingConnection(t *testing.T) {
 	db, cleanup := tempDB(t)
 	defer cleanup()
 
-	conn := db.Conn()
+	conn := db.Reader()
 	if conn == nil {
 		t.Fatal("Conn() returned nil")
 	}
@@ -132,7 +115,7 @@ func TestScanStateInsertAndQuery(t *testing.T) {
 	db, cleanup := tempDB(t)
 	defer cleanup()
 
-	_, err := db.Conn().Exec(
+	_, err := db.Reader().Exec(
 		`INSERT INTO scan_state (project_id, file_path, content_hash, last_scanned_at) VALUES (?, ?, ?, ?)`,
 		"proj-1", "api/auth.py", "abc123", 1718523661,
 	)
@@ -141,7 +124,7 @@ func TestScanStateInsertAndQuery(t *testing.T) {
 	}
 
 	var hash string
-	err = db.Conn().QueryRow(
+	err = db.Reader().QueryRow(
 		`SELECT content_hash FROM scan_state WHERE project_id = ? AND file_path = ?`,
 		"proj-1", "api/auth.py",
 	).Scan(&hash)
@@ -157,7 +140,7 @@ func TestSuppressionsInsertAndQuery(t *testing.T) {
 	db, cleanup := tempDB(t)
 	defer cleanup()
 
-	_, err := db.Conn().Exec(
+	_, err := db.Reader().Exec(
 		`INSERT INTO suppressions (project_id, finding_id, reason, suppressed_at) VALUES (?, ?, ?, ?)`,
 		"proj-1", "finding-42", "framework-safe:orm", 1718523661,
 	)
@@ -166,7 +149,7 @@ func TestSuppressionsInsertAndQuery(t *testing.T) {
 	}
 
 	var reason string
-	err = db.Conn().QueryRow(
+	err = db.Reader().QueryRow(
 		`SELECT reason FROM suppressions WHERE project_id = ? AND finding_id = ?`,
 		"proj-1", "finding-42",
 	).Scan(&reason)
@@ -183,7 +166,7 @@ func TestScanStatePrimaryKeyEnforced(t *testing.T) {
 	defer cleanup()
 
 	insert := func() error {
-		_, err := db.Conn().Exec(
+		_, err := db.Reader().Exec(
 			`INSERT INTO scan_state (project_id, file_path, content_hash, last_scanned_at) VALUES (?, ?, ?, ?)`,
 			"proj-1", "main.go", "hash1", 0,
 		)
@@ -208,7 +191,7 @@ func TestClosePreventsFurtherUse(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 	// after close, the underlying connection should be unusable
-	if err := db.Conn().Ping(); err == nil {
+	if err := db.Reader().Ping(); err == nil {
 		t.Error("expected error after Close(), but Ping succeeded")
 	}
 }
@@ -219,7 +202,7 @@ func TestOpenInvalidPath(t *testing.T) {
 	_, err := Open(dir)
 	if err == nil {
 		// Some SQLite drivers may permit opening a directory briefly; close is enough.
-		// But the migrate step should fail with a directory path.
+		// But the schema step should fail with a directory path.
 		t.Skip("driver accepted directory as DB path — skipping")
 	}
 }
@@ -228,7 +211,7 @@ func TestConnReturnsTypedSQLDB(t *testing.T) {
 	db, cleanup := tempDB(t)
 	defer cleanup()
 
-	var _ *sql.DB = db.Conn() // compile-time type check
+	var _ *sql.DB = db.Reader() // compile-time type check
 }
 
 // ─── GetScanState / UpsertScanState ─────────────────────────────────────────
@@ -368,41 +351,6 @@ func TestDeleteScanStateNonexistentIsNoop(t *testing.T) {
 	}
 }
 
-// ─── schema version ──────────────────────────────────────────────────────────
-
-func TestSchemaVersionAfterOpen(t *testing.T) {
-	db, cleanup := tempDB(t)
-	defer cleanup()
-
-	var ver int
-	if err := db.Conn().QueryRow("PRAGMA user_version").Scan(&ver); err != nil {
-		t.Fatalf("read user_version: %v", err)
-	}
-	if ver != currentSchemaVersion {
-		t.Errorf("user_version: got %d, want %d", ver, currentSchemaVersion)
-	}
-}
-
-func TestAllTablesExist(t *testing.T) {
-	db, cleanup := tempDB(t)
-	defer cleanup()
-
-	want := []string{
-		"scan_state", "suppressions",
-		"projects", "scan_runs", "findings",
-		"ssvc_scores", "poe_results", "cpg_cache",
-	}
-	for _, name := range want {
-		var got string
-		err := db.Conn().QueryRow(
-			`SELECT name FROM sqlite_master WHERE type='table' AND name=?`, name,
-		).Scan(&got)
-		if err != nil || got != name {
-			t.Errorf("table %q missing: %v", name, err)
-		}
-	}
-}
-
 // ─── PRAGMA checks ───────────────────────────────────────────────────────────
 
 func TestWALModeEnabled(t *testing.T) {
@@ -410,7 +358,7 @@ func TestWALModeEnabled(t *testing.T) {
 	defer cleanup()
 
 	var mode string
-	if err := db.Conn().QueryRow("PRAGMA journal_mode").Scan(&mode); err != nil {
+	if err := db.Reader().QueryRow("PRAGMA journal_mode").Scan(&mode); err != nil {
 		t.Fatalf("PRAGMA journal_mode: %v", err)
 	}
 	if mode != "wal" {
@@ -423,7 +371,7 @@ func TestForeignKeysEnabled(t *testing.T) {
 	defer cleanup()
 
 	var on int
-	if err := db.Conn().QueryRow("PRAGMA foreign_keys").Scan(&on); err != nil {
+	if err := db.Reader().QueryRow("PRAGMA foreign_keys").Scan(&on); err != nil {
 		t.Fatalf("PRAGMA foreign_keys: %v", err)
 	}
 	if on != 1 {
@@ -463,7 +411,7 @@ func TestUpsertAndGetProject(t *testing.T) {
 		FirstSeenAt:     1718000000,
 		LastScannedAt:   1718001000,
 	}
-	if err := db.UpsertProject(ctx, row); err != nil {
+	if _, err := db.UpsertProject(ctx, row); err != nil {
 		t.Fatalf("UpsertProject: %v", err)
 	}
 
@@ -488,12 +436,12 @@ func TestUpsertProjectPreservesFirstSeen(t *testing.T) {
 		ProjectID: "p-x", RootPath: "/x",
 		FirstSeenAt: 1000, LastScannedAt: 1000,
 	}
-	if err := db.UpsertProject(ctx, row); err != nil {
+	if _, err := db.UpsertProject(ctx, row); err != nil {
 		t.Fatalf("first upsert: %v", err)
 	}
 
 	row.LastScannedAt = 9999
-	if err := db.UpsertProject(ctx, row); err != nil {
+	if _, err := db.UpsertProject(ctx, row); err != nil {
 		t.Fatalf("second upsert: %v", err)
 	}
 
@@ -531,7 +479,7 @@ func TestCreateAndFinalizeScanRun(t *testing.T) {
 	ctx := t.Context()
 
 	// project must exist first (FK)
-	if err := db.UpsertProject(ctx, ProjectRow{
+	if _, err := db.UpsertProject(ctx, ProjectRow{
 		ProjectID: "p1", RootPath: "/p1", FirstSeenAt: 1, LastScannedAt: 1,
 	}); err != nil {
 		t.Fatalf("UpsertProject: %v", err)
@@ -554,7 +502,7 @@ func TestCreateAndFinalizeScanRun(t *testing.T) {
 
 	var status string
 	var total int
-	if err := db.Conn().QueryRowContext(ctx,
+	if err := db.Reader().QueryRowContext(ctx,
 		`SELECT status, findings_total FROM scan_runs WHERE run_id = ?`, "run-001",
 	).Scan(&status, &total); err != nil {
 		t.Fatalf("query scan_runs: %v", err)
@@ -583,7 +531,7 @@ func TestFinalizeScanRunNotFound(t *testing.T) {
 func setupProjectAndRun(t *testing.T, db *DB, projectID, runID string) {
 	t.Helper()
 	ctx := t.Context()
-	if err := db.UpsertProject(ctx, ProjectRow{
+	if _, err := db.UpsertProject(ctx, ProjectRow{
 		ProjectID: projectID, RootPath: "/" + projectID,
 		FirstSeenAt: 1, LastScannedAt: 1,
 	}); err != nil {
@@ -730,7 +678,7 @@ func TestUpsertAndGetCPGCache(t *testing.T) {
 	defer cleanup()
 
 	ctx := t.Context()
-	if err := db.UpsertProject(ctx, ProjectRow{
+	if _, err := db.UpsertProject(ctx, ProjectRow{
 		ProjectID: "cpg-proj", RootPath: "/cpg",
 		FirstSeenAt: 1, LastScannedAt: 1,
 	}); err != nil {

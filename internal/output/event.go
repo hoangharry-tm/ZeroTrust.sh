@@ -71,12 +71,13 @@ type Event struct {
 	Err     error
 }
 
-// Emit sends e on ch without blocking. If ch is full the event is dropped
-// rather than stalling the pipeline goroutine.
+// Emit sends e on ch without blocking. Dropped if ch is full or already closed.
 func Emit(ch chan<- Event, e Event) {
 	if e.Time.IsZero() {
 		e.Time = time.Now()
 	}
+	// ponytail: recover guards send-on-closed; select alone only guards full channels.
+	defer func() { recover() }() //nolint:errcheck
 	select {
 	case ch <- e:
 	default:

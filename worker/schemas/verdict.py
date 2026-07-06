@@ -37,7 +37,8 @@ class ClassifierLabel(str, Enum):
 
 
 class ClassifierResult(BaseModel):
-    verdict: ClassifierLabel
+    surface_id: str
+    label: ClassifierLabel
     confidence: float = Field(ge=0.0, le=1.0)
 
 
@@ -48,8 +49,29 @@ class ScanVerdict(str, Enum):
     UNCERTAIN = "uncertain"
 
 
+# ── Semantic Summarizer (LLM sub-object schemas) ──────────────────────────────
+
+class TaintFlowSchema(BaseModel):
+    untrusted_sources: list[str] = Field(default_factory=list)
+    sanitizer_nodes: list[str] = Field(default_factory=list)
+    sink_type: str = ""
+    taint_propagates: bool = False
+
+
+class AuthGuardSchema(BaseModel):
+    check_present: bool = False
+    check_location: str = ""
+
+
+class LogicFlawSchema(BaseModel):
+    resource_id_source: str = ""
+    db_sink: str = ""
+    check_location: str = ""
+
+
 class LLMScanResult(BaseModel):
     verdict: ScanVerdict
     confidence: float = Field(ge=0.0, le=1.0)
     cwe: str
     justification: str
+    early_exit: bool = False

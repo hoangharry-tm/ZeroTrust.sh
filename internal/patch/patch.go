@@ -147,7 +147,7 @@ func (g *Generator) Generate(ctx context.Context, findings []finding.Finding) ([
 			out = append(out, p)
 			continue
 		}
-		diff, err := generateDiff(ctx, client, f)
+		diff, err := generateDiff(ctx, client, g, f)
 		if err != nil || diff == "" {
 			if err != nil {
 				slog.Warn("patch generation failed", slog.String("finding_id", f.ID), slog.String("err", err.Error()))
@@ -187,17 +187,55 @@ func (g *Generator) Validate(relPath, unifiedDiff string) error {
 	return nil
 }
 
-func generateDiff(ctx context.Context, client *ollama.Client, f finding.Finding) (string, error) {
+// contextLines is the number of unchanged context lines around the hunk.
+const contextLines = 3
+
+// sourceContext reads the source file and returns lines [start-context, end+context]
+// together with the 1-based offset of the first returned line.
+func sourceContext(projectRoot, relPath string, lr finding.LineRange) (lines []string, firstLine int) {
+	abs := projectRoot + "/" + relPath
+	data, err := os.ReadFile(abs)
+	if err != nil {
+		return nil, 0
+	}
+	all := strings.Split(string(data), "\n")
+	lo := lr.Start - 1 - contextLines
+	if lo < 0 {
+		lo = 0
+	}
+	hi := lr.End - 1 + contextLines
+	if hi >= len(all) {
+		hi = len(all) - 1
+	}
+	return all[lo : hi+1], lo + 1
+}
+
+func generateDiff(ctx context.Context, client *ollama.Client, g *Generator, f finding.Finding) (string, error) {
 	var sb strings.Builder
 	if f.CVE != "" {
 		fmt.Fprintf(&sb, "CVE: %s (CVSS %.1f)\n\n", f.CVE, f.CVSS)
 	}
-	fmt.Fprintf(&sb, "Generate a minimal unified diff (--- a/file +++ b/file format) that fixes this %s security finding.\n", f.SeverityLabel)
-	fmt.Fprintf(&sb, "File: %s\nCWE: %s\nIssue: %s\n", f.Path, f.CWE, f.Justification)
-	if f.MatchedCode != "" {
-		fmt.Fprintf(&sb, "Vulnerable code:\n```\n%s\n```\n", f.MatchedCode)
+
+	srcLines, firstLine := sourceContext(g.projectRoot, f.Path, f.LineRange)
+	if len(srcLines) > 0 {
+		fmt.Fprintf(&sb, "Fix this %s security finding (%s) in %s.\n", f.SeverityLabel, f.CWE, f.Path)
+		fmt.Fprintf(&sb, "Issue: %s\n\n", f.Justification)
+		fmt.Fprintf(&sb, "Source context (lines %d–%d):\n```\n", firstLine, firstLine+len(srcLines)-1)
+		for i, l := range srcLines {
+			fmt.Fprintf(&sb, "%d: %s\n", firstLine+i, l)
+		}
+		fmt.Fprintf(&sb, "```\n\n")
+		fmt.Fprintf(&sb, "The vulnerability is on line(s) %d–%d.\n", f.LineRange.Start, f.LineRange.End)
+		fmt.Fprintf(&sb, "Output ONLY a valid unified diff using the EXACT file path %q and EXACT line numbers shown above. No explanation.", f.Path)
+	} else {
+		// Fallback: no file access, use MatchedCode only.
+		fmt.Fprintf(&sb, "Generate a minimal unified diff (--- a/file +++ b/file format) that fixes this %s security finding.\n", f.SeverityLabel)
+		fmt.Fprintf(&sb, "File: %s\nCWE: %s\nIssue: %s\n", f.Path, f.CWE, f.Justification)
+		if f.MatchedCode != "" {
+			fmt.Fprintf(&sb, "Vulnerable code:\n```\n%s\n```\n", f.MatchedCode)
+		}
+		sb.WriteString("Output ONLY the unified diff, no explanation.")
 	}
-	sb.WriteString("Output ONLY the unified diff, no explanation.")
 
 	raw, err := client.Generate(ctx, sb.String(), &ollama.Options{
 		Temperature: config.C.PatchLLMTemperature,

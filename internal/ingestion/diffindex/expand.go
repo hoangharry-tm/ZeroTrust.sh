@@ -95,9 +95,8 @@ func ExpandWithCPG(ctx context.Context, cs *ChangeSet, g cpg.Graph) (*ChangeSet,
 		"expanded", len(result),
 	)
 	return &ChangeSet{
-		Changed:   result,
-		Removed:   cs.Removed,
-		AllStates: cs.AllStates,
+		Changed: result,
+		Removed: cs.Removed,
 	}, nil
 }
 

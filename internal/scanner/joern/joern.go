@@ -80,6 +80,7 @@ import (
 	"github.com/hoangharry-tm/zerotrust/internal/config"
 	"github.com/hoangharry-tm/zerotrust/internal/tuning"
 	"github.com/hoangharry-tm/zerotrust/pkg/cpg"
+	"github.com/hoangharry-tm/zerotrust/pkg/sqlite"
 )
 
 // defaults for all configurable timeouts and retry counts.
@@ -130,6 +131,18 @@ func WithPingRetries(n int) Option { return func(c *Client) { c.pingRetries = n 
 // classpath noise. Pass os.Stderr here when debugging Joern startup failures.
 func WithSubprocessStderr(w io.Writer) Option { return func(c *Client) { c.subprocessStderr = w } }
 
+// SetSQLiteBackend attaches a SQLite read backend to the Client. When set,
+// all graph read queries (QueryNodes, GetCallers, GetCallees, etc.) read from
+// SQLite instead of hitting Joern HTTP — only TaintPaths still uses Joern HTTP.
+// Call after IngestCPGToSQLite completes to enable the fast path.
+// Safe to call at any point in the Client lifecycle; subsequent Graph() calls
+// inherit the backend.
+func (c *Client) SetSQLiteBackend(db *sqlite.DB, projectID, cpgVersion string) {
+	c.sqliteDB = db
+	c.sqliteProjectID = projectID
+	c.sqliteCPGVersion = cpgVersion
+}
+
 // Client wraps the Joern HTTP server API and optionally manages its subprocess.
 // All exported methods are safe to call concurrently.
 type Client struct {
@@ -143,6 +156,11 @@ type Client struct {
 	subprocessStderr io.Writer // JVM stderr sink; defaults to io.Discard
 
 	httpClient *http.Client
+
+	// Optional SQLite backend for graph reads. Set via WithSQLiteBackend.
+	sqliteDB         *sqlite.DB
+	sqliteProjectID  string
+	sqliteCPGVersion string
 
 	// pre-flagged sinks — populated by PreFlagSinks before CPG build.
 	preFlaggedMu    sync.Mutex
@@ -183,7 +201,13 @@ func New(opts ...Option) (*Client, error) {
 		return nil, err
 	}
 
-	c.httpClient = &http.Client{Timeout: c.queryTimeout}
+	c.httpClient = &http.Client{
+		Timeout: c.queryTimeout,
+		Transport: &http.Transport{
+			MaxIdleConns:    100,
+			IdleConnTimeout: 90 * time.Second,
+		},
+	}
 	return c, nil
 }
 
@@ -390,26 +414,9 @@ func (c *Client) PreFlagSinks(ctx context.Context, files []string) error {
 	return nil
 }
 
-// Version queries the Joern server for its semantic version string.
-// The result is cached on the Client after the first successful call.
-func (c *Client) Version(ctx context.Context) (string, error) {
-	if c.joernVersion != "" {
-		return c.joernVersion, nil
-	}
-	raw, err := c.doQuery(ctx, `cpg.metaData.version.l.headOption.getOrElse("unknown")`)
-	if err != nil {
-		return "", fmt.Errorf("joern: version query: %w", err)
-	}
-	v := strings.TrimSpace(string(raw))
-	// Strip surrounding quotes if present (Joern may return a quoted string).
-	if len(v) >= 2 && v[0] == '"' && v[len(v)-1] == '"' {
-		v = v[1 : len(v)-1]
-	}
-	if v == "" {
-		v = "unknown"
-	}
-	c.joernVersion = v
-	return v, nil
+// Version returns "unknown" — version checking is skipped.
+func (c *Client) Version(_ context.Context) (string, error) {
+	return "unknown", nil
 }
 
 // PreFlaggedSinks returns the cached pre-flagged sink list populated by
@@ -447,6 +454,10 @@ func (c *Client) GraphWithContext(ctx context.Context) *joernGraph {
 }
 
 // newGraph creates a joernGraph with a fresh scan-scoped cache.
+// Graph methods always read the SQLite backend from the Client directly so
+// SetSQLiteBackend takes effect for ALL existing graph instances — not just
+// graphs created after the call. This is critical for pipelines that create
+// the graph before the CPG is built and SQLite ingestion completes.
 func (c *Client) newGraph(ctx context.Context) *joernGraph {
 	return &joernGraph{
 		client: c,

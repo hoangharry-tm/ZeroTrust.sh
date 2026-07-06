@@ -906,6 +906,8 @@ details[open] > summary .folder-indicator {
   font-family: var(--font-mono);
   font-size: 12px;
   overflow-x: auto;
+  overflow-y: auto;
+  max-height: 380px;
   line-height: 1.5;
 }
 .code-line {

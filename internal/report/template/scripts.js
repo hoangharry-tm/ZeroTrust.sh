@@ -253,16 +253,17 @@ class FileSidebar {
 
   renderTree() {
     const section = document.querySelector('.sidebar-files');
-    section.querySelectorAll('.file-item[data-file]').forEach(el => {
+    const scrollEl = section.querySelector('.sidebar-files-scroll');
+    scrollEl.querySelectorAll('.file-item[data-file]').forEach(el => {
       if (el.dataset.file !== 'all') el.style.display = 'none';
     });
-    section.querySelectorAll('.file-tree').forEach(el => el.remove());
+    scrollEl.querySelectorAll('.file-tree').forEach(el => el.remove());
 
     const tree = this._buildTree();
     const container = document.createElement('div');
     container.className = 'file-tree';
     container.appendChild(this._buildTreeNodes(tree));
-    section.appendChild(container);
+    scrollEl.appendChild(container);
   }
 
   _buildTree() {

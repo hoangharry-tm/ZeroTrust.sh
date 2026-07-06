@@ -173,7 +173,14 @@ def handle(payload: dict[str, Any]) -> dict[str, Any]:
         for r in batch_results:
             results_by_id[r["surface_id"]] = r
 
-    # Restore original order
-    ordered = [results_by_id[s["surface_id"]] for s in surfaces if s.get("surface_id") in results_by_id]
+    # Restore original order with pydantic validation.
+    ordered = []
+    for s in surfaces:
+        raw = results_by_id.get(s.get("surface_id", ""))
+        if raw is None:
+            continue
+        from schemas.verdict import ClassifierResult
+        validated = ClassifierResult.model_validate(raw)
+        ordered.append(validated.model_dump())
     log.debug("classify: done", extra={"num_results": len(ordered)})
     return {"results": ordered}

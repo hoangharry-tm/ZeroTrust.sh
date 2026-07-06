@@ -37,7 +37,7 @@ def _tokenize(code: str, language: str) -> list[str]:
     if _tsl is None:
         return _tokenize_fallback(code)
     try:
-        parser = _tsl.get_parser(language)  # type: ignore[union-attr]
+        parser = _tsl.get_parser(language)
         tree = parser.parse(code.encode())
         tokens: list[str] = []
 
@@ -83,11 +83,21 @@ def handle(payload: dict[str, Any]) -> dict[str, Any]:
     code2: str = payload["code2"]
     language: str = payload.get("language", "python")
 
-    logger.debug("ast_edit: tokenising", extra={"language": language, "tsl_available": _tsl is not None})
+    logger.debug(
+        "ast_edit: tokenising",
+        extra={"language": language, "tsl_available": _tsl is not None},
+    )
     t1 = _tokenize(code1, language)
     t2 = _tokenize(code2, language)
     denom = max(len(t1), len(t2), 1)
     dist = _levenshtein(t1, t2)
     similarity = 1.0 - dist / denom
-    logger.debug("ast_edit: similarity computed", extra={"similarity": round(similarity, 4), "tokens_a": len(t1), "tokens_b": len(t2)})
+    logger.debug(
+        "ast_edit: similarity computed",
+        extra={
+            "similarity": round(similarity, 4),
+            "tokens_a": len(t1),
+            "tokens_b": len(t2),
+        },
+    )
     return {"similarity": similarity}

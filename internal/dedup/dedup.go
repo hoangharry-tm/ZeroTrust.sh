@@ -51,7 +51,6 @@ import (
 
 	"github.com/hoangharry-tm/zerotrust/internal/config"
 	"github.com/hoangharry-tm/zerotrust/internal/finding"
-	"github.com/hoangharry-tm/zerotrust/internal/worker"
 	"github.com/hoangharry-tm/zerotrust/pkg/sqlite"
 )
 
@@ -93,42 +92,22 @@ type Stats struct {
 
 // Layer deduplicates and scores the merged finding set from both detection paths.
 type Layer struct {
-	// w is the Python worker used for Gate 3 (embedding) and Gate 4 (AST edit).
-	// nil → gates 3 and 4 are skipped.
-	w *worker.Manager
 	// root is the project root used to load .zerotrust-suppressions.yaml.
-	// Empty string → sidecar not loaded.
 	root string
 	// sc is the sidecar loaded once per Layer from root. Nil when root is empty.
 	sc *Sidecar
 
 	// db is an optional SQLite connection for cross-scan dedup.
-	// When set, findings that already exist in the DB (checked by finding_id)
-	// are skipped before entering the gate cascade. This avoids re-processing
-	// known findings scan after scan.
-	// nil → cross-scan dedup is skipped.
 	db *sqlite.DB
 
 	// projectID identifies the current project in the SQLite store.
-	// Only used when db is non-nil.
 	projectID string
 }
 
-// New returns a Layer ready to process findings (Gates 3+4 skipped; no sidecar).
-func New() *Layer { return &Layer{} }
-
-// NewWithRoot returns a Layer that loads the .zerotrust-suppressions.yaml sidecar
-// from root once at construction time.
-func NewWithRoot(root string) *Layer {
+// New returns a dedup Layer.
+func New(root string) *Layer {
 	sc := LoadSidecar(root)
 	return &Layer{root: root, sc: &sc}
-}
-
-// NewWithWorker returns a Layer that uses w for Gate 3 (embedding similarity)
-// and Gate 4 (AST edit distance), and loads the sidecar from root.
-func NewWithWorker(w *worker.Manager, root string) *Layer {
-	sc := LoadSidecar(root)
-	return &Layer{w: w, root: root, sc: &sc}
 }
 
 // SetDB attaches an optional SQLite store for cross-scan finding dedup.
@@ -258,21 +237,20 @@ func (l *Layer) process(ctx context.Context, input []finding.Finding) ([]finding
 }
 
 // dedupHistorical skips findings that already exist in the SQLite store
-// (matched by finding_id). Uses a single targeted query per project that
-// fetches only the finding_id column — avoids loading full rows into memory.
+// (matched by finding_id). Streams finding IDs through a cursor to avoid
+// loading all IDs into a single slice.
 //
 // Returns the survivors (findings not found in the DB), merge records for
 // skipped findings, and the count of skipped duplicates.
 func (l *Layer) dedupHistorical(ctx context.Context, input []finding.Finding) ([]finding.Finding, []MergeRecord, int) {
-	ids, err := l.db.ListFindingIDs(ctx, l.projectID)
-	if err != nil {
+	known := make(map[string]struct{})
+	if err := l.db.WalkFindingIDs(ctx, l.projectID, func(id string) error {
+		known[id] = struct{}{}
+		return nil
+	}); err != nil {
 		slog.Warn("dedup: cross-scan query failed, proceeding without historical dedup",
 			"component", "dedup", "err", err)
 		return input, nil, 0
-	}
-	known := make(map[string]struct{}, len(ids))
-	for _, id := range ids {
-		known[id] = struct{}{}
 	}
 
 	var survivors []finding.Finding
@@ -301,138 +279,23 @@ func (l *Layer) gate3(ctx context.Context, survivors []finding.Finding) (
 	[]finding.Finding, []MergeRecord, int, [][2]int,
 ) {
 	slog.Debug("dedup gate3 (embedding) started", "component", "dedup", "candidates", len(survivors))
-	if l.w == nil || len(survivors) == 0 {
+	// ponytail: gate3 embedding skipped — Python worker removed; re-enable when Go embedding client exists
+	if len(survivors) == 0 {
 		return survivors, nil, 0, nil
 	}
-	// ponytail: circuit breaker — O(N²) pairs; DedupGate3MaxSurvivors controls the ceiling
-	if len(survivors) > config.C.DedupGate3MaxSurvivors {
-		slog.Warn("dedup gate3: survivor count exceeds circuit breaker threshold, skipping embedding pass",
-			"component", "dedup", "count", len(survivors), "threshold", config.C.DedupGate3MaxSurvivors)
-		return survivors, nil, 0, nil
-	}
-
-	// Collect codes for findings that have MatchedCode.
-	codeIdx := make([]int, 0, len(survivors)) // idx into survivors for each code
-	codes := make([]string, 0, len(survivors))
-	for i, f := range survivors {
-		if f.MatchedCode != "" {
-			codeIdx = append(codeIdx, i)
-			codes = append(codes, f.MatchedCode)
-		}
-	}
-	if len(codes) == 0 {
-		return survivors, nil, 0, nil
-	}
-
-	vecs, err := l.w.Embed(ctx, codes)
-	if err != nil || len(vecs) != len(codes) {
-		// Best-effort: skip gate 3 on worker error.
-		slog.Warn("dedup gate3: embedding failed, skipping", "component", "dedup", "err", err)
-		return survivors, nil, 0, nil
-	}
-
-	// Pairwise cosine similarity — O(N²) on gate-2 survivors (expected N < 50).
-	if len(survivors) > 200 {
-		slog.Warn("dedup gate3: large survivor set, O(N²) may be slow",
-			"component", "dedup",
-			"count", len(survivors))
-	}
-	merged := make([]bool, len(survivors))
-	var records []MergeRecord
-	var mergeCount int
-	var nearMiss [][2]int // indices into survivors
-
-	for a := 0; a < len(codeIdx); a++ {
-		if merged[codeIdx[a]] {
-			continue
-		}
-		for b := a + 1; b < len(codeIdx); b++ {
-			if merged[codeIdx[b]] {
-				continue
-			}
-			sim := cosineSimilarity(vecs[a], vecs[b])
-			si, sj := codeIdx[a], codeIdx[b]
-			switch {
-			case sim >= config.C.DedupEmbeddingExact:
-				m, rec := merge(survivors[si], survivors[sj], StrategyEmbedding)
-				survivors[si] = m
-				records = append(records, rec)
-				merged[sj] = true
-				mergeCount++
-			case sim >= config.C.DedupEmbeddingNearMiss:
-				nearMiss = append(nearMiss, [2]int{si, sj})
-			}
-		}
-	}
-
-	// Build post-gate3 slice and a remap from pre-gate3 index → post-gate3 index.
-	newIdx := make(map[int]int, len(survivors))
-	out := make([]finding.Finding, 0, len(survivors))
-	for i, f := range survivors {
-		if !merged[i] {
-			newIdx[i] = len(out)
-			out = append(out, f)
-		}
-	}
-	// Remap nearMiss to post-gate3 indices; drop pairs where either side was merged.
-	remapped := nearMiss[:0]
-	for _, pair := range nearMiss {
-		ni, oki := newIdx[pair[0]]
-		nj, okj := newIdx[pair[1]]
-		if oki && okj {
-			remapped = append(remapped, [2]int{ni, nj})
-		}
-	}
-	return out, records, mergeCount, remapped
+	// ponytail: gate3 (embedding cosine similarity) skipped — Python worker removed.
+	// Re-enable when a Go embedding client is added to pkg/embedding.
+	return survivors, nil, 0, nil
 }
 
-// gate4 evaluates near-miss pairs (identified by gate3) using AST token edit distance.
-// nearMiss contains post-gate3 index pairs; only those specific pairs are evaluated.
-func (l *Layer) gate4(ctx context.Context, survivors []finding.Finding, nearMiss [][2]int) (
+// gate4 evaluates near-miss pairs using AST token edit distance.
+func (l *Layer) gate4(_ context.Context, survivors []finding.Finding, nearMiss [][2]int) (
 	[]finding.Finding, []MergeRecord, int,
 ) {
 	slog.Debug("dedup gate4 (AST edit) started", "component", "dedup", "near_miss_pairs", len(nearMiss))
-	if l.w == nil || len(nearMiss) == 0 {
-		return survivors, nil, 0
-	}
-
-	merged := make([]bool, len(survivors))
-	var records []MergeRecord
-	var mergeCount int
-
-	// Only evaluate the near-miss pairs flagged by gate3 — O(|nearMiss|) IPC calls.
-	for _, pair := range nearMiss {
-		i, j := pair[0], pair[1]
-		if i >= len(survivors) || j >= len(survivors) {
-			continue
-		}
-		if merged[i] || merged[j] {
-			continue
-		}
-		if survivors[i].MatchedCode == "" || survivors[j].MatchedCode == "" {
-			continue
-		}
-		lang := finding.LangFromPath(survivors[i].Path)
-		sim, err := l.w.ASTEditSimilarity(ctx, survivors[i].MatchedCode, survivors[j].MatchedCode, lang)
-		if err != nil {
-			continue
-		}
-		if sim >= config.C.DedupASTEdit {
-			m, rec := merge(survivors[i], survivors[j], StrategyEditDistance)
-			survivors[i] = m
-			records = append(records, rec)
-			merged[j] = true
-			mergeCount++
-		}
-	}
-
-	out := make([]finding.Finding, 0, len(survivors))
-	for i, f := range survivors {
-		if !merged[i] {
-			out = append(out, f)
-		}
-	}
-	return out, records, mergeCount
+	// ponytail: gate4 (AST edit distance) skipped — Python worker removed.
+	// Re-enable when a Go AST diff client is added to pkg/astdiff.
+	return survivors, nil, 0
 }
 
 // cosineSimilarity returns the cosine similarity between two float64 vectors.

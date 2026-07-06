@@ -81,7 +81,8 @@ type CPGCacheRow struct {
 // If the root_path is already registered under a different project_id (e.g. after a
 // state-database reset changed the derived hash), the existing project_id is adopted
 // so callers can create scan_runs with a consistent FK reference.
-func (db *DB) UpsertProject(ctx context.Context, row ProjectRow) error {
+// Returns the effective project_id (possibly reconciled from an existing row).
+func (db *DB) UpsertProject(ctx context.Context, row ProjectRow) (string, error) {
 	now := time.Now().Unix()
 	if row.FirstSeenAt == 0 {
 		row.FirstSeenAt = now
@@ -99,7 +100,7 @@ func (db *DB) UpsertProject(ctx context.Context, row ProjectRow) error {
 		row.FirstSeenAt = existing.FirstSeenAt
 	}
 
-	_, err = db.conn.ExecContext(ctx, `
+	_, err = db.writer.ExecContext(ctx, `
 		INSERT INTO projects (project_id, root_path, primary_language, first_seen_at, last_scanned_at)
 		VALUES (?, ?, ?, ?, ?)
 		ON CONFLICT(project_id) DO UPDATE SET
@@ -108,16 +109,16 @@ func (db *DB) UpsertProject(ctx context.Context, row ProjectRow) error {
 		row.ProjectID, row.RootPath, row.PrimaryLanguage, row.FirstSeenAt, row.LastScannedAt,
 	)
 	if err != nil {
-		return fmt.Errorf("sqlite: UpsertProject: %w", err)
+		return "", fmt.Errorf("sqlite: UpsertProject: %w", err)
 	}
-	return nil
+	return row.ProjectID, nil
 }
 
 // getProjectByRootPath returns the project row for the given root path, or nil
 // if no project has been registered for that path.
 func (db *DB) getProjectByRootPath(ctx context.Context, rootPath string) (*ProjectRow, error) {
 	row := &ProjectRow{}
-	err := db.conn.QueryRowContext(ctx, `
+	err := db.reader.QueryRowContext(ctx, `
 		SELECT project_id, root_path, primary_language, first_seen_at, last_scanned_at
 		FROM projects WHERE root_path = ?`, rootPath,
 	).Scan(&row.ProjectID, &row.RootPath, &row.PrimaryLanguage, &row.FirstSeenAt, &row.LastScannedAt)
@@ -133,7 +134,7 @@ func (db *DB) getProjectByRootPath(ctx context.Context, rootPath string) (*Proje
 // GetProject returns the project row for projectID, or sql.ErrNoRows if absent.
 func (db *DB) GetProject(ctx context.Context, projectID string) (*ProjectRow, error) {
 	row := &ProjectRow{}
-	err := db.conn.QueryRowContext(ctx, `
+	err := db.reader.QueryRowContext(ctx, `
 		SELECT project_id, root_path, primary_language, first_seen_at, last_scanned_at
 		FROM projects WHERE project_id = ?`, projectID,
 	).Scan(&row.ProjectID, &row.RootPath, &row.PrimaryLanguage, &row.FirstSeenAt, &row.LastScannedAt)
@@ -156,7 +157,7 @@ func (db *DB) CreateScanRun(ctx context.Context, row ScanRunRow) error {
 	if row.ScanMode == "" {
 		row.ScanMode = "default"
 	}
-	_, err := db.conn.ExecContext(ctx, `
+	_, err := db.writer.ExecContext(ctx, `
 		INSERT INTO scan_runs (run_id, project_id, started_at, finished_at, scan_mode, files_scanned, findings_total, status)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		row.RunID, row.ProjectID, row.StartedAt, nullableInt64(row.FinishedAt),
@@ -173,7 +174,7 @@ func (db *DB) FinalizeScanRun(ctx context.Context, runID string, finishedAt int6
 	if finishedAt == 0 {
 		finishedAt = time.Now().Unix()
 	}
-	res, err := db.conn.ExecContext(ctx, `
+	res, err := db.writer.ExecContext(ctx, `
 		UPDATE scan_runs
 		SET finished_at = ?, files_scanned = ?, findings_total = ?, status = 'complete'
 		WHERE run_id = ?`,
@@ -194,8 +195,9 @@ func (db *DB) FinalizeScanRun(ctx context.Context, runID string, finishedAt int6
 // ListFindingIDs returns all finding_id values for a project.
 // This is a lightweight query that only fetches the primary key column,
 // suitable for cross-scan dedup where only existence checks are needed.
+// Deprecated: prefer WalkFindingIDs to avoid unbounded slice accumulation.
 func (db *DB) ListFindingIDs(ctx context.Context, projectID string) ([]string, error) {
-	rows, err := db.conn.QueryContext(ctx,
+	rows, err := db.reader.QueryContext(ctx,
 		`SELECT finding_id FROM findings WHERE project_id = ?`, projectID,
 	)
 	if err != nil {
@@ -217,6 +219,30 @@ func (db *DB) ListFindingIDs(ctx context.Context, projectID string) ([]string, e
 	return ids, nil
 }
 
+// WalkFindingIDs streams every finding_id for projectID through fn, one at a time.
+// Returns the first error from fn or a query error. Use in dedup to avoid loading
+// all IDs into a single slice.
+func (db *DB) WalkFindingIDs(ctx context.Context, projectID string, fn func(id string) error) error {
+	rows, err := db.reader.QueryContext(ctx,
+		`SELECT finding_id FROM findings WHERE project_id = ?`, projectID,
+	)
+	if err != nil {
+		return fmt.Errorf("sqlite: WalkFindingIDs: %w", err)
+	}
+	defer rows.Close() //nolint:errcheck
+
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return fmt.Errorf("sqlite: WalkFindingIDs scan: %w", err)
+		}
+		if err := fn(id); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
+}
+
 // UpsertFinding inserts a new finding or updates an existing one.
 // On conflict (same finding_id), run_id, severity, confidence, justification, suppress_reason,
 // and last_seen_at are updated; first_seen_at is preserved.
@@ -228,7 +254,7 @@ func (db *DB) UpsertFinding(ctx context.Context, row FindingRow) error {
 	if row.LastSeenAt == 0 {
 		row.LastSeenAt = now
 	}
-	_, err := db.conn.ExecContext(ctx, `
+	_, err := db.writer.ExecContext(ctx, `
 		INSERT INTO findings
 			(finding_id, project_id, run_id, file_path, line_start, line_end,
 			 cwe, severity, confidence, source_path, rule_id, matched_code,
@@ -257,49 +283,39 @@ func (db *DB) UpsertFinding(ctx context.Context, row FindingRow) error {
 	return nil
 }
 
-// ListFindings returns all findings for projectID, newest first.
-func (db *DB) ListFindings(ctx context.Context, projectID string) ([]FindingRow, error) {
-	rows, err := db.conn.QueryContext(ctx, `
-		SELECT finding_id, project_id, run_id, file_path, line_start, line_end,
+// scanFindingRow scans one FindingRow from rows.
+func scanFindingRow(rows *sql.Rows) (FindingRow, error) {
+	var r FindingRow
+	return r, rows.Scan(
+		&r.FindingID, &r.ProjectID, &r.RunID,
+		&r.FilePath, &r.LineStart, &r.LineEnd,
+		&r.CWE, &r.Severity, &r.Confidence, &r.SourcePath,
+		&r.RuleID, &r.MatchedCode, &r.Justification, &r.SuppressReason,
+		&r.Patch, &r.PatchStatus,
+		&r.FirstSeenAt, &r.LastSeenAt,
+	)
+}
+
+const findingCols = `finding_id, project_id, run_id, file_path, line_start, line_end,
 		       COALESCE(cwe,''), severity, confidence, source_path,
 		       COALESCE(rule_id,''), COALESCE(matched_code,''),
 		       COALESCE(justification,''), COALESCE(suppress_reason,''),
 		       COALESCE(patch,''), COALESCE(patch_status,''),
-		       first_seen_at, last_seen_at
-		FROM findings WHERE project_id = ?
-		ORDER BY first_seen_at DESC`, projectID,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("sqlite: ListFindings: %w", err)
-	}
-	defer rows.Close() //nolint:errcheck
+		       first_seen_at, last_seen_at`
 
-	var result []FindingRow
-	for rows.Next() {
-		var r FindingRow
-		if err := rows.Scan(
-			&r.FindingID, &r.ProjectID, &r.RunID,
-			&r.FilePath, &r.LineStart, &r.LineEnd,
-			&r.CWE, &r.Severity, &r.Confidence, &r.SourcePath,
-			&r.RuleID, &r.MatchedCode, &r.Justification, &r.SuppressReason,
-			&r.Patch, &r.PatchStatus,
-			&r.FirstSeenAt, &r.LastSeenAt,
-		); err != nil {
-			return nil, fmt.Errorf("sqlite: ListFindings scan: %w", err)
-		}
-		result = append(result, r)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("sqlite: ListFindings: %w", err)
-	}
-	return result, nil
+// ListFindings returns all findings for projectID, newest first.
+func (db *DB) ListFindings(ctx context.Context, projectID string) ([]FindingRow, error) {
+	return queryRows(ctx, db.reader,
+		"SELECT "+findingCols+" FROM findings WHERE project_id = ? ORDER BY first_seen_at DESC",
+		[]any{projectID}, scanFindingRow,
+	)
 }
 
 // GetFindingByID returns a single finding row for the given project_id and finding_id.
 // Returns sql.ErrNoRows if no finding matches.
 func (db *DB) GetFindingByID(ctx context.Context, projectID, findingID string) (*FindingRow, error) {
 	row := &FindingRow{}
-	err := db.conn.QueryRowContext(ctx, `
+	err := db.reader.QueryRowContext(ctx, `
 		SELECT finding_id, project_id, run_id, file_path, line_start, line_end,
 		       COALESCE(cwe,''), severity, confidence, source_path,
 		       COALESCE(rule_id,''), COALESCE(matched_code,''),
@@ -327,45 +343,15 @@ func (db *DB) GetFindingByID(ctx context.Context, projectID, findingID string) (
 // This is the preferred method for cross-scan dedup — it avoids loading the
 // entire findings table into memory.
 func (db *DB) GetFindingsByProjectAndSeverity(ctx context.Context, projectID, severity string) ([]FindingRow, error) {
-	rows, err := db.conn.QueryContext(ctx, `
-		SELECT finding_id, project_id, run_id, file_path, line_start, line_end,
-		       COALESCE(cwe,''), severity, confidence, source_path,
-		       COALESCE(rule_id,''), COALESCE(matched_code,''),
-		       COALESCE(justification,''), COALESCE(suppress_reason,''),
-		       COALESCE(patch,''), COALESCE(patch_status,''),
-		       first_seen_at, last_seen_at
-		FROM findings WHERE project_id = ? AND severity = ?
-		ORDER BY first_seen_at DESC`, projectID, severity,
+	return queryRows(ctx, db.reader,
+		"SELECT "+findingCols+" FROM findings WHERE project_id = ? AND severity = ? ORDER BY first_seen_at DESC",
+		[]any{projectID, severity}, scanFindingRow,
 	)
-	if err != nil {
-		return nil, fmt.Errorf("sqlite: GetFindingsByProjectAndSeverity: %w", err)
-	}
-	defer rows.Close() //nolint:errcheck
-
-	var result []FindingRow
-	for rows.Next() {
-		var r FindingRow
-		if err := rows.Scan(
-			&r.FindingID, &r.ProjectID, &r.RunID,
-			&r.FilePath, &r.LineStart, &r.LineEnd,
-			&r.CWE, &r.Severity, &r.Confidence, &r.SourcePath,
-			&r.RuleID, &r.MatchedCode, &r.Justification, &r.SuppressReason,
-			&r.Patch, &r.PatchStatus,
-			&r.FirstSeenAt, &r.LastSeenAt,
-		); err != nil {
-			return nil, fmt.Errorf("sqlite: GetFindingsByProjectAndSeverity scan: %w", err)
-		}
-		result = append(result, r)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("sqlite: GetFindingsByProjectAndSeverity: %w", err)
-	}
-	return result, nil
 }
 
 // CountFindingsByRun returns a severity → count map for all findings in runID.
 func (db *DB) CountFindingsByRun(ctx context.Context, runID string) (map[string]int, error) {
-	rows, err := db.conn.QueryContext(ctx,
+	rows, err := db.reader.QueryContext(ctx,
 		`SELECT severity, COUNT(*) FROM findings WHERE run_id = ? GROUP BY severity`,
 		runID,
 	)
@@ -396,7 +382,7 @@ func (db *DB) UpsertCPGCache(ctx context.Context, row CPGCacheRow) error {
 	if row.BuiltAt == 0 {
 		row.BuiltAt = time.Now().Unix()
 	}
-	_, err := db.conn.ExecContext(ctx, `
+	_, err := db.writer.ExecContext(ctx, `
 		INSERT INTO cpg_cache (project_id, cpg_path, scope_mode, built_at, changed_functions)
 		VALUES (?, ?, ?, ?, ?)
 		ON CONFLICT(project_id) DO UPDATE SET
@@ -415,7 +401,7 @@ func (db *DB) UpsertCPGCache(ctx context.Context, row CPGCacheRow) error {
 // GetCPGCache returns the CPG cache row for projectID, or sql.ErrNoRows if absent.
 func (db *DB) GetCPGCache(ctx context.Context, projectID string) (*CPGCacheRow, error) {
 	row := &CPGCacheRow{}
-	err := db.conn.QueryRowContext(ctx, `
+	err := db.reader.QueryRowContext(ctx, `
 		SELECT project_id, cpg_path, scope_mode, built_at, changed_functions
 		FROM cpg_cache WHERE project_id = ?`, projectID,
 	).Scan(&row.ProjectID, &row.CPGPath, &row.ScopeMode, &row.BuiltAt, &row.ChangedFunctions)
@@ -449,7 +435,7 @@ func nullableInt64(n int64) any {
 // UpdateFindingPatch stores the generated patch and its status for a finding.
 // Called after patch generation so the result is cached for future curate runs.
 func (db *DB) UpdateFindingPatch(ctx context.Context, findingID, patch, patchStatus string) error {
-	_, err := db.conn.ExecContext(ctx,
+	_, err := db.writer.ExecContext(ctx,
 		`UPDATE findings SET patch = ?, patch_status = ? WHERE finding_id = ?`,
 		nullableStr(patch), nullableStr(patchStatus), findingID,
 	)

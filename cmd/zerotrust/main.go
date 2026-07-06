@@ -40,6 +40,7 @@ import (
 	"github.com/spf13/pflag"
 
 	"github.com/hoangharry-tm/zerotrust/internal/output"
+	"github.com/hoangharry-tm/zerotrust/internal/pipeline"
 	"github.com/hoangharry-tm/zerotrust/internal/report"
 	"github.com/hoangharry-tm/zerotrust/internal/report/mock"
 )
@@ -156,7 +157,7 @@ func runMock(cmd *cobra.Command) error {
 // runScan builds a ScanConfig and drives the pipeline directly.
 // This is the native-mode execution path.
 func runScan(cmd *cobra.Command, args []string) error {
-	cfg := ScanConfig{}
+	cfg := pipeline.Config{}
 	if len(args) > 0 {
 		cfg.Target = args[0]
 	}
@@ -218,22 +219,34 @@ func runScan(cmd *cobra.Command, args []string) error {
 	events := make(chan output.Event, 64)
 
 	ctx := cmd.Context()
-	p, err := newPipeline(ctx, cfg)
+	p, err := pipeline.New(ctx, cfg)
 	if err != nil {
 		slog.Error("pipeline init failed", "component", "main", "err", err)
 		return fmt.Errorf("pipeline init: %w", err)
 	}
-	defer p.close() //nolint:errcheck
 
+	errCh := make(chan error, 1)
 	go func() {
-		if scanErr := p.run(ctx, events); scanErr != nil {
-			output.Emit(events, output.Event{Kind: output.EventError, Err: scanErr})
+		var runErr error
+		if err := p.Run(ctx, events); err != nil {
+			runErr = err
+			output.Emit(events, output.Event{Kind: output.EventError, Err: err})
 		}
 		close(events)
+		errCh <- runErr
 	}()
 
 	if err := renderer.Render(ctx, events); err != nil {
 		return fmt.Errorf("render: %w", err)
+	}
+	// Close pipeline AFTER renderer finishes and BEFORE returning — the events
+	// channel is closed by the background goroutine above, so close() must not
+	// emit through the events-sinking logger.
+	if closeErr := p.Close(); closeErr != nil {
+		slog.Default().Error("pipeline close", "err", closeErr)
+	}
+	if scanErr := <-errCh; scanErr != nil {
+		return scanErr
 	}
 	return &ExitError{Code: renderer.ExitCode()}
 }

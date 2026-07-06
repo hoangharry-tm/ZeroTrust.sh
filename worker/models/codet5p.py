@@ -1,8 +1,8 @@
 """CodeT5+ vulnerability classifier wrapper (Salesforce/codet5p-220m).
 
 Replaces UniXcoder-Base-Nine as the primary embedding backbone. CodeT5+ 220M
-offers a larger hidden dimension (1024 vs 768) and longer context (1024 vs 512)
-for more accurate code understanding. Mean pooling over encoder hidden states
+has a hidden dimension of 768 and max context of 512 tokens (the 770M variant
+uses 1024-dim — do not confuse the two). Mean pooling over encoder hidden states
 replaces the [CLS] token extraction used by UniXcoder.
 
 A-18 BLOCKING DEPENDENCY — accuracy disclosure
@@ -37,6 +37,7 @@ if TYPE_CHECKING:
 # Optional xformers for memory-efficient attention — graceful fallback if absent.
 try:
     import xformers.ops  # type: ignore[import-untyped]  # noqa: F401
+
     _XFORMERS_AVAILABLE = True
 except ImportError:
     _XFORMERS_AVAILABLE = False
@@ -148,7 +149,9 @@ class CodeT5PClassifier:
                     f"codet5p: failed to load tokenizer '{self.model_name}': {exc}"
                 ) from exc
 
-            log.debug("loading CodeT5+ encoder model (model=%s, device=%s)", self.model_name, device)
+            log.debug(
+                "loading CodeT5+ encoder model (model=%s, device=%s)", self.model_name, device
+            )
             try:
                 self._model = T5EncoderModel.from_pretrained(self.model_name)
             except Exception as exc:

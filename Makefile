@@ -39,7 +39,13 @@ run-integration:
 	     --native \
 	     --report build/report_Spring_boot.html \
 	     --joern-bin /opt/homebrew/bin/joern \
-	     --verbose
+	     --verbose \
+			 --offline
+
+scan-webgoat: build
+	rm -rf ~/mh_code/webgoat/.zerotrust && rm -f /tmp/zt-scan/scan.log /tmp/zt-scan/report.html && rm -rf ./workspace/
+	@pgrep -f "ollama serve" > /dev/null || (ollama serve &> /tmp/zt-scan/ollama.log & sleep 2)
+	./build/zerotrust ~/mh_code/webgoat --native --report /tmp/zt-scan/report.html --offline --verbose --joern-bin /opt/homebrew/bin/joern > /tmp/zt-scan/scan.log 2>&1 &
 
 # Run integration tests — requires a live Joern binary (Homebrew: brew install joern).
 # Set JOERN_BIN to override the resolved joern path.

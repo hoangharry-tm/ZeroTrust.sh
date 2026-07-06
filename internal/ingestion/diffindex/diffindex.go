@@ -42,18 +42,6 @@ import (
 	"github.com/hoangharry-tm/zerotrust/pkg/sqlite"
 )
 
-// FileState records the cached state of one file from a prior scan.
-type FileState struct {
-	// ProjectID identifies the owning project (matches sqlite.ScanStateRow.ProjectID).
-	ProjectID string
-	// FilePath is the path relative to the project root.
-	FilePath string
-	// ContentHash is the SHA-256 hex digest of the file's contents.
-	ContentHash string
-	// LastScannedAt is the Unix timestamp (seconds) of the scan that last wrote this row.
-	LastScannedAt int64
-}
-
 // ChangeSet is the output of a differential comparison.
 type ChangeSet struct {
 	// Changed holds the relative paths of files that are new or modified.
@@ -63,9 +51,6 @@ type ChangeSet struct {
 	// but absent from the current file set. The Joern incremental CPG patch
 	// must evict their nodes before running taint queries.
 	Removed []string
-	// AllStates is the complete current file-state list for every non-skipped file
-	// in the project. Pass this to Commit after a successful scan to advance the cache.
-	AllStates []FileState
 }
 
 // Indexer computes the differential file set for each scan.
@@ -94,7 +79,7 @@ func New(db *sqlite.DB, logger *slog.Logger) *Indexer {
 //   - projectRoot: absolute path to the codebase root to walk.
 //
 // Returns:
-//   - *ChangeSet: Changed (new/modified), Removed (deleted), and AllStates.
+//   - *ChangeSet: Changed (new/modified) and Removed (deleted).
 //   - error: non-nil if projectRoot cannot be walked or SQLite access fails.
 func (ix *Indexer) Diff(ctx context.Context, projectID, projectRoot string) (*ChangeSet, error) {
 	ix.logger.Debug("diffindex: computing file diff",
@@ -114,8 +99,8 @@ func (ix *Indexer) Diff(ctx context.Context, projectID, projectRoot string) (*Ch
 
 	now := time.Now().Unix()
 	var changed []string
-	var allStates []FileState
 	seen := make(map[string]bool)
+	totalFiles := 0
 
 	err = filepath.WalkDir(projectRoot, func(absPath string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -124,8 +109,6 @@ func (ix *Indexer) Diff(ctx context.Context, projectID, projectRoot string) (*Ch
 				"path", absPath,
 				"err", walkErr,
 			)
-			// ponytail: propagate — a security scanner that silently skips
-			// unreadable directories gives a false-clean result.
 			return walkErr
 		}
 		if ctx.Err() != nil {
@@ -159,16 +142,22 @@ func (ix *Indexer) Diff(ctx context.Context, projectID, projectRoot string) (*Ch
 		}
 
 		seen[relPath] = true
-		allStates = append(allStates, FileState{
-			ProjectID:     projectID,
-			FilePath:      relPath,
-			ContentHash:   hash,
-			LastScannedAt: now,
-		})
+		totalFiles++
 
 		if priorMap[relPath] != hash {
 			changed = append(changed, relPath)
 		}
+
+		// Stream state directly to SQLite — no slice accumulation.
+		if err := ix.db.UpsertScanState(ctx, sqlite.ScanStateRow{
+			ProjectID:     projectID,
+			FilePath:      relPath,
+			ContentHash:   hash,
+			LastScannedAt: now,
+		}); err != nil {
+			return fmt.Errorf("upsert scan state %s: %w", relPath, err)
+		}
+
 		return nil
 	})
 	if err != nil {
@@ -186,13 +175,14 @@ func (ix *Indexer) Diff(ctx context.Context, projectID, projectRoot string) (*Ch
 		"component", "diffindex",
 		"changed", len(changed),
 		"removed", len(removed),
-		"total_files", len(allStates),
+		"total_files", totalFiles,
 	)
-	return &ChangeSet{Changed: changed, Removed: removed, AllStates: allStates}, nil
+	return &ChangeSet{Changed: changed, Removed: removed}, nil
 }
 
-// Commit persists AllStates from cs and evicts Removed entries from the cache.
-// Call this after a successful scan to advance the cache baseline for the next run.
+// Commit evicts Removed entries from the cache. State rows are already persisted
+// during Diff — no slice accumulation needed.
+// Call this after a successful scan to remove entries for deleted files.
 //
 // Parameters:
 //   - ctx: cancellation context.
@@ -202,19 +192,8 @@ func (ix *Indexer) Commit(ctx context.Context, projectID string, cs *ChangeSet) 
 	ix.logger.Debug("diffindex: committing scan state",
 		"component", "diffindex",
 		"project_id", projectID,
-		"states", len(cs.AllStates),
 		"removed", len(cs.Removed),
 	)
-	for _, s := range cs.AllStates {
-		if err := ix.db.UpsertScanState(ctx, sqlite.ScanStateRow{
-			ProjectID:     projectID,
-			FilePath:      s.FilePath,
-			ContentHash:   s.ContentHash,
-			LastScannedAt: s.LastScannedAt,
-		}); err != nil {
-			return fmt.Errorf("upsert %s: %w", s.FilePath, err)
-		}
-	}
 	for _, r := range cs.Removed {
 		if err := ix.db.DeleteScanState(ctx, projectID, r); err != nil {
 			ix.logger.Error("diffindex: failed to delete removed file state",

@@ -230,13 +230,10 @@ func TestExpandWithCPG_EmptyFileInNeighbour_Skipped(t *testing.T) {
 	}
 }
 
-func TestExpandWithCPG_PreservesRemovedAndAllStates(t *testing.T) {
+func TestExpandWithCPG_PreservesRemoved(t *testing.T) {
 	cs := &ChangeSet{
 		Changed: []string{"pkg/cache/cache.go"},
 		Removed: []string{"pkg/cache/old.go"},
-		AllStates: []FileState{
-			{FilePath: "pkg/cache/cache.go", ContentHash: "abc"},
-		},
 	}
 	g := &mockGraph{
 		nodesByFile: map[string][]cpg.Node{
@@ -252,8 +249,5 @@ func TestExpandWithCPG_PreservesRemovedAndAllStates(t *testing.T) {
 	}
 	if len(out.Removed) != 1 || out.Removed[0] != "pkg/cache/old.go" {
 		t.Errorf("Removed not preserved: %v", out.Removed)
-	}
-	if len(out.AllStates) != 1 || out.AllStates[0].FilePath != "pkg/cache/cache.go" {
-		t.Errorf("AllStates not preserved in expanded ChangeSet: %v", out.AllStates)
 	}
 }

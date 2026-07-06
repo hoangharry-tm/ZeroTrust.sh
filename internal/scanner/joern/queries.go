@@ -36,60 +36,56 @@ import (
 //   - method chains continue via leading dot on next line (Scala 3 "leading
 //     infix operator" rule: newline + `.foo` is parsed as `.foo` continuation)
 
-// queryMethods returns a DSL expression for all METHOD nodes.
-func queryMethods() string {
-	return `cpg.method
-  .map(m => s"""{"id":"${m.id.toString}","name":"${m.name}","file":"${m.filename}","line":${m.lineNumber.getOrElse(0)}}""")
-  .toList
-  .mkString("[", ",", "]")`
+// nodeQuery builds a Joern DSL query for traversal, mapping each node to a
+// JSON object with id/name/file/line/code fields. The code field is sanitised
+// to remove backslashes, double-quotes, and control characters so that Scala
+// string-interpolation always produces valid JSON. _c is used as the sanitise
+// lambda variable to avoid shadowing the outer alias.
+func nodeQuery(traversal, alias, nameExpr, fileExpr string) string {
+	return fmt.Sprintf(
+		"%s\n"+
+			`  .map(%s => { val sc=%s.code.map(_c => if (_c=='\\'||_c=='"'||_c<32||_c>126) ' ' else _c).mkString; `+
+			`s"""{"id":"${%s.id.toString}","name":"${%s}","file":"${%s}","line":${%s.lineNumber.getOrElse(0)},"code":"${sc}"}""" })`+"\n"+
+			`  .toList`+"\n"+
+			`  .mkString("[", ",", "]")`,
+		traversal, alias, alias, alias, nameExpr, fileExpr, alias,
+	)
 }
+
+// queryMethods returns a DSL expression for all METHOD nodes.
+func queryMethods() string { return nodeQuery("cpg.method", "m", "m.name", "m.filename") }
 
 // queryCalls returns a DSL expression for all CALL nodes.
 func queryCalls() string {
-	return `cpg.call
-  .map(c => s"""{"id":"${c.id.toString}","name":"${c.name}","file":"${c.location.filename}","line":${c.lineNumber.getOrElse(0)}}""")
-  .toList
-  .mkString("[", ",", "]")`
+	return nodeQuery("cpg.call", "c", "c.name", "c.location.filename")
 }
 
 // queryParams returns a DSL expression for all METHOD_PARAMETER_IN nodes.
 func queryParams() string {
-	return `cpg.parameter
-  .map(p => s"""{"id":"${p.id.toString}","name":"${p.name}","file":"${p.location.filename}","line":${p.lineNumber.getOrElse(0)}}""")
-  .toList
-  .mkString("[", ",", "]")`
+	return nodeQuery("cpg.parameter", "p", "p.name", "p.location.filename")
 }
 
 // queryIdentifiers returns a DSL expression for all IDENTIFIER nodes.
 func queryIdentifiers() string {
-	return `cpg.identifier
-  .map(i => s"""{"id":"${i.id.toString}","name":"${i.name}","file":"${i.location.filename}","line":${i.lineNumber.getOrElse(0)}}""")
-  .toList
-  .mkString("[", ",", "]")`
+	return nodeQuery("cpg.identifier", "i", "i.name", "i.location.filename")
 }
 
 // queryLiterals returns a DSL expression for all LITERAL nodes.
 func queryLiterals() string {
-	return `cpg.literal
-  .map(l => s"""{"id":"${l.id.toString}","name":"${l.code}","file":"${l.location.filename}","line":${l.lineNumber.getOrElse(0)}}""")
-  .toList
-  .mkString("[", ",", "]")`
+	return nodeQuery("cpg.literal", "l", "l.code", "l.location.filename")
 }
 
 // queryMethodsByFile returns a DSL expression for METHOD nodes in a file.
 func queryMethodsByFile(relPath string) string {
-	escaped := escapeScalaString(relPath)
-	return fmt.Sprintf(`cpg.method.where(_.file.name("%s"))
-  .map(m => s"""{"id":"${m.id.toString}","name":"${m.name}","file":"${m.filename}","line":${m.lineNumber.getOrElse(0)}}""")
-  .toList
-  .mkString("[", ",", "]")`, escaped)
+	traversal := fmt.Sprintf(`cpg.method.where(_.file.name("%s"))`, escapeScalaString(relPath))
+	return nodeQuery(traversal, "m", "m.name", "m.filename")
 }
 
 // queryCallsByFile returns a DSL expression for CALL nodes in a file.
 func queryCallsByFile(relPath string) string {
 	escaped := escapeScalaString(relPath)
 	return fmt.Sprintf(`cpg.call.where(_.file.name("%s"))
-  .map(c => s"""{"id":"${c.id.toString}","name":"${c.name}","file":"${c.location.filename}","line":${c.lineNumber.getOrElse(0)}}""")
+  .map(c => { val sc=c.code.map(cp => if (cp=='\\'||cp=='"'||cp<32||cp>126) ' ' else cp).mkString; s"""{"id":"${c.id.toString}","name":"${c.name}","file":"${c.location.filename}","line":${c.lineNumber.getOrElse(0)},"code":"${sc}"}""" })
   .toList
   .mkString("[", ",", "]")`, escaped)
 }
@@ -117,35 +113,56 @@ func queryEdgesTo(nodeID string) string {
   .mkString("[", ",", "]")`, nodeID)
 }
 
-// queryAllEdges returns a DSL expression for the full caller→callee edge set.
-// Uses cpg.call.flatMap(_.callee) because flatgraph's edges() is not exposed.
+// queryAllEdges returns a DSL expression for the full caller METHOD→callee METHOD edge set.
+// from = caller METHOD node id; to = callee METHOD node id.
+// Previously used call.id (CALL node) as from, which mismatched QueryCallees (keyed by METHOD id).
 func queryAllEdges() string {
 	return `cpg.call
   .flatMap(call => call.callee.map(callee =>
-    s"""{"from":"${call.id.toString}","to":"${callee.id.toString}","type":"CALL","label":""}"""
+    s"""{"from":"${call.method.id.toString}","to":"${callee.id.toString}","type":"CALL","label":""}"""
   ))
   .toList
   .mkString("[", ",", "]")`
 }
 
+// queryMethodsPaginated returns a DSL expression for METHOD nodes with stable
+// sortBy-based pagination. Used by IngestCPGToSQLite to drain in batches.
+func queryMethodsPaginated(skip, take int) string {
+	traversal := fmt.Sprintf("cpg.method\n  .sortBy(_.id)\n  .drop(%d)\n  .take(%d)", skip, take)
+	return nodeQuery(traversal, "m", "m.name", "m.filename")
+}
+
+// queryCallsPaginated returns a DSL expression for CALL nodes with stable pagination.
+func queryCallsPaginated(skip, take int) string {
+	traversal := fmt.Sprintf("cpg.call\n  .sortBy(_.id)\n  .drop(%d)\n  .take(%d)", skip, take)
+	return nodeQuery(traversal, "c", "c.name", "c.location.filename")
+}
+
+// queryAllEdgesPaginated returns a DSL expression for the full caller→callee
+// edge set with stable pagination over the outer call iterator. Each page
+// processes up to `take` call nodes through flatMap.
+func queryAllEdgesPaginated(skip, take int) string {
+	return fmt.Sprintf(`cpg.call
+  .sortBy(_.id)
+  .drop(%d)
+  .take(%d)
+  .flatMap(call => call.callee.map(callee =>
+    s"""{"from":"${call.method.id.toString}","to":"${callee.id.toString}","type":"CALL","label":""}"""
+  ))
+  .toList
+  .mkString("[", ",", "]")`, skip, take)
+}
+
 // queryCallersByID returns a DSL expression for callers of a method.
 func queryCallersByID(functionID string) string {
-	return fmt.Sprintf(`cpg.method.id(%sL)
-  .caller
-  .filterNot(_.id < 0)
-  .map(m => s"""{"id":"${m.id.toString}","name":"${m.name}","file":"${m.filename}","line":${m.lineNumber.getOrElse(0)}}""")
-  .toList
-  .mkString("[", ",", "]")`, functionID)
+	traversal := fmt.Sprintf("cpg.method.id(%sL)\n  .caller\n  .filterNot(_.id < 0)", functionID)
+	return nodeQuery(traversal, "m", "m.name", "m.filename")
 }
 
 // queryCalleesByID returns a DSL expression for callees of a method.
 func queryCalleesByID(functionID string) string {
-	return fmt.Sprintf(`cpg.method.id(%sL)
-  .callee
-  .filterNot(_.id < 0)
-  .map(m => s"""{"id":"${m.id.toString}","name":"${m.name}","file":"${m.location.filename}","line":${m.lineNumber.getOrElse(0)}}""")
-  .toList
-  .mkString("[", ",", "]")`, functionID)
+	traversal := fmt.Sprintf("cpg.method.id(%sL)\n  .callee\n  .filterNot(_.id < 0)", functionID)
+	return nodeQuery(traversal, "m", "m.name", "m.location.filename")
 }
 
 // queryTaintFlows returns a DSL expression for taint flows within a method.
@@ -179,7 +196,7 @@ func queryNodeTypeGeneric(nt string) string {
 	return fmt.Sprintf(`cpg.graph
   .nodes
   .filter(_._label == %q)
-  .map(n => s"""{"id":"${n.id.toString}","name":"${try{n.property("NAME").asInstanceOf[String]}catch{case _=>""}}","file":"${try{n.property("FILENAME").asInstanceOf[String]}catch{case _=>""}}","line":${try{n.property("LINE_NUMBER").asInstanceOf[Int]}catch{case _=>0}},"type":"${n.label}"}""")
+  .map(n => { val sc=try{n.property("CODE").asInstanceOf[String]}catch{case _=>""}; val safesc=sc.map(c => if (c=='\\'||c=='"'||c<32||c>126) ' ' else c).mkString; s"""{"id":"${n.id.toString}","name":"${try{n.property("NAME").asInstanceOf[String]}catch{case _=>""}}","file":"${try{n.property("FILENAME").asInstanceOf[String]}catch{case _=>""}}","line":${try{n.property("LINE_NUMBER").asInstanceOf[Int]}catch{case _=>0}},"type":"${n.label}","code":"${safesc}"}""" })
   .toList
   .mkString("[", ",", "]")`, nt)
 }

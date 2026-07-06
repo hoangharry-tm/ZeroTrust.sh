@@ -176,7 +176,8 @@ func (c *Client) BuildCPG(ctx context.Context, cfg BuildConfig) error {
 		slog.Error("joern: BuildCPG failed")
 		return fmt.Errorf("joern: BuildCPG: no language succeeded")
 	}
-	slog.Info("joern: CPG build complete",
+	slog.Info(
+		"joern: CPG build complete",
 		slog.Int("paths", len(cfg.Paths)),
 		slog.Duration("elapsed", time.Since(buildStart)),
 	)
@@ -198,7 +199,8 @@ func (c *Client) BuildCPG(ctx context.Context, cfg BuildConfig) error {
 // in ChangedFunctions has ≥ HubCallerThreshold callers — in that case the
 // caller must invoke BuildCPG for a full rebuild instead.
 func (c *Client) IncrementalPatch(ctx context.Context, cfg IncrementalPatchConfig) error {
-	slog.Debug("joern: IncrementalPatch starting",
+	slog.Debug(
+		"joern: IncrementalPatch starting",
 		slog.Int("changed_functions", len(cfg.ChangedFunctions)),
 		slog.Int("removed_files", len(cfg.RemovedFiles)),
 		slog.Int("max_depth", cfg.MaxDepth),
@@ -231,7 +233,8 @@ func (c *Client) IncrementalPatch(ctx context.Context, cfg IncrementalPatchConfi
 	// Evict removed files from the CPG.
 	for _, f := range cfg.RemovedFiles {
 		evictQuery := fmt.Sprintf(
-			`cpg.file.nameExact(%q).foreach(_.start.ast.foreach(_.delete()))`, f)
+			`cpg.file.nameExact(%q).foreach(_.start.ast.foreach(_.delete()))`, f,
+		)
 		slog.Debug("joern: IncrementalPatch evicting file", "query", evictQuery)
 		if _, err := c.doQuery(ctx, evictQuery); err != nil {
 			return fmt.Errorf("joern: IncrementalPatch: evict %q: %w", f, err)
@@ -242,7 +245,8 @@ func (c *Client) IncrementalPatch(ctx context.Context, cfg IncrementalPatchConfi
 	// Joern's incremental import updates the CPG in-place for the given paths.
 	for _, fn := range cfg.ChangedFunctions {
 		patchQuery := fmt.Sprintf(
-			`cpg.method.fullName(%q).filename.l.foreach(f => importCode.incrementally(f))`, fn)
+			`cpg.method.fullName(%q).filename.l.foreach(f => importCode.incrementally(f))`, fn,
+		)
 		slog.Debug("joern: IncrementalPatch patching function", "query", patchQuery)
 		if _, err := c.doQuery(ctx, patchQuery); err != nil {
 			return fmt.Errorf("joern: IncrementalPatch: patch %q: %w", fn, err)
@@ -257,7 +261,22 @@ func (c *Client) SaveCPG(ctx context.Context, destPath string) error {
 	if containsTraversal(destPath) {
 		return fmt.Errorf("%w: %q", ErrPathTraversal, destPath)
 	}
-	query := fmt.Sprintf(`cpg.save; workspace.getActiveProject.foreach(_.cpg.save(%q))`, destPath)
+	// TODO: Verify that this change is correct (Wed, Jul 1, 2026)
+	// Joern's 'save' is a top-level shell command, not a method on the cpg object.
+	// We run 'save' to flush the in-memory graph to the workspace, then use Java
+	// utilities to copy the resulting 'cpg.bin' file to our custom destPath.
+
+	// query := fmt.Sprintf(`cpg.save; workspace.getActiveProject.foreach(_.cpg.save(%q))`, destPath)
+	query := fmt.Sprintf(
+		`save; workspace
+			.getActiveProject
+			.foreach(p => java.nio.file.Files.copy(
+				java.nio.file.Paths.get(p.path.toString)
+					.resolve("cpg.bin"),
+				java.nio.file.Paths.get(%q),
+				java.nio.file.StandardCopyOption.REPLACE_EXISTING
+			))`, destPath,
+	)
 	slog.Debug("joern: SaveCPG query", "query", query, "dest", destPath)
 	if _, err := c.doQuery(ctx, query); err != nil {
 		return fmt.Errorf("joern: SaveCPG: %w", err)
@@ -271,7 +290,7 @@ func (c *Client) LoadCPG(ctx context.Context, srcPath string) error {
 	if containsTraversal(srcPath) {
 		return fmt.Errorf("%w: %q", ErrPathTraversal, srcPath)
 	}
-	query := fmt.Sprintf(`importCpg(path=%q)`, srcPath)
+	query := fmt.Sprintf(`importCpg(%q)`, srcPath)
 	slog.Debug("joern: LoadCPG query", "query", query, "src", srcPath)
 	if _, err := c.doQuery(ctx, query); err != nil {
 		return fmt.Errorf("joern: LoadCPG: %w", err)

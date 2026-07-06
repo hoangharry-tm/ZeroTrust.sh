@@ -93,10 +93,7 @@ type Runner struct {
 // New returns a Runner using the binary identified by spec and rules at rulesDir.
 // If logger is nil, slog.Default() is used.
 func New(spec scanner.BinarySpec, rulesDir string, logger *slog.Logger) *Runner {
-	if logger == nil {
-		logger = slog.Default()
-	}
-	return &Runner{binaryPath: spec.Executable(), ruleDirs: []string{rulesDir}, logger: logger}
+	return NewMulti(spec, logger, rulesDir)
 }
 
 // NewMulti returns a Runner that passes each dir as a separate --config flag.

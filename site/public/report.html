@@ -912,6 +912,8 @@ details[open] > summary .folder-indicator {
   font-family: var(--font-mono);
   font-size: 12px;
   overflow-x: auto;
+  overflow-y: auto;
+  max-height: 380px;
   line-height: 1.5;
 }
 .code-line {
@@ -11818,16 +11820,17 @@ function buildFileTree() {
 
 function renderTreeView() {
   const section = document.querySelector(".sidebar-files");
-  section.querySelectorAll(".file-item[data-file]").forEach(el => {
+  const scrollEl = section.querySelector(".sidebar-files-scroll");
+  scrollEl.querySelectorAll(".file-item[data-file]").forEach(el => {
     if (el.dataset.file !== "all") el.style.display = "none";
   });
-  section.querySelectorAll(".file-tree").forEach(el => el.remove());
+  scrollEl.querySelectorAll(".file-tree").forEach(el => el.remove());
 
   const tree = buildFileTree();
   const container = document.createElement("div");
   container.className = "file-tree";
   container.appendChild(buildTreeNodes(tree));
-  section.appendChild(container);
+  scrollEl.appendChild(container);
 }
 
 function buildTreeNodes(node) {

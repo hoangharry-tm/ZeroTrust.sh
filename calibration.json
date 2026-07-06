@@ -41,6 +41,7 @@
   "token_est_overhead": 50,
   "assembler_batch_size": 5,
   "summarizer_batch_size": 5,
+  "summarizer_max_functions_per_batch": 15,
   "assembler_max_depth": 3,
   "cpg_default_max_depth": 5,
   "cpg_hard_max_depth": 6,
@@ -64,7 +65,7 @@
   ],
   "asc_max_rounds": 2,
   "asc_confidence_threshold": 0.7,
-  "ollama_timeout_seconds": 30,
+  "ollama_timeout_seconds": 120,
   "verdict_max_justification_len": 200,
   "joern_query_timeout_seconds": 120
 }

@@ -100,11 +100,20 @@ def _build_prompt(payload: dict[str, Any], action: str, is_final: bool) -> str:
             "Respond ONLY with JSON:\n"
             '{"thought": "<one sentence reasoning>", '
             '"action": "<what you checked>", '
-            '"observation": "<1-3 sentence conclusion>", '
+            '"justification": "<1-3 sentence conclusion>", '
             '"verdict": "<confirmed|uncertain>", '
             '"confidence": <0.0-1.0>, '
             '"cwe": "<CWE-NNN or empty>", '
-            '"early_exit": false}'
+            '"early_exit": <true if clearly safe/already confirmed, else false>}'
+        )
+    else:
+        prompt += (
+            "Respond ONLY with JSON:\n"
+            '{"thought": "<one sentence reasoning>", '
+            '"action": "<what you checked>", '
+            '"observation": "<what you found>", '
+            '"confidence": <0.0-1.0>, '
+            '"early_exit": <true if result is already definitive, else false>}'
         )
     log.debug("llm_scan: final_prompt:\n%s", prompt)
     return prompt
@@ -130,23 +139,32 @@ def _call_step(client: ollama.Client, payload: dict[str, Any], step: int, is_fin
     clean = re.sub(r"```(?:json)?\n?|```", "", raw).strip()
 
     if not is_final:
-        # Intermediate steps: extract thought/observation only; no schema enforcement needed.
+        # Intermediate steps: parse structured JSON; fall back gracefully on malformed output.
         try:
             partial: dict[str, Any] = json.loads(clean)
         except json.JSONDecodeError:
             partial = {}
+        raw_confidence = partial.get("confidence", 0.0)
+        try:
+            step_confidence = float(raw_confidence)
+        except (TypeError, ValueError):
+            step_confidence = 0.0
+        raw_early_exit = partial.get("early_exit", False)
+        step_early_exit = bool(raw_early_exit) if isinstance(raw_early_exit, bool) else str(raw_early_exit).lower() == "true"
         return {
             "thought": str(partial.get("thought", ""))[:400],
             "action": str(partial.get("action", ""))[:400],
             "observation": str(partial.get("observation", ""))[:400],
             "verdict": "uncertain",
-            "confidence": 0.0,
+            "confidence": step_confidence,
             "cwe": "",
-            "early_exit": False,
+            "early_exit": step_early_exit,
         }
 
     # Final step: strict Pydantic validation — propagates ValueError to dispatcher.
     raw_dict: dict[str, Any] = json.loads(clean)
+    # Backfill justification from observation for robustness (LLM may follow old prompt).
+    raw_dict.setdefault("justification", raw_dict.get("observation", ""))
     parsed = LLMScanResult.model_validate(raw_dict)
     return {
         "thought": str(raw_dict.get("thought", ""))[:400],
@@ -155,7 +173,7 @@ def _call_step(client: ollama.Client, payload: dict[str, Any], step: int, is_fin
         "verdict": parsed.verdict.value,
         "confidence": parsed.confidence,
         "cwe": parsed.cwe,
-        "early_exit": bool(raw_dict.get("early_exit", False)),
+        "early_exit": parsed.early_exit,
     }
 
 

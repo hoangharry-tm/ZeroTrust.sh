@@ -126,7 +126,7 @@ func TestAutoSuppressSpecFile(t *testing.T) {
 // ─── Gate 1: exact key dedup ─────────────────────────────────────────────────
 
 func TestGate1MergesSameCWEPathLine(t *testing.T) {
-	l := New()
+	l := New("")
 	f1 := patternFinding("f1", "api/auth.py", "CWE-89", "x", 10, 0.65)
 	f2 := semanticFinding("f2", "api/auth.py", "CWE-89", "y", 10, 0.80)
 
@@ -140,7 +140,7 @@ func TestGate1MergesSameCWEPathLine(t *testing.T) {
 }
 
 func TestGate1KeepsHigherConfidence(t *testing.T) {
-	l := New()
+	l := New("")
 	f1 := patternFinding("f1", "api/auth.py", "CWE-89", "", 10, 0.65)
 	f2 := semanticFinding("f2", "api/auth.py", "CWE-89", "", 10, 0.80)
 
@@ -151,7 +151,7 @@ func TestGate1KeepsHigherConfidence(t *testing.T) {
 }
 
 func TestGate1DifferentLineNotMerged(t *testing.T) {
-	l := New()
+	l := New("")
 	f1 := patternFinding("f1", "api/auth.py", "CWE-89", "", 10, 0.65)
 	f2 := patternFinding("f2", "api/auth.py", "CWE-89", "", 20, 0.65)
 
@@ -162,7 +162,7 @@ func TestGate1DifferentLineNotMerged(t *testing.T) {
 }
 
 func TestGate1DifferentCWENotMerged(t *testing.T) {
-	l := New()
+	l := New("")
 	f1 := patternFinding("f1", "api/auth.py", "CWE-89", "", 10, 0.65)
 	f2 := patternFinding("f2", "api/auth.py", "CWE-94", "", 10, 0.65)
 
@@ -175,7 +175,7 @@ func TestGate1DifferentCWENotMerged(t *testing.T) {
 // ─── Gate 2: code fingerprint dedup ──────────────────────────────────────────
 
 func TestGate2MergesSameCode(t *testing.T) {
-	l := New()
+	l := New("")
 	code := `cursor.execute("SELECT * FROM users WHERE id=%s" % user_id)`
 	// Different lines — gate 1 won't catch them.
 	f1 := patternFinding("f1", "api/auth.py", "CWE-89", code, 10, 0.65)
@@ -191,7 +191,7 @@ func TestGate2MergesSameCode(t *testing.T) {
 }
 
 func TestGate2EmptyCodeNotMerged(t *testing.T) {
-	l := New()
+	l := New("")
 	// Both have empty MatchedCode — gate 2 skips them; they survive independently.
 	f1 := patternFinding("f1", "api/auth.py", "CWE-89", "", 10, 0.65)
 	f2 := patternFinding("f2", "api/util.py", "CWE-89", "", 10, 0.65)
@@ -205,7 +205,7 @@ func TestGate2EmptyCodeNotMerged(t *testing.T) {
 // ─── Cross-path confidence boost ─────────────────────────────────────────────
 
 func TestCrossPathBoostApplied(t *testing.T) {
-	l := New()
+	l := New("")
 	f1 := patternFinding("f1", "api/auth.py", "CWE-89", "", 10, 0.70)
 	f2 := semanticFinding("f2", "api/auth.py", "CWE-89", "", 10, 0.70)
 
@@ -223,7 +223,7 @@ func TestCrossPathBoostApplied(t *testing.T) {
 }
 
 func TestCrossPathBoostCappedAt1(t *testing.T) {
-	l := New()
+	l := New("")
 	f1 := patternFinding("f1", "api/auth.py", "CWE-89", "", 10, 0.95)
 	f2 := semanticFinding("f2", "api/auth.py", "CWE-89", "", 10, 0.95)
 
@@ -234,7 +234,7 @@ func TestCrossPathBoostCappedAt1(t *testing.T) {
 }
 
 func TestSamePathNoCrossBoost(t *testing.T) {
-	l := New()
+	l := New("")
 	f1 := patternFinding("f1", "api/auth.py", "CWE-89", "", 10, 0.70)
 	f2 := patternFinding("f2", "api/auth.py", "CWE-89", "", 10, 0.70)
 
@@ -249,7 +249,7 @@ func TestSamePathNoCrossBoost(t *testing.T) {
 // ─── ProcessWithStats ────────────────────────────────────────────────────────
 
 func TestProcessWithStatsCountsCorrectly(t *testing.T) {
-	l := New()
+	l := New("")
 	findings := []finding.Finding{
 		patternFinding("f1", "api/auth.py", "CWE-89", "", 10, 0.70),
 		semanticFinding("f2", "api/auth.py", "CWE-89", "", 10, 0.70), // merges with f1
@@ -280,7 +280,7 @@ func TestProcessWithStatsCountsCorrectly(t *testing.T) {
 // ─── Empty input ─────────────────────────────────────────────────────────────
 
 func TestProcessEmptyInput(t *testing.T) {
-	l := New()
+	l := New("")
 	out, err := l.Process(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("Process(nil): %v", err)
@@ -293,7 +293,7 @@ func TestProcessEmptyInput(t *testing.T) {
 // ─── T5: BLOCK not boosted ────────────────────────────────────────────────────
 
 func TestCrossPathBoostSkippedForBlock(t *testing.T) {
-	l := New()
+	l := New("")
 	// Both paths find the same BLOCK-level (≥0.92) finding.
 	f1 := patternFinding("f1", "api/auth.py", "CWE-89", "SELECT * FROM u WHERE id=?", 10, 0.93)
 	f2 := semanticFinding("f2", "api/auth.py", "CWE-89", "SELECT * FROM u WHERE id=?", 10, 0.93)
