@@ -240,7 +240,8 @@ func New(ctx context.Context, cfg Config) (*Pipeline, error) {
 	}
 
 	// Path A
-	og := opengrep.NewMulti(scanner.BinarySpec{Name: "opengrep"}, logger)
+	og := opengrep.NewMulti(scanner.BinarySpec{Name: "opengrep"}, logger).
+		WithExclude(".github", "*/src/test/*", "*/src/it/*", "*/test/*", "*/tests/*")
 	orch := orchestrator.New(
 		scanner.NewGitleaks(scanner.BinarySpec{Name: "gitleaks"}),
 		scanner.NewOSV(scanner.BinarySpec{Name: "osv-scanner"}),

@@ -100,7 +100,8 @@ func Detect(target string) (StackProfile, error) {
 		}
 		name := d.Name()
 		if d.IsDir() {
-			if strings.HasPrefix(name, ".") || name == "vendor" || name == "node_modules" || name == "target" {
+			if strings.HasPrefix(name, ".") || name == "vendor" || name == "node_modules" || name == "target" ||
+				name == "test" || name == "tests" || name == "it" {
 				return filepath.SkipDir
 			}
 			return nil

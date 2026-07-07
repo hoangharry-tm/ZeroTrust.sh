@@ -176,6 +176,7 @@ var skipDirs = []string{
 	"vendor", "node_modules", ".git",
 	"target", "build", "dist", "__pycache__",
 	".gradle", ".mvn",
+	"test", "tests", "it", // skip test source trees (src/test/java, src/it/java)
 }
 
 // classifyFile reads up to maxImportLines lines of path and returns the OR of

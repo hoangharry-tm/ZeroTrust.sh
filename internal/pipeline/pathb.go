@@ -150,8 +150,17 @@ func (p *Pipeline) runPathB(ctx context.Context, _ *ingestion.Result, ch chan<- 
 	})
 	p.logger.Info("path b: triage complete", "dropped", droppedCount, "escalated", len(escalated))
 
+	// Gate: only pass taint-confirmed surfaces to B5 to prevent evidence-free LLM hallucination.
+	taintConfirmed := make([]enrichment.EnrichedSurface, 0, len(escalated))
+	for _, es := range escalated {
+		if len(es.SinkNodes) > 0 {
+			taintConfirmed = append(taintConfirmed, es)
+		}
+	}
+	p.logger.Info("path b: taint gate", "escalated", len(escalated), "taint_confirmed", len(taintConfirmed))
+
 	// B5: LLM Reasoner — full analysis on escalated surfaces.
-	analysisFindings, err := p.scan.Scan(ctx, escalated)
+	analysisFindings, err := p.scan.Scan(ctx, taintConfirmed)
 	if err != nil {
 		p.logger.Warn("path b analysis error", "err", err)
 	}

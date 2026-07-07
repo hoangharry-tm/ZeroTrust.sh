@@ -109,8 +109,18 @@ func (s *Scanner) scanOne(ctx context.Context, surface enrichment.EnrichedSurfac
 	}
 
 	verdict := parseVerdict(raw)
+	slog.Debug("analysis: verdict",
+		"surface", surface.FunctionName,
+		"file", surface.File,
+		"exploitable", verdict.Exploitable,
+		"confidence", verdict.Confidence,
+		"cwe", verdict.CWE,
+	)
 	if !verdict.Exploitable {
-		return nil, nil
+		if verdict.Confidence < 0.6 {
+			return nil, nil
+		}
+		// confidence ≥ 0.6 with !exploitable: surface into finding for human review.
 	}
 
 	f := verdictToFinding(surface, verdict)

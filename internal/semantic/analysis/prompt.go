@@ -100,7 +100,7 @@ func buildAIP(surface enrichment.EnrichedSurface) string {
 	return sb.String()
 }
 
-// buildPrompt assembles SCL + CFP + AIP into the final prompt.
+// buildPrompt assembles SCL + CFP + AIP + source code into the final prompt.
 func buildPrompt(surface enrichment.EnrichedSurface) string {
 	scl := buildSCL(surface)
 	cfp := buildCFP(surface)
@@ -112,6 +112,14 @@ func buildPrompt(surface enrichment.EnrichedSurface) string {
 	sb.WriteString("Answer ONLY with a JSON object — no prose, no markdown.\n\n")
 	sb.WriteString(scl + "\n\n")
 	sb.WriteString(cfp + "\n\n")
+	if surface.Code != "" {
+		code := surface.Code
+		if len(code) > 2000 {
+			code = code[:2000] + "\n... [truncated]"
+		}
+		sb.WriteString("=== FUNCTION SOURCE CODE ===\n")
+		sb.WriteString(code + "\n\n")
+	}
 	sb.WriteString(aip + "\n\n")
 	sb.WriteString("Based on the evidence above, is this surface exploitable?\n\n")
 	sb.WriteString("Respond with exactly:\n")

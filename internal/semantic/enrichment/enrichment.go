@@ -211,7 +211,7 @@ func (e *Enricher) Enrich(ctx context.Context, surfaces []targeting.Surface, pro
 				visited := map[string]bool{sourceID: true}
 				queue := []string{sourceID}
 				found := false
-				for depth := 0; depth < 5 && len(queue) > 0 && !found; depth++ {
+				for depth := 0; depth < 8 && len(queue) > 0 && !found; depth++ {
 					var next []string
 					for _, id := range queue {
 						callers, cerr := e.graph.GetCallers(id)
