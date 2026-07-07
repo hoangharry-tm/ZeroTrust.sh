@@ -36,6 +36,7 @@ package pipeline
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -508,6 +509,7 @@ func (p *Pipeline) runDedup(ctx context.Context, allFindings []finding.Finding) 
 // }
 
 // GenerateReport creates the HTML report file from scored findings.
+// If JSONReportPath is set, a JSON report is also written.
 func (p *Pipeline) GenerateReport(start time.Time, scored []finding.Finding) {
 	if err := os.MkdirAll(filepath.Dir(p.cfg.ReportPath), 0o750); err != nil {
 		p.logger.Error("failed to create report directory", "err", err)
@@ -530,6 +532,31 @@ func (p *Pipeline) GenerateReport(start time.Time, scored []finding.Finding) {
 	if err := p.rep.Render(f, info, scored); err != nil {
 		p.logger.Error("failed to render report", "err", err)
 	}
+
+	if p.cfg.JSONReportPath != "" {
+		p.writeJSONReport(scored)
+	}
+}
+
+func (p *Pipeline) writeJSONReport(scored []finding.Finding) {
+	if err := os.MkdirAll(filepath.Dir(p.cfg.JSONReportPath), 0o750); err != nil {
+		p.logger.Warn("report: failed to create JSON report directory", "err", err)
+		return
+	}
+	jf, jerr := os.Create(p.cfg.JSONReportPath)
+	if jerr != nil {
+		p.logger.Warn("report: failed to create JSON report file", "err", jerr)
+		return
+	}
+	defer jf.Close()
+
+	enc := json.NewEncoder(jf)
+	enc.SetIndent("", "  ")
+	if jerr = enc.Encode(scored); jerr != nil {
+		p.logger.Warn("report: failed to write JSON report", "err", jerr)
+		return
+	}
+	p.logger.Info("report: JSON report written", "path", p.cfg.JSONReportPath)
 }
 
 // MVP: finalize (SQLite commit + scan run record) bypassed.

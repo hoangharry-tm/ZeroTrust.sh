@@ -29,6 +29,7 @@ func DefineFlags(cmd *cobra.Command) {
 	flags.BoolP("offline", "o", false, "disable all network requests (Trivy offline mode)")
 	flags.BoolP("verbose", "v", false, "enable debug-level logging to stderr")
 	flags.String("report", "", "HTML report output path (default: build/report.html)")
+	flags.String("json-report", "", "JSON report output path (disabled by default)")
 	flags.String("project-id", "", "override project ID used for scan-state caching")
 	flags.String("mode", "Default", "scan scope mode: Default | Thorough | Full")
 	flags.String("joern-bin", "", "path to joern-server binary (native mode only)")
@@ -69,6 +70,10 @@ func FromCommand(cmd *cobra.Command) (NativeRunConfig, error) {
 	cfg.ReportPath, err = cmd.Flags().GetString("report")
 	if err != nil {
 		return cfg, fmt.Errorf("report: %w", err)
+	}
+	cfg.JSONReportPath, err = cmd.Flags().GetString("json-report")
+	if err != nil {
+		return cfg, fmt.Errorf("json-report: %w", err)
 	}
 	cfg.ProjectID, err = cmd.Flags().GetString("project-id")
 	if err != nil {
@@ -115,6 +120,7 @@ type NativeRunConfig struct {
 	Verbose         bool
 	ModelName       string
 	ReportPath      string
+	JSONReportPath  string
 	ProjectID       string
 	ScanMode        string
 	JoernBin        string

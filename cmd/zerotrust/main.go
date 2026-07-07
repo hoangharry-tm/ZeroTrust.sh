@@ -99,6 +99,7 @@ func runScan(cmd *cobra.Command, args []string, runCfg config.NativeRunConfig) e
 		ModelName:       runCfg.ModelName,
 		Offline:         runCfg.Offline,
 		ReportPath:      runCfg.ReportPath,
+		JSONReportPath:  runCfg.JSONReportPath,
 		ProjectID:       runCfg.ProjectID,
 		ScanMode:        runCfg.ScanMode,
 		JoernBin:        runCfg.JoernBin,

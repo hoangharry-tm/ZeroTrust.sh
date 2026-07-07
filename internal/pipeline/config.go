@@ -47,6 +47,10 @@ type Config struct {
 	// ReportPath is the file path where the self-contained HTML report is written.
 	ReportPath string
 
+	// JSONReportPath is the optional file path for the machine-readable JSON report.
+	// Empty string disables JSON output.
+	JSONReportPath string
+
 	// ProjectID overrides the project identifier used to key scan state in SQLite.
 	// If empty, a deterministic ID is derived from the resolved Target path.
 	ProjectID string

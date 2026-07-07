@@ -226,45 +226,45 @@ type PoEResult struct {
 // from PATTERN to BOTH and applying the +15 pp cross-path confidence boost).
 type Finding struct {
 	// ID is the stable dedup hash: hex(SHA-256(CWE + ":" + Path + ":" + CodeFingerprint)).
-	ID string
+	ID string `json:"ID"`
 	// Path is the file path relative to the project root.
-	Path string
+	Path string `json:"Path"`
 	// LineRange is the inclusive line span of the vulnerable code.
-	LineRange LineRange
+	LineRange LineRange `json:"LineRange"`
 	// CWE is the primary CWE identifier (e.g. "CWE-89" for SQL injection).
-	CWE string
+	CWE string `json:"CWE"`
 	// SeverityLabel is the SSVC-inspired five-tier output label.
-	SeverityLabel SeverityLabel
+	SeverityLabel SeverityLabel `json:"SeverityLabel"`
 	// Confidence is the composite score (0.0–1.0) used to derive SeverityLabel.
-	Confidence float64
+	Confidence float64 `json:"Confidence"`
 	// SourcePath identifies which detection path(s) produced this finding.
-	SourcePath SourcePath
+	SourcePath SourcePath `json:"SourcePath"`
 	// SuppressReason is set when SeverityLabel == SeveritySuppressed; empty otherwise.
-	SuppressReason SuppressReason
+	SuppressReason SuppressReason `json:"SuppressReason"`
 	// Justification is the human-readable explanation of the finding.
-	Justification string
+	Justification string `json:"Justification"`
 	// MatchedCode is the source snippet at the finding location.
-	MatchedCode string
+	MatchedCode string `json:"MatchedCode"`
 	// RuleID is the OpenGrep / ast-grep rule identifier that matched (Path A only).
 	// Empty for Path B findings.
-	RuleID string
+	RuleID string `json:"RuleID"`
 	// CVE is the primary CVE identifier (e.g. "CVE-2021-44228"); empty when no CVE match.
 	// Populated for Path B findings that passed through the enrichment stage.
-	CVE string
+	CVE string `json:"CVE"`
 	// CVSS is the CVSS v3 base score (0.0–10.0) for the primary CVE; 0.0 when no CVE match.
-	CVSS float64
+	CVSS float64 `json:"CVSS"`
 	// SSVC carries the three SSVC-inspired scoring dimensions.
-	SSVC SSVCDimensions
+	SSVC SSVCDimensions `json:"SSVC"`
 	// PoeContext carries the structured exploit context (non-nil from Approach 2+).
-	PoeContext *PoeContext
+	PoeContext *PoeContext `json:"PoeContext"`
 	// PoEResult is the sandbox exploitation result (Approach 3 only; nil otherwise).
-	PoEResult *PoEResult
+	PoEResult *PoEResult `json:"PoEResult"`
 	// Patch is the zero-shot unified diff fix suggestion (empty when not generated).
-	Patch string
+	Patch string `json:"Patch"`
 	// PatchStatus is the validation result: "ok" | "malformed" | "" (not generated).
-	PatchStatus string
+	PatchStatus string `json:"PatchStatus"`
 	// PatchScope is the diff scope label: "single_hunk" | "multi_hunk" | "multi_file" | "".
-	PatchScope string
+	PatchScope string `json:"PatchScope"`
 }
 
 // Channel is a typed channel through which pipeline stages emit findings.
