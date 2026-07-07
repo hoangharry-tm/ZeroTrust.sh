@@ -17,6 +17,7 @@ package joern
 import (
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/hoangharry-tm/zerotrust/pkg/cpg"
 )
@@ -152,6 +153,67 @@ func FilterScopeByLanguage(files []string) []string {
 	result := make([]string, 0, len(files))
 	for _, f := range files {
 		if _, ok := DetectLanguage(f); ok {
+			result = append(result, f)
+		}
+	}
+	return result
+}
+
+// Source: conventional test-file naming per each language's official toolchain docs
+// (Maven/Gradle for Java/Kotlin, go test for Go, pytest/unittest for Python,
+// Jest/Vitest for JavaScript/TypeScript).
+
+// IsTestFile reports whether path is a test file that should be excluded from
+// CPG ingestion. Matches by path pattern, not content.
+// Patterns are language-conventional and do not require a file read.
+func IsTestFile(path string) bool {
+	base := filepath.Base(path)
+	parts := strings.Split(path, string(filepath.Separator))
+
+	// Java/Kotlin: filename ends with Test.java, Tests.java, IT.java, Spec.kt, Test.kt
+	if strings.HasSuffix(base, "Test.java") ||
+		strings.HasSuffix(base, "Tests.java") ||
+		strings.HasSuffix(base, "IT.java") ||
+		strings.HasSuffix(base, "Spec.kt") ||
+		strings.HasSuffix(base, "Test.kt") {
+		return true
+	}
+
+	// Go: filename ends with _test.go
+	if strings.HasSuffix(base, "_test.go") {
+		return true
+	}
+
+	// Python: filename starts with test or ends with _test.py
+	if strings.HasPrefix(base, "test") || strings.HasSuffix(base, "_test.py") {
+		return true
+	}
+
+	// JavaScript/TypeScript: filename ends with .test.js, .spec.js, .test.ts, .spec.ts
+	if strings.HasSuffix(base, ".test.js") ||
+		strings.HasSuffix(base, ".spec.js") ||
+		strings.HasSuffix(base, ".test.ts") ||
+		strings.HasSuffix(base, ".spec.ts") {
+		return true
+	}
+
+	// Path segment matching: check each segment exactly (not substring).
+	// This prevents "contest" from matching "test".
+	for _, part := range parts {
+		switch part {
+		case "test", "tests", "__tests__", "androidTest", "testFixtures", "it":
+			return true
+		}
+	}
+
+	return false
+}
+
+// FilterTestFiles removes test files from files using IsTestFile.
+func FilterTestFiles(files []string) []string {
+	result := make([]string, 0, len(files))
+	for _, f := range files {
+		if !IsTestFile(f) {
 			result = append(result, f)
 		}
 	}

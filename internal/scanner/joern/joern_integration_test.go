@@ -326,7 +326,7 @@ func TestIntegration_TaintFlowsQuery(t *testing.T) {
 		t.Fatal("getUser method not found")
 	}
 
-	q := queryTaintFlows(getUserID)
+	q := queryTaintFlows(getUserID, []string{"executeQuery", "executeUpdate", "execute", "prepareStatement", "queryForList"})
 	raw, err := c.doQuery(ctx, q)
 	if err != nil {
 		t.Fatalf("queryTaintFlows: %v", err)

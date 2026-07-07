@@ -381,6 +381,8 @@ func SinkDefForCall(lang Language, callName string) (SinkDef, bool) {
 		return SinkDef{}, false
 	}
 	for _, s := range cfg.Sinks {
+		// ponytail: substring match risks false positives (e.g. "exec" matches "execute").
+		// Upgrade path: structural PDG edge classification when PDG ingestion is added.
 		if strings.Contains(callName, s.Name) {
 			return s, true
 		}
@@ -396,6 +398,8 @@ func SourceDefForCall(lang Language, callName string) (SourceDef, bool) {
 		return SourceDef{}, false
 	}
 	for _, s := range cfg.Sources {
+		// ponytail: substring match risks false positives (e.g. "exec" matches "execute").
+		// Upgrade path: structural PDG edge classification when PDG ingestion is added.
 		if strings.Contains(callName, s.Name) {
 			return s, true
 		}

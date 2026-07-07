@@ -79,6 +79,11 @@ type Config struct {
 	// scripts/calibrate.py. Empty means compile-time defaults are used.
 	CalibrationPath string
 
+	// TriageThreshold is the minimum confidence score for a surface to be
+	// escalated from the LLM triage stage (B4) to the full reasoner (B5).
+	// Surfaces below this threshold are dropped.
+	TriageThreshold float64
+
 	// Verbose enables debug-level logging to stderr for both Go and the Python worker.
 	Verbose bool
 }
@@ -102,5 +107,8 @@ func (c *Config) defaults() {
 	}
 	if c.TokenCap <= 0 {
 		c.TokenCap = config.C.DefaultTokenCap
+	}
+	if c.TriageThreshold <= 0 {
+		c.TriageThreshold = 0.20
 	}
 }

@@ -86,6 +86,13 @@ func TestEngine_RunMergesFindingsFromAllSupportedScanners(t *testing.T) {
 	if len(got) != 2 {
 		t.Errorf("got %d findings, want 2", len(got))
 	}
+	ids := map[string]bool{}
+	for _, f := range got {
+		ids[f.ID] = true
+	}
+	if !ids[f1.ID] || !ids[f2.ID] {
+		t.Errorf("merged findings missing expected IDs: got %v, want %v and %v", got, f1.ID, f2.ID)
+	}
 }
 
 func TestEngine_RunEmptyFindings(t *testing.T) {

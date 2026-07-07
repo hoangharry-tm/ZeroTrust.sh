@@ -28,7 +28,7 @@ import (
 
 	"github.com/hoangharry-tm/zerotrust/internal/config"
 	"github.com/hoangharry-tm/zerotrust/internal/finding"
-	"github.com/hoangharry-tm/zerotrust/internal/tuning"
+	
 )
 
 // ── Static CWE lookup tables ──────────────────────────────────────────────────
@@ -83,7 +83,7 @@ var cweTechnicalImpact = map[string]string{
 
 const (
 	kevURL  = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
-	kevTTL  = tuning.KEVCacheTTL
+	kevTTL  = config.KEVCacheTTL
 	epssURL = "https://api.first.org/data/v1/epss?cve=%s"
 )
 
@@ -261,7 +261,7 @@ func DeriveSSVC(ctx context.Context, f finding.Finding) finding.Finding {
 
 	// ── Exploitation (CISA KEV + EPSS; network best-effort) ──────────────────
 	// Use a short timeout so we don't block the scan if the network is slow.
-	netCtx, cancel := context.WithTimeout(ctx, tuning.SSVCNetTimeout)
+	netCtx, cancel := context.WithTimeout(ctx, config.SSVCNetTimeout)
 	defer cancel()
 
 	if f.CVE != "" && kevContains(netCtx, f.CVE) {

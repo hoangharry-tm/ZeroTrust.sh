@@ -60,6 +60,9 @@ func (m *mockGraph) GetNeighboursAtDepth(_ string, _ int) ([]cpg.Node, error)   
 func (m *mockGraph) TaintPaths(_ []cpg.TaintSource, _ []cpg.TaintSink) ([]cpg.TaintPath, error) {
 	return nil, nil
 }
+func (m *mockGraph) ProjectWideTaintPaths(_ []string, _ string) ([]cpg.TaintPath, error) {
+	return nil, nil
+}
 func (m *mockGraph) PreFlaggedSinks() ([]cpg.TaintSink, error) { return nil, nil }
 
 // containsFile returns true if file is in the Changed slice.

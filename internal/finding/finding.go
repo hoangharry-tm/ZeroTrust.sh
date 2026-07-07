@@ -20,6 +20,8 @@ package finding
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"strings"
 )
@@ -45,16 +47,79 @@ const (
 //
 // A cross-path boost of +15 pp (capped at 1.0) is applied when both Path A
 // and Path B confirm the same finding.
-type SeverityLabel string
+type SeverityLabel int
 
 // SeverityLabel constants ordered from highest to lowest severity.
 const (
-	SeverityBlock      SeverityLabel = "BLOCK"
-	SeverityHigh       SeverityLabel = "HIGH"
-	SeverityMedium     SeverityLabel = "MEDIUM"
-	SeverityLow        SeverityLabel = "LOW"
-	SeveritySuppressed SeverityLabel = "SUPPRESSED"
+	SeverityBlock SeverityLabel = iota
+	SeverityHigh
+	SeverityMedium
+	SeverityLow
+	SeveritySuppressed
 )
+
+// String returns the canonical uppercase string representation.
+func (s SeverityLabel) String() string {
+	switch s {
+	case SeverityBlock:
+		return "BLOCK"
+	case SeverityHigh:
+		return "HIGH"
+	case SeverityMedium:
+		return "MEDIUM"
+	case SeverityLow:
+		return "LOW"
+	case SeveritySuppressed:
+		return "SUPPRESSED"
+	default:
+		return "UNKNOWN"
+	}
+}
+
+// goString returns the qualified Go-style identifier for debugging.
+func (s SeverityLabel) GoString() string {
+	switch s {
+	case SeverityBlock:
+		return "finding.SeverityBlock"
+	case SeverityHigh:
+		return "finding.SeverityHigh"
+	case SeverityMedium:
+		return "finding.SeverityMedium"
+	case SeverityLow:
+		return "finding.SeverityLow"
+	case SeveritySuppressed:
+		return "finding.SeveritySuppressed"
+	default:
+		return "finding.SeverityLabel(" + strings.TrimPrefix(
+			fmt.Sprintf("%d", int(s)), "") + ")"
+	}
+}
+
+// MarshalJSON keeps JSON output as the canonical uppercase string.
+func (s SeverityLabel) MarshalJSON() ([]byte, error) {
+	return json.Marshal(s.String())
+}
+
+// UnmarshalJSON reads from the canonical uppercase string.
+func (s *SeverityLabel) UnmarshalJSON(data []byte) error {
+	var str string
+	if err := json.Unmarshal(data, &str); err != nil {
+		return err
+	}
+	switch str {
+	case "BLOCK":
+		*s = SeverityBlock
+	case "HIGH":
+		*s = SeverityHigh
+	case "MEDIUM":
+		*s = SeverityMedium
+	case "LOW":
+		*s = SeverityLow
+	case "SUPPRESSED":
+		*s = SeveritySuppressed
+	}
+	return nil
+}
 
 // SourcePath identifies which detection path produced a finding.
 type SourcePath string
@@ -202,7 +267,9 @@ type Finding struct {
 	PatchScope string
 }
 
-// Channel is the typed channel through which pipeline stages emit findings.
+// Channel is a typed channel through which pipeline stages emit findings.
+// Producers should constrain their parameter to chan<- Finding (send-only);
+// consumers should constrain theirs to <-chan Finding (receive-only).
 // Producers close the channel when they have no more findings to emit.
 type Channel chan Finding
 

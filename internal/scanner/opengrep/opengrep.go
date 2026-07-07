@@ -80,6 +80,8 @@ type RawError struct {
 	Path    string `json:"path"`
 }
 
+var _ scanner.Scanner = (*Runner)(nil)
+
 // Runner invokes OpenGrep as a subprocess against a file set.
 type Runner struct {
 	// binaryPath is the absolute or PATH-resolved path to the opengrep binary.
@@ -87,7 +89,10 @@ type Runner struct {
 	// ruleDirs are the directories containing opengrep-compatible YAML rule files.
 	// Use multiple dirs to exclude non-opengrep rule formats (e.g. rules/astgrep/).
 	ruleDirs []string
-	logger   *slog.Logger
+	// excludePatterns are opengrep --exclude patterns (glob or directory name).
+	// Files matching any pattern are skipped during scanning.
+	excludePatterns []string
+	logger          *slog.Logger
 }
 
 // New returns a Runner using the binary identified by spec and rules at rulesDir.
@@ -102,7 +107,20 @@ func NewMulti(spec scanner.BinarySpec, logger *slog.Logger, ruleDirs ...string) 
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Runner{binaryPath: spec.Executable(), ruleDirs: ruleDirs, logger: logger}
+	return &Runner{
+		binaryPath:       spec.Executable(),
+		ruleDirs:         ruleDirs,
+		excludePatterns:  []string{".github"},
+		logger:           logger,
+	}
+}
+
+// WithExclude sets the exclude patterns for opengrep --exclude flags.
+// Each pattern is a glob or directory name. Files matching any pattern are
+// skipped. Replaces any previously set patterns. Pass no arguments to clear.
+func (r *Runner) WithExclude(patterns ...string) *Runner {
+	r.excludePatterns = patterns
+	return r
 }
 
 // langToPack maps a detected language to its Semgrep registry rule pack.
@@ -152,8 +170,11 @@ func (r *Runner) Scan(ctx context.Context, target string) ([]finding.Finding, er
 		}
 	}
 
-	// Build args: --json [--config <cfg>]... <target>
-	args := []string{"--json"}
+	// Build args: --json --no-git-ignore [--exclude <pat>]... [--config <cfg>]... <target>
+	args := []string{"--json", "--no-git-ignore"}
+	for _, p := range r.excludePatterns {
+		args = append(args, "--exclude", p)
+	}
 	for _, c := range configs {
 		args = append(args, "--config", c)
 	}
@@ -218,6 +239,8 @@ func (r *Runner) ScanFiles(ctx context.Context, files []string) ([]finding.Findi
 	return findings, nil
 }
 
+// ponytail: reserved for the Path A high-confidence fast path. Not currently
+// wired in the pipeline; callers should gate on f.Confidence >= 0.85 instead.
 // ScanHighConfidence runs a scan restricted to rules tagged confidence: high.
 // Results are intended to bypass the LLM Verifier and go directly to dedup.
 //
@@ -260,7 +283,10 @@ func (r *Runner) Version(ctx context.Context) (string, error) {
 // Exit code 0 (no findings) and exit code 1 (findings found) are both treated
 // as success. Exit codes ≥ 2 indicate a real error.
 func (r *Runner) run(ctx context.Context, files []string) (*ScanOutput, error) {
-	args := []string{"--json"}
+	args := []string{"--json", "--no-git-ignore"}
+	for _, p := range r.excludePatterns {
+		args = append(args, "--exclude", p)
+	}
 	for _, d := range r.ruleDirs {
 		args = append(args, "--config", d)
 	}

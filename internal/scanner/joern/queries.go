@@ -138,6 +138,27 @@ func queryCallsPaginated(skip, take int) string {
 	return nodeQuery(traversal, "c", "c.name", "c.location.filename")
 }
 
+// queryParamsPaginated returns a DSL expression for METHOD_PARAMETER_IN nodes
+// with stable pagination.
+func queryParamsPaginated(skip, take int) string {
+	traversal := fmt.Sprintf("cpg.parameter\n  .sortBy(_.id)\n  .drop(%d)\n  .take(%d)", skip, take)
+	return nodeQuery(traversal, "p", "p.name", "p.location.filename")
+}
+
+// queryIdentifiersPaginated returns a DSL expression for IDENTIFIER nodes
+// with stable pagination.
+func queryIdentifiersPaginated(skip, take int) string {
+	traversal := fmt.Sprintf("cpg.identifier\n  .sortBy(_.id)\n  .drop(%d)\n  .take(%d)", skip, take)
+	return nodeQuery(traversal, "i", "i.name", "i.location.filename")
+}
+
+// queryLiteralsPaginated returns a DSL expression for LITERAL nodes
+// with stable pagination.
+func queryLiteralsPaginated(skip, take int) string {
+	traversal := fmt.Sprintf("cpg.literal\n  .sortBy(_.id)\n  .drop(%d)\n  .take(%d)", skip, take)
+	return nodeQuery(traversal, "l", "l.code", "l.location.filename")
+}
+
 // queryAllEdgesPaginated returns a DSL expression for the full caller→callee
 // edge set with stable pagination over the outer call iterator. Each page
 // processes up to `take` call nodes through flatMap.
@@ -165,29 +186,80 @@ func queryCalleesByID(functionID string) string {
 	return nodeQuery(traversal, "m", "m.name", "m.location.filename")
 }
 
+// queryProjectWideTaintFlows returns a DSL expression for taint flows across
+// all surface methods in a single query. Unlike queryTaintFlows (which runs one
+// query per method), this builds a Set of surface method IDs and runs
+// reachableByFlows against all of them at once, enabling Joern to discover
+// inter-procedural flows that cross multiple method frames.
+//
+// Parameters:
+//   - sinkNames: call names to match as sinks (e.g. "executeQuery", "exec").
+//   - surfaceMethodIDs: Joern node IDs (as decimal strings) of surface methods
+//     whose parameters are treated as sources.
+func queryProjectWideTaintFlows(sinkNames []string, surfaceMethodIDs []string) string {
+	sinkSet := `Set("` + strings.Join(sinkNames, `","`) + `")`
+	longIDs := make([]string, len(surfaceMethodIDs))
+	for i, id := range surfaceMethodIDs {
+		longIDs[i] = id + "L"
+	}
+	// ponytail: global query — flatMap per-method breaks Joern's inter-procedural
+	// DFG context (returns 0). Run globally, annotate each path with the enclosing
+	// method of the sink call (first path element) via cpg.call.id().method.
+	// Filtering to surface methods is done in Go after unmarshal.
+	_ = longIDs // surfaceMethodIDs used only for Go-side filtering
+	const tmpl = `{
+  val sinkSet = $SINKSET
+  val sinks = cpg.call.filter(c => sinkSet.contains(c.name))
+  cpg.method.parameter.reachableByFlows(sinks)
+    .map { p =>
+      val elems = p.elements.toList
+      val first = elems.head
+      val last  = elems.last
+      val sourceMethod = last match { case mp: MethodParameterIn => Some(mp.method); case _ => None }
+      val methodID   = sourceMethod.map(_.id.toString).getOrElse("")
+      val methodName = sourceMethod.map(_.name).getOrElse("")
+      val methodFile = sourceMethod.map(_.filename).getOrElse("")
+      val intermediateJson = elems.slice(1, elems.size - 1)
+        .filterNot(n => n.id < 0)
+        .map(n => s"""{"id":"${n.id.toString}","name":"${n match{case c:Call=>c.name;case mp:MethodParameterIn=>mp.name;case i:Identifier=>i.name;case _=>""}}","file":"${try{n.property("FILENAME").asInstanceOf[String]}catch{case _=>""}}","line":${try{n.property("LINE_NUMBER").asInstanceOf[Int]}catch{case _=>0}},"type":"${n.label}"}""")
+        .mkString(",")
+      s"""{"method_id":"${methodID}","method_name":"${methodName}","method_file":"${methodFile}","source":{"id":"${first.id.toString}","name":"${first match{case mp:MethodParameterIn=>mp.name;case m:Method=>m.name;case c:Call=>c.name;case _=>""}}","file":"${try{first.property("FILENAME").asInstanceOf[String]}catch{case _=>""}}","line":${try{first.property("LINE_NUMBER").asInstanceOf[Int]}catch{case _=>0}},"type":"${first.label}"},"sink":{"id":"${last.id.toString}","name":"${last match{case c:Call=>c.name;case m:Method=>m.name;case _=>""}}","file":"${try{last.property("FILENAME").asInstanceOf[String]}catch{case _=>""}}","line":${try{last.property("LINE_NUMBER").asInstanceOf[Int]}catch{case _=>0}},"type":"${last.label}"},"intermediate":[${intermediateJson}]}"""
+    }
+    .toList.mkString("[", ",", "]")}`
+	return strings.ReplaceAll(tmpl, "$SINKSET", sinkSet)
+}
+
 // queryTaintFlows returns a DSL expression for taint flows within a method.
 // Uses reachableByFlows (modern Joern API) — not run.ossdataflow + cpg.finding
 // (which produce zero findings in Joern 4.0.550).
 //
-// The methodID is substituted directly into the query as a Long literal.
-func queryTaintFlows(methodID string) string {
-	const tmpl = `cpg.method
-  .filter(_.id == $IDL)
-  .call
-  .reachableByFlows(cpg.method.filter(_.id == $IDL).parameter)
-  .map(p => {
-    val elems = p.elements.toList
-    val first = elems.head
-    val last = elems.last
-    val intermediateJson = elems
-      .slice(1, elems.size - 1)
-      .map(n => s"""{"id":"${n.id.toString}","name":"${n match{case c:Call=>c.name;case mp:MethodParameterIn=>mp.name;case i:Identifier=>i.name;case _=>""}}","file":"${try{n.property("FILENAME").asInstanceOf[String]}catch{case _=>""}}","line":${try{n.property("LINE_NUMBER").asInstanceOf[Int]}catch{case _=>0}},"type":"${n.label}"}""")
-      .mkString(",")
-    s"""{"source":{"id":"${first.id.toString}","name":"${first match{case mp:MethodParameterIn=>mp.name;case m:Method=>m.name;case c:Call=>c.name;case _=>""}}","file":"${try{first.property("FILENAME").asInstanceOf[String]}catch{case _=>""}}","line":${try{first.property("LINE_NUMBER").asInstanceOf[Int]}catch{case _=>0}},"type":"${first.label}"},"sink":{"id":"${last.id.toString}","name":"${last match{case c:Call=>c.name;case m:Method=>m.name;case _=>""}}","file":"${try{last.property("FILENAME").asInstanceOf[String]}catch{case _=>""}}","line":${try{last.property("LINE_NUMBER").asInstanceOf[Int]}catch{case _=>0}},"type":"${last.label}"},"intermediate":[${intermediateJson}]}"""
-  })
-  .toList
-  .mkString("[", ",", "]")`
-	return strings.ReplaceAll(tmpl, "$ID", methodID)
+// The id is substituted directly into the query as a Long literal.
+// Supports both METHOD node IDs and CALL node IDs — if the ID refers to a
+// CALL node, the query navigates to its parent METHOD automatically.
+//
+// Deprecated: Use queryProjectWideTaintFlows for new code. Kept for integration
+// test backward compatibility.
+func queryTaintFlows(methodID string, sinkNames []string) string {
+	sinkSet := `Set("` + strings.Join(sinkNames, `","`) + `")`
+	const tmpl = `{
+  val m = cpg.method.filter(_.id == $IDL)
+  val sinks = cpg.call.filter(c => $SINKSET.contains(c.name))
+  m.parameter
+   .reachableByFlows(sinks)
+   .map(p => {
+     val elems = p.elements.toList
+     val first = elems.head
+     val last = elems.last
+     val intermediateJson = elems
+       .slice(1, elems.size - 1)
+       .map(n => s"""{"id":"${n.id.toString}","name":"${n match{case c:Call=>c.name;case mp:MethodParameterIn=>mp.name;case i:Identifier=>i.name;case _=>""}}","file":"${try{n.property("FILENAME").asInstanceOf[String]}catch{case _=>""}}","line":${try{n.property("LINE_NUMBER").asInstanceOf[Int]}catch{case _=>0}},"type":"${n.label}"}""")
+       .mkString(",")
+     s"""{"source":{"id":"${first.id.toString}","name":"${first match{case mp:MethodParameterIn=>mp.name;case m:Method=>m.name;case c:Call=>c.name;case _=>""}}","file":"${try{first.property("FILENAME").asInstanceOf[String]}catch{case _=>""}}","line":${try{first.property("LINE_NUMBER").asInstanceOf[Int]}catch{case _=>0}},"type":"${first.label}"},"sink":{"id":"${last.id.toString}","name":"${last match{case c:Call=>c.name;case m:Method=>m.name;case _=>""}}","file":"${try{last.property("FILENAME").asInstanceOf[String]}catch{case _=>""}}","line":${try{last.property("LINE_NUMBER").asInstanceOf[Int]}catch{case _=>0}},"type":"${last.label}"},"intermediate":[${intermediateJson}]}"""
+   })
+   .toList
+   .mkString("[", ",", "]")}`
+	s := strings.ReplaceAll(tmpl, "$ID", methodID)
+	return strings.ReplaceAll(s, "$SINKSET", sinkSet)
 }
 
 // queryNodeTypeGeneric returns a fallback DSL expression for unrecognised node

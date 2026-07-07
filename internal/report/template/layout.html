@@ -272,7 +272,7 @@
                 <div class="finding-tabs">
                   <button class="ftab active" onclick="switchTab(this, 'evidence')">Evidence</button>
                   <button class="ftab" onclick="switchTab(this, 'ssvc')">SSVC Scores</button>
-                  {{ if and .PoeContext (ne .SeverityLabel "SUPPRESSED") }}
+                  {{ if and .PoeContext (ne (.SeverityLabel.String) "SUPPRESSED") }}
                   <button class="ftab" onclick="switchTab(this, 'poe')">PoE Context</button>
                   {{ end }} {{ if .Patch }}
                   <button class="ftab" onclick="switchTab(this, 'patch')">Patch</button>
@@ -281,7 +281,7 @@
 
                 <!-- EVIDENCE TAB -->
                 <div class="ftab-panel active" data-tab="evidence">
-                  {{ if eq .SeverityLabel "SUPPRESSED" }}
+                  {{ if eq (.SeverityLabel.String) "SUPPRESSED" }}
                   <div class="info-note">
                     <svg class="note-icon" width="14" height="14" viewBox="0 0 16 16" fill="none">
                       <path d="M2 8h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
@@ -296,7 +296,7 @@
                     Auto-suppressed: {{ .SuppressReason }}
                   </div>
                   {{ end }} {{ if .MatchedCode }}
-                  <div class="code-snippet" {{ if eq .SeverityLabel "SUPPRESSED" }} style="margin-top: 10px" {{ end }}>
+                  <div class="code-snippet" {{ if eq (.SeverityLabel.String) "SUPPRESSED" }} style="margin-top: 10px" {{ end }}>
                     {{ range codeLines .MatchedCode .LineRange.Start }}
                     <div class="code-line{{ if .Highlight }} highlight{{ end }}">
                       <span class="ln">{{ .LineNum }}</span>
@@ -304,7 +304,7 @@
                     </div>
                     {{ end }}
                   </div>
-                  {{ end }} {{ if and (not .MatchedCode) (ne .SeverityLabel "SUPPRESSED") }}
+                  {{ end }} {{ if and (not .MatchedCode) (ne (.SeverityLabel.String) "SUPPRESSED") }}
                   <div class="info-note">
                     <svg class="note-icon" width="14" height="14" viewBox="0 0 16 16" fill="none">
                       <circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5" />
@@ -341,7 +341,7 @@
                 </div>
 
                 <!-- POE TAB -->
-                {{ if and .PoeContext (ne .SeverityLabel "SUPPRESSED") }}
+                {{ if and .PoeContext (ne (.SeverityLabel.String) "SUPPRESSED") }}
                 <div class="ftab-panel" data-tab="poe">
                   <div class="evidence-grid">
                     <div class="evidence-block">

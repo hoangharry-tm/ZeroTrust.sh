@@ -34,7 +34,7 @@ func makeFindings(specs []struct {
 	out := make([]finding.Finding, len(specs))
 	for i, s := range specs {
 		out[i] = finding.Finding{
-			ID:            strings.ToLower(string(s.sev)),
+			ID:            strings.ToLower(s.sev.String()),
 			SeverityLabel: s.sev,
 			Path:          s.path,
 			SourcePath:    s.sp,

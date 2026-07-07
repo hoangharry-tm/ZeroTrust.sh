@@ -98,6 +98,8 @@ type TaintSource struct {
 	NodeID string
 	// Kind describes the source type (e.g. "http_param", "env_var", "file_read").
 	Kind string
+	// Name is the identifier at the source node (parameter name or call name).
+	Name string
 	// File and Line locate the source in the codebase.
 	File string
 	Line int
@@ -107,6 +109,8 @@ type TaintSource struct {
 type TaintSink struct {
 	// NodeID is the CPG node that consumes (potentially tainted) data.
 	NodeID string
+	// Name is the call name at the sink node (e.g. "executeQuery").
+	Name string
 	// Kind is one of the SinkKind constants.
 	Kind SinkKind
 	// File and Line locate the sink in the codebase.
@@ -177,6 +181,11 @@ type Graph interface {
 	// sink and returns all discovered source-to-sink paths.
 	// Sanitizer nodes on a path set TaintPath.Sanitized = true.
 	TaintPaths(sources []TaintSource, sinks []TaintSink) ([]TaintPath, error)
+
+	// ProjectWideTaintPaths runs taint analysis across all surface methods in a
+	// single project-wide query. Returns all discovered source-to-sink paths.
+	// lang is the detected source language (e.g. "java", "javascript", "python", "go").
+	ProjectWideTaintPaths(surfaceIDs []string, lang string) ([]TaintPath, error)
 
 	// PreFlaggedSinks returns all dangerous sink nodes that Tree-sitter
 	// flagged before the CPG build. These are always in scope regardless of

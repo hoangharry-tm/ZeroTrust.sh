@@ -16,10 +16,7 @@
 //
 // Single binary with two execution modes:
 //   - Docker mode (default): orchestrates the engine image via docker run.
-//     The binary on the host pulls and runs a container with all heavy
-//     dependencies pre-installed (Joern, Python worker, OpenGrep, ast-grep).
-//   - Native mode (--native): runs the pipeline directly. All dependencies
-//     must be installed on the host PATH.
+//   - Native mode (--native): runs the pipeline directly on the host.
 package main
 
 import (
@@ -32,17 +29,15 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"runtime"
 	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
-	"github.com/spf13/pflag"
 
+	"github.com/hoangharry-tm/zerotrust/internal/config"
 	"github.com/hoangharry-tm/zerotrust/internal/output"
+	"github.com/hoangharry-tm/zerotrust/internal/patch"
 	"github.com/hoangharry-tm/zerotrust/internal/pipeline"
-	"github.com/hoangharry-tm/zerotrust/internal/report"
-	"github.com/hoangharry-tm/zerotrust/internal/report/mock"
 )
 
 // ExitError wraps an exit code for propagation through cobra RunE.
@@ -55,182 +50,114 @@ func (e *ExitError) Error() string {
 	return fmt.Sprintf("exit code %d", e.Code)
 }
 
-const (
-	engineImage   = "ghcr.io/hoangharry-tm/zerotrust-engine:latest"
-	ollamaHostURL = "http://localhost:11434"
-	defaultCap    = 50_000
-)
-
 func main() {
 	root := &cobra.Command{
-		Use:   "zerotrust <directory>",
-		Short: "Local, privacy-first AI codebase security scanner",
-		Long: `ZeroTrust.sh is a local, privacy-first vulnerability scanner for source code.
-It runs deep semantic analysis and outputs an HTML report with proof of exploitation.
-
-By default, analysis runs inside a Docker container — the engine image includes
-all dependencies (Joern, Python ML worker, OpenGrep, ast-grep). Use --native to
-run the pipeline directly with local toolchain installations.`,
-		Args: cobra.MaximumNArgs(1),
-		RunE: runOrchestrate,
+		Use:           "zerotrust",
+		Short:         "Local, privacy-first AI codebase security scanner",
+		SilenceErrors: true,
+		SilenceUsage:  true,
 	}
 
-	root.Flags().StringP("model", "m", "", "Ollama model name (e.g. llama3.2)")
-	root.Flags().BoolP("offline", "o", false, "disable all network requests (Trivy offline mode)")
-	root.Flags().String("report", "", "HTML report output path (default: build/report.html)")
-	root.Flags().String("project-id", "", "override project ID used for scan-state caching")
-	root.Flags().String("mode", "Default", "scan scope mode: Default | Thorough | Full")
-	root.Flags().String("joern-bin", "", "path to joern-server binary (native mode only)")
-	root.Flags().String("ollama-url", ollamaHostURL, "Ollama HTTP API base URL")
-	root.Flags().Int("token-cap", defaultCap, "token budget cap for Path B Tier 3")
-	root.Flags().Bool("native", false, "run directly with local dependencies (no Docker)")
-	root.Flags().Bool("pull", true, "pull the latest engine image before running (Docker mode)")
-	root.Flags().String("engine-image", engineImage, "Docker image for the engine")
-	root.Flags().Bool("mock", false, "render the HTML report with mock data (no scan; UI development only)")
-	root.Flags().Bool("mock-large", false, "render with large mock dataset (~60 findings)")
-	root.Flags().String("calibration", "", "path to JSON calibration file from scripts/calibrate.py")
-	root.Flags().BoolP("verbose", "v", false, "enable debug-level logging to stderr")
+	scan := &cobra.Command{
+		Use:   "scan <directory>",
+		Short: "Scan a directory for security vulnerabilities",
+		Args:  cobra.MaximumNArgs(1),
+		RunE:  runOrchestrate,
+	}
+	config.DefineFlags(scan)
+	root.AddCommand(scan)
 
 	if err := root.Execute(); err != nil {
-		if exitErr, ok := errors.AsType[*ExitError](err); ok {
+		var exitErr *ExitError
+		if errors.As(err, &exitErr) {
 			os.Exit(exitErr.Code)
 		}
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		os.Exit(2)
 	}
 }
 
+// runOrchestrate routes to the appropriate execution mode based on flags.
 func runOrchestrate(cmd *cobra.Command, args []string) error {
-	mock, _ := cmd.Flags().GetBool("mock")
-	mockLarge, _ := cmd.Flags().GetBool("mock-large")
-	if mock || mockLarge {
-		slog.Debug("mock mode selected", "component", "main", "large", mockLarge)
-		return runMock(cmd)
-	}
-	native, _ := cmd.Flags().GetBool("native")
-	if native {
-		slog.Info("native mode selected", "component", "main")
-		return runScan(cmd, args)
-	}
-	slog.Info("docker mode selected", "component", "main")
-	return runContainer(cmd, args)
-}
-
-// runMock renders the HTML report with hardcoded fixture data and opens it in the
-// default browser. No scan is performed.
-func runMock(cmd *cobra.Command) error {
-	slog.Debug("runMock entry", "component", "main")
-	reportPath, _ := cmd.Flags().GetString("report")
-	if reportPath == "" {
-		reportPath = "build/report.html"
-	}
-	if err := os.MkdirAll(filepath.Dir(reportPath), 0o750); err != nil {
-		slog.Error("failed to create report directory", "component", "main", "err", err)
-		return fmt.Errorf("create report dir: %w", err)
-	}
-	f, err := os.Create(reportPath)
+	runCfg, err := config.FromCommand(cmd)
 	if err != nil {
-		return fmt.Errorf("create report file: %w", err)
+		return fmt.Errorf("flags: %w", err)
 	}
-	defer f.Close()
-
-	mockLarge, _ := cmd.Flags().GetBool("mock-large")
-	findings := mock.MockFindings()
-	if mockLarge {
-		findings = mock.MockFindingsLarge()
+	if _, err := config.Load(runCfg.CalibrationPath); err != nil {
+		return fmt.Errorf("calibration: %w", err)
 	}
-
-	gen := report.New(reportPath)
-	if err := gen.Render(f, mock.MockScanInfo(), findings); err != nil {
-		return fmt.Errorf("render mock report: %w", err)
+	if runCfg.Native {
+		return runScan(cmd, args, runCfg)
 	}
-	fmt.Fprintf(os.Stderr, "mock report written → %s\n", reportPath)
-
-	// ponytail: open is fire-and-forget; ignore error (user can open manually)
-	opener := map[string]string{"darwin": "open", "linux": "xdg-open", "windows": "explorer"}
-	if bin, ok := opener[runtime.GOOS]; ok {
-		_ = exec.Command(bin, reportPath).Start()
-	}
-	return nil
+	return runContainer(cmd, args, runCfg)
 }
 
-// runScan builds a ScanConfig and drives the pipeline directly.
-// This is the native-mode execution path.
-func runScan(cmd *cobra.Command, args []string) error {
-	cfg := pipeline.Config{}
+// runScan drives the pipeline directly on the host (native mode).
+func runScan(cmd *cobra.Command, args []string, runCfg config.NativeRunConfig) error {
+	cfg := pipeline.Config{
+		Target:          ".",
+		ModelName:       runCfg.ModelName,
+		Offline:         runCfg.Offline,
+		ReportPath:      runCfg.ReportPath,
+		ProjectID:       runCfg.ProjectID,
+		ScanMode:        runCfg.ScanMode,
+		JoernBin:        runCfg.JoernBin,
+		OllamaURL:       runCfg.OllamaURL,
+		TokenCap:        runCfg.TokenCap,
+		CalibrationPath: runCfg.CalibrationPath,
+		Verbose:         runCfg.Verbose,
+		JoernURL:        "http://127.0.0.1:8080",
+	}
 	if len(args) > 0 {
 		cfg.Target = args[0]
 	}
 
-	var err error
-	cfg.ModelName, err = cmd.Flags().GetString("model")
-	if err != nil {
-		return err
-	}
-	cfg.Offline, err = cmd.Flags().GetBool("offline")
-	if err != nil {
-		return err
-	}
-	cfg.ReportPath, err = cmd.Flags().GetString("report")
-	if err != nil {
-		return err
-	}
-	cfg.ProjectID, err = cmd.Flags().GetString("project-id")
-	if err != nil {
-		return err
-	}
-	cfg.ScanMode, err = cmd.Flags().GetString("mode")
-	if err != nil {
-		return err
-	}
-	cfg.JoernBin, err = cmd.Flags().GetString("joern-bin")
-	if err != nil {
-		return err
-	}
-	cfg.OllamaURL, err = cmd.Flags().GetString("ollama-url")
-	if err != nil {
-		return err
-	}
-	cfg.TokenCap, err = cmd.Flags().GetInt("token-cap")
-	if err != nil {
-		return err
-	}
-	cfg.Verbose, err = cmd.Flags().GetBool("verbose")
-	if err != nil {
-		return err
-	}
-	cfg.CalibrationPath, err = cmd.Flags().GetString("calibration")
-	if err != nil {
-		return err
-	}
-	// In native mode JoernURL can be set via --joern-bin; default points at
-	// a locally running Joern server (started externally by the user).
-	cfg.JoernURL = "http://127.0.0.1:8080"
+	ctx, cancel := context.WithCancel(cmd.Context())
+	defer cancel()
 
-	slog.Info(
-		"starting native scan",
-		"component", "main",
-		"target", cfg.Target,
-		"mode", cfg.ScanMode,
-		"report", cfg.ReportPath,
-	)
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		select {
+		case <-sigCh:
+			slog.Warn("signal received, shutting down", "component", "main")
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
 
 	renderer := selectRenderer()
 	events := make(chan output.Event, 64)
 
-	ctx := cmd.Context()
 	p, err := pipeline.New(ctx, cfg)
 	if err != nil {
-		slog.Error("pipeline init failed", "component", "main", "err", err)
 		return fmt.Errorf("pipeline init: %w", err)
 	}
 
 	errCh := make(chan error, 1)
 	go func() {
 		var runErr error
-		if err := p.Run(ctx, events); err != nil {
+		scored, err := p.Run(ctx, events)
+		if err != nil {
 			runErr = err
 			output.Emit(events, output.Event{Kind: output.EventError, Err: err})
+		} else if runCfg.GeneratePatches {
+			output.Emit(events, output.Event{Kind: output.EventStageStart, Stage: "patch"})
+			scored, err = patch.GenerateForFindings(ctx, cfg.Target, scored)
+			if err != nil {
+				runErr = err
+				output.Emit(events, output.Event{Kind: output.EventError, Err: err})
+			} else {
+				p.GenerateReport(time.Now(), scored)
+				output.Emit(events, output.Event{
+					Kind:  output.EventStageEnd,
+					Stage: "patch",
+					Summary: &output.StageSummary{
+						Stage:  "patch",
+						Detail: fmt.Sprintf("Patches generated for findings"),
+					},
+				})
+			}
 		}
 		close(events)
 		errCh <- runErr
@@ -239,9 +166,6 @@ func runScan(cmd *cobra.Command, args []string) error {
 	if err := renderer.Render(ctx, events); err != nil {
 		return fmt.Errorf("render: %w", err)
 	}
-	// Close pipeline AFTER renderer finishes and BEFORE returning — the events
-	// channel is closed by the background goroutine above, so close() must not
-	// emit through the events-sinking logger.
 	if closeErr := p.Close(); closeErr != nil {
 		slog.Default().Error("pipeline close", "err", closeErr)
 	}
@@ -252,10 +176,8 @@ func runScan(cmd *cobra.Command, args []string) error {
 }
 
 // runContainer orchestrates the engine inside a Docker container.
-// It is the default execution mode.
-func runContainer(cmd *cobra.Command, args []string) error {
+func runContainer(cmd *cobra.Command, args []string, runCfg config.NativeRunConfig) error {
 	slog.Debug("runContainer entry", "component", "main")
-	flags := cmd.Flags()
 
 	target := "."
 	if len(args) > 0 {
@@ -263,20 +185,14 @@ func runContainer(cmd *cobra.Command, args []string) error {
 	}
 	targetAbs, err := filepath.Abs(target)
 	if err != nil {
-		slog.Error("failed to resolve target path", "component", "main", "err", err)
 		return fmt.Errorf("resolve target path: %w", err)
 	}
 
-	ollamaFound, err := checkDeps()
-	if err != nil {
-		return err
-	}
+	ollamaFound := ollamaReachable(runCfg.OllamaURL)
 
-	pull, _ := flags.GetBool("pull")
-	if pull {
-		img, _ := flags.GetString("engine-image")
-		fmt.Fprintf(os.Stderr, "  Pulling engine image  %s\n", img)
-		pullCmd := exec.Command("docker", "pull", img)
+	if runCfg.Pull {
+		fmt.Fprintf(os.Stderr, "  Pulling engine image  %s\n", runCfg.EngineImage)
+		pullCmd := exec.Command("docker", "pull", runCfg.EngineImage)
 		pullCmd.Stdout = os.Stderr
 		pullCmd.Stderr = os.Stderr
 		if err := pullCmd.Run(); err != nil {
@@ -294,13 +210,11 @@ func runContainer(cmd *cobra.Command, args []string) error {
 	if err := os.MkdirAll(ztState, 0o750); err != nil {
 		return fmt.Errorf("create state directory: %w", err)
 	}
-	// Ensure scans.db is never accidentally committed.
 	giPath := filepath.Join(ztState, ".gitignore")
 	if _, err := os.Stat(giPath); os.IsNotExist(err) {
 		_ = os.WriteFile(giPath, []byte("scans.db\nscan_state.db\n"), 0o600)
 	}
 
-	img, _ := flags.GetString("engine-image")
 	argsDocker := []string{
 		"run", "--rm",
 		"--init",
@@ -310,24 +224,13 @@ func runContainer(cmd *cobra.Command, args []string) error {
 		"-e", "ZT_PROJECT_DIR=/workspace",
 		"-e", "HOME=/home/zt",
 	}
-
 	if ollamaURL != "" {
-		argsDocker = append(
-			argsDocker,
+		argsDocker = append(argsDocker,
 			"--add-host", "host.docker.internal:host-gateway",
 			"-e", "OLLAMA_URL="+ollamaURL,
 		)
 	}
-
-	argsDocker = append(argsDocker, img, "scan", "/workspace")
-
-	// Forward relevant flags to the engine inside the container
-	addEngineFlag(&argsDocker, flags, "model", "model")
-	addEngineFlag(&argsDocker, flags, "offline", "offline")
-	addEngineFlag(&argsDocker, flags, "report", "report")
-	addEngineFlag(&argsDocker, flags, "project-id", "project-id")
-	addEngineFlag(&argsDocker, flags, "mode", "mode")
-	addEngineFlag(&argsDocker, flags, "token-cap", "token-cap")
+	argsDocker = append(argsDocker, runCfg.EngineImage, "scan", "/workspace")
 
 	ctx, cancel := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
@@ -336,19 +239,13 @@ func runContainer(cmd *cobra.Command, args []string) error {
 	dockerCmd.Stdout = os.Stdout
 	dockerCmd.Stderr = os.Stderr
 
-	slog.Info(
-		"launching container scan",
-		"component", "main",
-		"target", targetAbs,
-		"image", img,
-		"ollama_found", ollamaFound,
-	)
+	slog.Info("launching container scan", "component", "main",
+		"target", targetAbs, "image", runCfg.EngineImage, "ollama_found", ollamaFound)
 	if err := dockerCmd.Run(); err != nil {
 		var dockerExitErr *exec.ExitError
 		if errors.As(err, &dockerExitErr) {
 			return &ExitError{Code: dockerExitErr.ExitCode()}
 		}
-		slog.Error("container execution failed", "component", "main", "err", err)
 		return fmt.Errorf("container execution: %w", err)
 	}
 	return nil
@@ -367,11 +264,4 @@ func ollamaReachable(url string) bool {
 	}
 	resp.Body.Close()
 	return resp.StatusCode < 500
-}
-
-func addEngineFlag(args *[]string, flags *pflag.FlagSet, flagName, envName string) {
-	if flags.Changed(flagName) {
-		val := flags.Lookup(flagName).Value.String()
-		*args = append(*args, "--"+envName, val)
-	}
 }

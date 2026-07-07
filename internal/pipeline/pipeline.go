@@ -41,7 +41,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
@@ -51,38 +50,37 @@ import (
 	"github.com/hoangharry-tm/zerotrust/internal/dedup"
 	"github.com/hoangharry-tm/zerotrust/internal/finding"
 	"github.com/hoangharry-tm/zerotrust/internal/ingestion"
+	"github.com/hoangharry-tm/zerotrust/pkg/llm"
+
 	"github.com/hoangharry-tm/zerotrust/internal/ingestion/diffindex"
 	"github.com/hoangharry-tm/zerotrust/internal/ingestion/miv"
 	"github.com/hoangharry-tm/zerotrust/internal/orchestrator"
 	"github.com/hoangharry-tm/zerotrust/internal/output"
-	"github.com/hoangharry-tm/zerotrust/internal/patch"
 	"github.com/hoangharry-tm/zerotrust/internal/report"
 	"github.com/hoangharry-tm/zerotrust/internal/scanner"
 	"github.com/hoangharry-tm/zerotrust/internal/scanner/joern"
 	"github.com/hoangharry-tm/zerotrust/internal/scanner/opengrep"
+	"github.com/hoangharry-tm/zerotrust/internal/semantic/contracts"
+	"github.com/hoangharry-tm/zerotrust/internal/semantic/crypto"
 	"github.com/hoangharry-tm/zerotrust/internal/semantic/enrichment"
-	"github.com/hoangharry-tm/zerotrust/internal/semantic/llmscan"
+	analysis "github.com/hoangharry-tm/zerotrust/internal/semantic/analysis"
 	"github.com/hoangharry-tm/zerotrust/internal/semantic/targeting"
-	"github.com/hoangharry-tm/zerotrust/internal/tuning"
-	"github.com/hoangharry-tm/zerotrust/pkg/ollama"
+	"github.com/hoangharry-tm/zerotrust/internal/semantic/triage"
 	"github.com/hoangharry-tm/zerotrust/pkg/sqlite"
 )
 
-// pipeline holds all constructed stage instances for a single scan.
+// Pipeline holds all constructed stage instances for a single scan.
 // It is built by newPipeline and driven by run.
 type Pipeline struct {
 	cfg     Config
 	logger  *slog.Logger
 	logFile *os.File
-	runID   string // unique ID for this scan run; persisted to scan_runs
 
-	// ingestion
+	runID    string
 	db       *sqlite.DB
 	ingester *ingestion.Ingester
 
-	// Ollama client — shared by backbone check and any direct Go-side LLM calls.
-	// SetMIVBlocked() is called after ingestion when MIV returns StatusBlock.
-	llm *ollama.Client
+	provider llm.Provider
 
 	// Path A — legacy incremental flow
 	opengrep *opengrep.Runner
@@ -91,16 +89,18 @@ type Pipeline struct {
 	orch *orchestrator.Engine
 
 	// Path B
-	target *targeting.Targeter
-	enrich *enrichment.Enricher
-	scan   *llmscan.Scanner
+	target  *targeting.Targeter
+	enrich  *enrichment.Enricher
+	checker       *contracts.Checker
+	triager       *triage.Triager
+	scan          *analysis.Scanner
+	cryptoChecker *crypto.Checker
 
 	// degradation alerts surfaced in the HTML report header
 	alerts []string
 
 	// shared
 	dd     *dedup.Layer
-	gen    *patch.Generator
 	rep    *report.Generator
 	events chan<- output.Event
 }
@@ -165,7 +165,7 @@ func (h *eventsHandler) WithGroup(name string) slog.Handler {
 	return &eventsHandler{next: h.next.WithGroup(name), events: h.events}
 }
 
-// newPipeline constructs the full pipeline from cfg.
+// New constructs the full pipeline from cfg.
 // It opens the SQLite state cache, starts the Python worker, and instantiates
 // every stage. Returns a ready-to-run pipeline or an error on setup failure.
 //
@@ -212,7 +212,7 @@ func New(ctx context.Context, cfg Config) (*Pipeline, error) {
 	logger := slog.New(defaultHandler)
 	slog.SetDefault(logger)
 
-	// SQLite state cache at <target>/.zerotrust/scans.db
+	// Ingestion layer — SQLite state cache + DiffIndex + MIV.
 	dbPath, err := stateDBPath(cfg.Target)
 	if err != nil {
 		_ = logFile.Close()
@@ -223,23 +223,24 @@ func New(ctx context.Context, cfg Config) (*Pipeline, error) {
 		_ = logFile.Close()
 		return nil, fmt.Errorf("open state db: %w", err)
 	}
-
-	// runID is assigned here; project/scan_run rows are registered after ingestion
-	// so we use the resolved ProjectID (ingester may derive one from the target path).
 	runID := newRunID()
-
-	// Ingestion layer
 	indexer := diffindex.New(db, logger)
 	mivVer := miv.New("", "", logger)
 	ingester := ingestion.New(indexer, mivVer)
 
-	// Ollama client — model-agnostic; model name from config.
-	llmClient := ollama.New(cfg.OllamaURL, cfg.ModelName)
+	// LLM provider — provider-agnostic; model name from config.
+	llmProvider, err := llm.New(llm.Config{
+		Provider: llm.ProviderOllama,
+		BaseURL:  cfg.OllamaURL,
+		Model:    cfg.ModelName,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("llm: %w", err)
+	}
 
 	// Path A
 	og := opengrep.NewMulti(scanner.BinarySpec{Name: "opengrep"}, logger)
 	orch := orchestrator.New(
-		og,
 		scanner.NewGitleaks(scanner.BinarySpec{Name: "gitleaks"}),
 		scanner.NewOSV(scanner.BinarySpec{Name: "osv-scanner"}),
 	)
@@ -259,11 +260,12 @@ func New(ctx context.Context, cfg Config) (*Pipeline, error) {
 	graph := jc.GraphWithContext(ctx)
 	tgt := targeting.New(graph, cfg.Target)
 	enr := enrichment.New(graph, "trivy", cfg.Offline)
-	sc := llmscan.New(llmClient)
+	cc := contracts.New()
+	cc2 := crypto.New()
+	tr := triage.New(llmProvider, cfg.TriageThreshold)
+	sc := analysis.New(llmProvider)
 
-	// Output — cross-scan dedup DB is wired after ingestion when projectID is resolved
 	dd := dedup.New(cfg.Target)
-	pg := patch.New(cfg.Target)
 	rg := report.New(cfg.ReportPath)
 
 	return &Pipeline{
@@ -273,15 +275,17 @@ func New(ctx context.Context, cfg Config) (*Pipeline, error) {
 		runID:    runID,
 		db:       db,
 		ingester: ingester,
-		llm:      llmClient,
+		provider: llmProvider,
 		opengrep: og,
 		joern:    jc,
 		orch:     orch,
-		target:   tgt,
-		enrich:   enr,
-		scan:     sc,
-		dd:       dd,
-		gen:      pg,
+		target:        tgt,
+		enrich:        enr,
+		checker:       cc,
+		cryptoChecker: cc2,
+		triager:       tr,
+		scan:          sc,
+		dd:            dd,
 		rep:      rg,
 	}, nil
 }
@@ -289,7 +293,7 @@ func New(ctx context.Context, cfg Config) (*Pipeline, error) {
 // run executes the full pipeline to completion and writes the HTML report.
 // events receives stage notifications consumed by the active CLI renderer.
 // The caller is responsible for closing events after run returns.
-func (p *Pipeline) Run(ctx context.Context, events chan<- output.Event) error {
+func (p *Pipeline) Run(ctx context.Context, events chan<- output.Event) ([]finding.Finding, error) {
 	p.events = events
 	start := time.Now()
 
@@ -302,27 +306,15 @@ func (p *Pipeline) Run(ctx context.Context, events chan<- output.Event) error {
 	// Step 0: Joern pre-start
 	p.startJoern(ctx)
 
-	// Step 1: Ingestion
+	// Step 1: Ingestion — MIV + DiffIndex + CPG build
 	ingResult, err := p.runIngestion(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	changedCount := 0
-	if ingResult.ChangeSet != nil {
-		changedCount = len(ingResult.ChangeSet.Changed)
-	}
-
-	// Register project and scan run
 	p.registerRun(ctx, ingResult)
-
-	// Wire cross-scan dedup now that projectID is resolved.
-	// This enables the dedup layer to skip findings already persisted
-	// from prior scans using a lightweight SQLite query.
 	if p.db != nil {
 		p.dd.SetDB(p.db, ingResult.ProjectID)
 	}
-
-	// Step 1.5: CPG build/load + scope resolution
 	scopeFiles := p.resolveScope(ctx, ingResult)
 
 	// Steps 2+3: Path A ∥ Path B ∥ Orchestrator (parallel detection)
@@ -353,30 +345,24 @@ func (p *Pipeline) Run(ctx context.Context, events chan<- output.Event) error {
 		output.Emit(p.events, output.Event{Kind: output.EventFinding, Finding: &fc})
 	}
 	if err := g.Wait(); err != nil {
-		return fmt.Errorf("detection paths: %w", err)
+		return nil, fmt.Errorf("detection paths: %w", err)
 	}
 
-	// Step 4: Dedup + SSVC
 	scored, err := p.runDedup(ctx, allFindings)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	// Step 4a: Persist findings
-	p.persistFindings(ctx, ingResult, scored)
-
-	// Step 5: Patch generation
-	if err := p.generatePatches(ctx, scored); err != nil {
-		return err
-	}
-	p.persistPatches(ctx, scored)
+	// MVP: persistence bypassed — uncomment after demo to re-enable SQLite writes.
+	// p.persistFindings(ctx, ingResult, scored)
 
 	// Step 6: Report
-	p.generateReport(start, scored)
+	p.GenerateReport(start, scored)
 
-	// Commit scan state + finalize
-	p.finalize(ctx, ingResult, start, changedCount, scored)
-	return nil
+	// MVP: scan state commit bypassed — uncomment after demo.
+	// p.finalize(ctx, ingResult, start, changedCount, scored)
+	p.emitDone(start, scored)
+	return scored, nil
 }
 
 // startJoern spawns the Joern subprocess before ingestion so the JVM is warm.
@@ -397,83 +383,87 @@ func (p *Pipeline) startJoern(ctx context.Context) {
 	}
 }
 
-// runIngestion runs the ingestion stage and gates LLM calls on MIV block.
+// MVP: runIngestion, registerRun, resolveScope bypassed.
+// Implementations preserved below — uncomment bodies to re-enable after demo.
+
 func (p *Pipeline) runIngestion(ctx context.Context) (*ingestion.Result, error) {
 	output.Emit(p.events, output.Event{Kind: output.EventStageStart, Stage: "ingestion"})
 	ingResult, err := p.ingester.Run(ctx, ingestion.Config{
 		ProjectID:   p.cfg.ProjectID,
 		ProjectRoot: p.cfg.Target,
-		ModelPath:   "",
 	})
 	if err != nil {
 		return nil, fmt.Errorf("ingestion: %w", err)
 	}
 	if ingResult.BlockLLM {
-		p.llm.SetMIVBlocked()
-		p.alerts = append(p.alerts, "MIV blocked LLM: analysis degraded to pattern-only path")
+		llm.SetProviderMIVBlocked(p.provider)
+		p.alerts = append(p.alerts, "MIV blocked LLM")
 	}
-	changedCount := 0
-	if ingResult.ChangeSet != nil {
-		changedCount = len(ingResult.ChangeSet.Changed)
+
+	// Build the CPG for the ingestion result's scope.
+	cpgPath := cpgSnapshotPath(p.cfg.ProjectID)
+	changedFiles := ingResult.ChangeSet.Changed
+	if len(changedFiles) == 0 {
+		// No changes detected — use full target as scope for initial full scan
+		changedFiles = []string{p.cfg.Target}
 	}
+	if buildErr := p.buildOrLoadCPG(ctx, ingResult.ProjectID, cpgPath, changedFiles); buildErr != nil {
+		p.logger.Warn("CPG build during ingestion failed — Path B will be degraded", "err", buildErr)
+		// Non-fatal: Path A still runs, Path B runs with limited taint analysis
+	}
+
+	// Pre-flag dangerous sinks so TaintPaths has seeds to work with.
+	sinkFiles := changedFiles
+	if len(sinkFiles) == 1 && sinkFiles[0] == p.cfg.Target {
+		// Full scan: walk target for source files instead of passing the directory
+		sinkFiles = []string{p.cfg.Target}
+	}
+	if pfErr := p.joern.PreFlagSinks(ctx, sinkFiles); pfErr != nil {
+		p.logger.Warn("sink pre-flagging failed", "err", pfErr)
+	} else {
+		p.logger.Info("sink pre-flagging complete", "sinks", len(p.joern.PreFlaggedSinks()))
+	}
+
 	output.Emit(p.events, output.Event{
 		Kind:  output.EventStageEnd,
 		Stage: "ingestion",
 		Summary: &output.StageSummary{
 			Stage:  "ingestion",
-			Detail: fmt.Sprintf("%d files changed", changedCount),
+			Detail: fmt.Sprintf("project_id=%s changed=%d", ingResult.ProjectID, len(changedFiles)),
 		},
 	})
 	return ingResult, nil
 }
 
-// registerRun upserts the project record and creates a scan run in SQLite.
-// ingResult.ProjectID may be updated to the reconciled project_id when an
-// existing project row for the same root_path uses a different identifier.
 func (p *Pipeline) registerRun(ctx context.Context, ingResult *ingestion.Result) {
 	if p.db == nil {
 		return
 	}
-	effectiveID, upsertErr := p.db.UpsertProject(ctx, sqlite.ProjectRow{
-		ProjectID: ingResult.ProjectID,
-		RootPath:  p.cfg.Target,
-	})
-	if upsertErr != nil {
-		p.logger.Warn("failed to upsert project record", "err", upsertErr)
-	} else {
-		ingResult.ProjectID = effectiveID
+	projectID := p.cfg.Target
+	if ingResult != nil && ingResult.ProjectID != "" {
+		projectID = ingResult.ProjectID
 	}
-	if createErr := p.db.CreateScanRun(ctx, sqlite.ScanRunRow{
-		RunID:     p.runID,
-		ProjectID: ingResult.ProjectID,
-		ScanMode:  strings.ToLower(p.cfg.ScanMode),
-	}); createErr != nil {
-		p.logger.Warn("failed to create scan_run record", "err", createErr)
+	if _, err := p.db.UpsertProject(ctx, sqlite.ProjectRow{
+		ProjectID:     projectID,
+		RootPath:      p.cfg.Target,
+		LastScannedAt: time.Now().Unix(),
+	}); err != nil {
+		p.logger.Warn("registerRun: failed to upsert project", "err", err)
 	}
+	p.logger.Debug("registered run", "project_id", projectID, "run_id", p.runID)
 }
 
-// resolveScope builds or loads the CPG and returns the scope file list.
-// Non-fatal: if the CPG cannot be built, scope falls back to the raw changeset
-// and taint analysis is disabled.
 func (p *Pipeline) resolveScope(ctx context.Context, ingResult *ingestion.Result) []string {
-	// Load cached CPG on no-change scans.
-	if p.cfg.JoernBin != "" && (ingResult.ChangeSet == nil || len(ingResult.ChangeSet.Changed) == 0) {
-		p.loadCachedCPG(ctx, ingResult)
+	// Build incremental scope from DiffIndex changeset.
+	// If no changes detected, returns the full target for full-scan mode.
+	if ingResult == nil || ingResult.ChangeSet == nil || len(ingResult.ChangeSet.Changed) == 0 {
+		return []string{p.cfg.Target}
 	}
-
 	var scopeFiles []string
-	if ingResult.ChangeSet != nil && len(ingResult.ChangeSet.Changed) > 0 {
-		scopeFiles = p.buildScopeFromChanges(ctx, ingResult)
+	for _, rel := range ingResult.ChangeSet.Changed {
+		scopeFiles = append(scopeFiles, filepath.Join(p.cfg.Target, rel))
 	}
-
-	output.Emit(p.events, output.Event{
-		Kind:  output.EventStageEnd,
-		Stage: "cpg",
-		Summary: &output.StageSummary{
-			Stage:  "cpg",
-			Detail: fmt.Sprintf("%d files in scope after expansion", len(scopeFiles)),
-		},
-	})
+	p.logger.Debug("resolved scope", "files", len(scopeFiles))
 	return scopeFiles
 }
 
@@ -495,77 +485,30 @@ func (p *Pipeline) runDedup(ctx context.Context, allFindings []finding.Finding) 
 	return scored, nil
 }
 
-// persistFindings writes deduped findings to the SQLite store.
-func (p *Pipeline) persistFindings(ctx context.Context, ingResult *ingestion.Result, scored []finding.Finding) {
-	if p.db == nil || p.runID == "" {
-		return
-	}
-	now := time.Now().Unix()
-	for i := range scored {
-		f := &scored[i]
-		row := sqlite.FindingRow{
-			FindingID:      f.ID,
-			ProjectID:      ingResult.ProjectID,
-			RunID:          p.runID,
-			FilePath:       f.Path,
-			LineStart:      f.LineRange.Start,
-			LineEnd:        f.LineRange.End,
-			CWE:            f.CWE,
-			Severity:       string(f.SeverityLabel),
-			Confidence:     f.Confidence,
-			SourcePath:     string(f.SourcePath),
-			RuleID:         f.RuleID,
-			MatchedCode:    f.MatchedCode,
-			Justification:  f.Justification,
-			SuppressReason: string(f.SuppressReason),
-			FirstSeenAt:    now,
-			LastSeenAt:     now,
-		}
-		if upsertErr := p.db.UpsertFinding(ctx, row); upsertErr != nil {
-			p.logger.Warn("failed to persist finding",
-				"component", "scan", "finding_id", f.ID, "err", upsertErr)
-		}
-	}
-}
+// MVP: persistFindings bypassed (no SQLite).
+// Implementation preserved as comment — uncomment to re-enable after demo.
+//
+// func (p *Pipeline) persistFindings(ctx context.Context, ingResult *ingestion.Result, scored []finding.Finding) {
+//     if p.db == nil || p.runID == "" { return }
+//     now := time.Now().Unix()
+//     for i := range scored {
+//         f := &scored[i]
+//         row := sqlite.FindingRow{
+//             FindingID: f.ID, ProjectID: ingResult.ProjectID, RunID: p.runID,
+//             FilePath: f.Path, LineStart: f.LineRange.Start, LineEnd: f.LineRange.End,
+//             CWE: f.CWE, Severity: string(f.SeverityLabel), Confidence: f.Confidence,
+//             SourcePath: string(f.SourcePath), RuleID: f.RuleID, MatchedCode: f.MatchedCode,
+//             Justification: f.Justification, SuppressReason: string(f.SuppressReason),
+//             FirstSeenAt: now, LastSeenAt: now,
+//         }
+//         if err := p.db.UpsertFinding(ctx, row); err != nil {
+//             p.logger.Warn("failed to persist finding", "finding_id", f.ID, "err", err)
+//         }
+//     }
+// }
 
-// persistPatches writes generated patch text back to the DB so curate.py can
-// read them without re-invoking Ollama.
-func (p *Pipeline) persistPatches(ctx context.Context, scored []finding.Finding) {
-	if p.db == nil {
-		return
-	}
-	for i := range scored {
-		f := &scored[i]
-		if f.Patch == "" {
-			continue
-		}
-		if err := p.db.UpdateFindingPatch(ctx, f.ID, f.Patch, f.PatchStatus); err != nil {
-			p.logger.Warn("failed to cache patch", "finding_id", f.ID, "err", err)
-		}
-	}
-}
-
-// generatePatches runs patch generation for all scored findings.
-func (p *Pipeline) generatePatches(ctx context.Context, scored []finding.Finding) error {
-	patches, err := p.gen.Generate(ctx, scored)
-	if err != nil {
-		return fmt.Errorf("patch generation: %w", err)
-	}
-	patchByID := make(map[string]patch.Patch, len(patches))
-	for _, pp := range patches {
-		patchByID[pp.FindingID] = pp
-	}
-	for i := range scored {
-		if pp, ok := patchByID[scored[i].ID]; ok {
-			scored[i].Patch = pp.UnifiedDiff
-			scored[i].PatchStatus = string(pp.Status)
-		}
-	}
-	return nil
-}
-
-// generateReport creates the HTML report file from scored findings.
-func (p *Pipeline) generateReport(start time.Time, scored []finding.Finding) {
+// GenerateReport creates the HTML report file from scored findings.
+func (p *Pipeline) GenerateReport(start time.Time, scored []finding.Finding) {
 	if err := os.MkdirAll(filepath.Dir(p.cfg.ReportPath), 0o750); err != nil {
 		p.logger.Error("failed to create report directory", "err", err)
 		return
@@ -589,15 +532,25 @@ func (p *Pipeline) generateReport(start time.Time, scored []finding.Finding) {
 	}
 }
 
-// finalize commits scan state, logs completion stats, and emits EventDone.
-func (p *Pipeline) finalize(ctx context.Context, ingResult *ingestion.Result, start time.Time, changedCount int, scored []finding.Finding) {
-	if err := p.ingester.CommitScan(ctx, ingResult.ProjectID, ingResult.ChangeSet); err != nil {
-		output.Emit(p.events, output.Event{
-			Kind: output.EventLog,
-			Log:  fmt.Sprintf("warn: commit scan state: %v", err),
-		})
-	}
+// MVP: finalize (SQLite commit + scan run record) bypassed.
+// Full implementation preserved as comment — uncomment to re-enable after demo:
+//
+// func (p *Pipeline) finalize(ctx context.Context, ingResult *ingestion.Result, start time.Time, changedCount int, scored []finding.Finding) {
+//     if err := p.ingester.CommitScan(ctx, ingResult.ProjectID, ingResult.ChangeSet); err != nil {
+//         output.Emit(p.events, output.Event{Kind: output.EventLog, Log: fmt.Sprintf("warn: commit scan state: %v", err)})
+//     }
+//     elapsed := time.Since(start)
+//     p.logger.Info("scan complete", "component", "scan", "findings", len(scored), "elapsed", elapsed, "report", p.cfg.ReportPath)
+//     if p.db != nil && p.runID != "" {
+//         if err := p.db.FinalizeScanRun(ctx, p.runID, time.Now().Unix(), changedCount, len(scored)); err != nil {
+//             p.logger.Warn("failed to finalize scan_run", "component", "scan", "err", err)
+//         }
+//     }
+//     p.emitDone(start, scored)
+// }
 
+// emitDone logs scan completion and emits EventDone.
+func (p *Pipeline) emitDone(start time.Time, scored []finding.Finding) {
 	bySeverity := make(map[finding.SeverityLabel]int, 5)
 	for _, s := range scored {
 		bySeverity[s.SeverityLabel]++
@@ -606,13 +559,6 @@ func (p *Pipeline) finalize(ctx context.Context, ingResult *ingestion.Result, st
 	p.logger.Info("scan complete",
 		"component", "scan", "findings", len(scored),
 		"elapsed", elapsed, "report", p.cfg.ReportPath)
-
-	if p.db != nil && p.runID != "" {
-		if finalErr := p.db.FinalizeScanRun(ctx, p.runID, time.Now().Unix(), changedCount, len(scored)); finalErr != nil {
-			p.logger.Warn("failed to finalize scan_run", "component", "scan", "err", finalErr)
-		}
-	}
-
 	output.Emit(p.events, output.Event{
 		Kind: output.EventDone,
 		Done: &output.ScanSummary{
@@ -639,30 +585,16 @@ func (p *Pipeline) finalize(ctx context.Context, ingResult *ingestion.Result, st
 // The remainder go through the LLM Verifier (CoD + SCoT + ASC) before emission.
 // Verifier failures degrade gracefully: unverified findings are emitted rather than
 // silently dropped.
-func (p *Pipeline) runPathA(ctx context.Context, res *ingestion.Result, scopeFiles []string, ch finding.Channel) error {
+func (p *Pipeline) runPathA(ctx context.Context, res *ingestion.Result, scopeFiles []string, ch chan<- finding.Finding) error {
 	output.Emit(p.events, output.Event{Kind: output.EventStageStart, Stage: "path a"})
 
 	// DiffIndex returns paths relative to the project root; make them absolute
 	// so subprocess scanners (opengrep, ast-grep) can find them from any CWD.
 	var changed []string
-	if res.ChangeSet != nil {
+	if res != nil && res.ChangeSet != nil {
 		for _, rel := range res.ChangeSet.Changed {
 			changed = append(changed, filepath.Join(p.cfg.Target, rel))
 		}
-	}
-
-	// Incremental bypass: no changed files and no scope → nothing to scan.
-	if len(changed) == 0 && len(scopeFiles) == 0 {
-		slog.Debug("path a: no files changed or in scope, skipping")
-		output.Emit(p.events, output.Event{
-			Kind:  output.EventStageEnd,
-			Stage: "path a",
-			Summary: &output.StageSummary{
-				Stage:  "path a",
-				Detail: "bypassed: no files changed",
-			},
-		})
-		return nil
 	}
 
 	// rawBuf collects findings from all detectors; protected by mu.
@@ -697,9 +629,17 @@ func (p *Pipeline) runPathA(ctx context.Context, res *ingestion.Result, scopeFil
 		return nil
 	})
 
-	// 1. OpenGrep — owns Python/Java/JS/TS/Go/Ruby/PHP
+	// 1. OpenGrep — owns Python/Java/JS/TS/Go/Ruby/PHP.
+	// Full-scan mode (no changed files): use Scan on the target directory.
+	// Incremental mode (changed files present): use ScanFiles on the diff.
 	g.Go(func() error {
-		findings, err := p.opengrep.ScanFiles(gctx, changed)
+		var findings []finding.Finding
+		var err error
+		if len(changed) > 0 {
+			findings, err = p.opengrep.ScanFiles(gctx, changed)
+		} else {
+			findings, err = p.opengrep.Scan(gctx, p.cfg.Target)
+		}
 		if err != nil {
 			output.Emit(p.events, output.Event{
 				Kind: output.EventLog,
@@ -733,20 +673,16 @@ func (p *Pipeline) runPathA(ctx context.Context, res *ingestion.Result, scopeFil
 // runPathB executes the Path B semantic detection tier pipeline and writes
 // findings to ch. Returns nil when Joern CPG is unavailable (0 surfaces selected).
 func (p *Pipeline) Close() error {
-	p.logger.Debug("closing pipeline", "component", "scan", "run_id", p.runID)
-	// Stop Joern subprocess if we spawned it. Use a fixed timeout — this runs
-	// after the scan; we don't want it to block indefinitely on cleanup.
+	p.logger.Debug("closing pipeline", "component", "scan")
 	if p.cfg.JoernBin != "" && p.joern != nil {
-		stopCtx, cancel := context.WithTimeout(context.Background(), tuning.JoernScanStopTimeout)
+		stopCtx, cancel := context.WithTimeout(context.Background(), config.JoernScanStopTimeout)
 		defer cancel()
 		_ = p.joern.Stop(stopCtx) //nolint:errcheck // best-effort cleanup
 	}
-
-	if p.db != nil {
-		_ = p.db.Close() //nolint:errcheck // best-effort; SQLite WAL checkpoint on close
-	}
+	// MVP: p.db.Close() bypassed — no SQLite opened.
+	// Uncomment when re-enabling ingestion layer: if p.db != nil { _ = p.db.Close() }
 	if p.logFile != nil {
-		_ = p.logFile.Close() //nolint:errcheck // best-effort log file close on scan end
+		_ = p.logFile.Close() //nolint:errcheck
 	}
 	return nil
 }

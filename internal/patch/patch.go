@@ -43,7 +43,7 @@ import (
 
 	"github.com/hoangharry-tm/zerotrust/internal/config"
 	"github.com/hoangharry-tm/zerotrust/internal/finding"
-	"github.com/hoangharry-tm/zerotrust/pkg/ollama"
+	"github.com/hoangharry-tm/zerotrust/pkg/llm"
 )
 
 // Status describes whether a patch was generated and if it validated cleanly.
@@ -90,10 +90,8 @@ type Patch struct {
 //	gen := patch.New("/path/to/project")
 //	patches, err := gen.Generate(ctx, findings)
 type Generator struct {
-	// projectRoot is the absolute path to the scanned codebase, used to read
-	// source files for context injection and to validate diffs.
 	projectRoot string
-	client      *ollama.Client
+	client      llm.Provider
 	clientOnce  sync.Once
 }
 
@@ -102,7 +100,7 @@ func New(projectRoot string) *Generator {
 	return &Generator{projectRoot: projectRoot}
 }
 
-func (g *Generator) getClient() *ollama.Client {
+func (g *Generator) getClient() llm.Provider {
 	g.clientOnce.Do(func() {
 		url := os.Getenv("ZEROTRUST_OLLAMA_URL")
 		if url == "" {
@@ -112,7 +110,11 @@ func (g *Generator) getClient() *ollama.Client {
 		if model == "" {
 			model = "qwen2.5-coder:7b"
 		}
-		g.client = ollama.New(url, model)
+		g.client, _ = llm.New(llm.Config{
+			Provider: llm.ProviderOllama,
+			BaseURL:  url,
+			Model:    model,
+		})
 	})
 	return g.client
 }
@@ -210,7 +212,7 @@ func sourceContext(projectRoot, relPath string, lr finding.LineRange) (lines []s
 	return all[lo : hi+1], lo + 1
 }
 
-func generateDiff(ctx context.Context, client *ollama.Client, g *Generator, f finding.Finding) (string, error) {
+func generateDiff(ctx context.Context, client llm.Provider, g *Generator, f finding.Finding) (string, error) {
 	var sb strings.Builder
 	if f.CVE != "" {
 		fmt.Fprintf(&sb, "CVE: %s (CVSS %.1f)\n\n", f.CVE, f.CVSS)
@@ -237,12 +239,12 @@ func generateDiff(ctx context.Context, client *ollama.Client, g *Generator, f fi
 		sb.WriteString("Output ONLY the unified diff, no explanation.")
 	}
 
-	raw, err := client.Generate(ctx, sb.String(), &ollama.Options{
+	raw, err := client.Generate(ctx, sb.String(), &llm.Options{
 		Temperature: config.C.PatchLLMTemperature,
 		NumPredict:  config.C.PatchLLMMaxTokens,
 	})
 	if err != nil {
-		return "", fmt.Errorf("ollama generate: %w", err)
+		return "", fmt.Errorf("llm generate: %w", err)
 	}
 	return extractDiff(raw), nil
 }

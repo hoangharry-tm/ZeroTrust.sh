@@ -18,13 +18,17 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"os/exec"
 	"path/filepath"
 
 	"github.com/hoangharry-tm/zerotrust/internal/detector"
 	"github.com/hoangharry-tm/zerotrust/internal/finding"
 )
+
+var _ Scanner = (*OSVScanner)(nil)
 
 // OSVScanner wraps the osv-scanner binary for dependency vulnerability scanning.
 type OSVScanner struct {
@@ -82,13 +86,18 @@ type osvOutput struct {
 func (o *OSVScanner) Scan(ctx context.Context, target string) ([]finding.Finding, error) {
 	var stdout, stderr bytes.Buffer
 	cmd := exec.CommandContext(ctx, o.binaryPath,
-		"--json",
-		"--recursive",
+		"scan", "source",
+		"-r",
 		target,
+		"--format", "json",
 	)
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
+		if errors.Is(err, exec.ErrNotFound) {
+			slog.Warn("osv-scanner binary not found, skipping", "binary", o.binaryPath)
+			return nil, nil
+		}
 		// osv-scanner exits 1 when vulnerabilities are found; check for JSON output.
 		if stdout.Len() == 0 {
 			return nil, fmt.Errorf("osv-scanner: %w (stderr: %s)", err, stderr.String())
@@ -102,7 +111,7 @@ func (o *OSVScanner) Scan(ctx context.Context, target string) ([]finding.Finding
 		return nil, fmt.Errorf("osv-scanner decode: %w", err)
 	}
 
-	var findings []finding.Finding
+		var findings []finding.Finding
 	for _, result := range out.Results {
 		for _, pkg := range result.Packages {
 			for _, vuln := range pkg.Vulnerabilities {
@@ -116,7 +125,7 @@ func (o *OSVScanner) Scan(ctx context.Context, target string) ([]finding.Finding
 				}
 				opts := []finding.Option{
 					finding.WithCVE(vuln.ID),
-					finding.WithConfidence(0.85),
+					finding.WithConfidence(cvssToConfidence(vuln.CVSS)),
 					finding.WithSourcePath(finding.SourcePattern),
 				}
 				if vuln.CVSS > 0 {
@@ -134,4 +143,26 @@ func (o *OSVScanner) Scan(ctx context.Context, target string) ([]finding.Finding
 		}
 	}
 	return findings, nil
+}
+
+// cvssToConfidence maps CVSS v3 base score to a confidence score.
+//
+//	≥ 9.0 → 0.95 (Critical)
+//	≥ 7.0 → 0.85 (High)
+//	≥ 4.0 → 0.65 (Medium)
+//	< 4.0 → 0.40 (Low)
+//	  0.0 → 0.85 (default when CVSS is missing)
+func cvssToConfidence(cvss float64) float64 {
+	switch {
+	case cvss >= 9.0:
+		return 0.95
+	case cvss >= 7.0:
+		return 0.85
+	case cvss >= 4.0:
+		return 0.65
+	case cvss > 0:
+		return 0.40
+	default:
+		return 0.85
+	}
 }

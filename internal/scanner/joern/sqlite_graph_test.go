@@ -72,7 +72,7 @@ func TestQueryNodes_ReadsFromSQLite(t *testing.T) {
 	ver := "v1"
 
 	// Pre-populate SQLite with method nodes
-	if err := db.IngestNodeBatch(ctx, proj, ver, "METHOD", []sqlite.CPGNode{
+	if err := db.IngestNodeBatch(ctx, proj, ver, string(cpg.NodeMethod), []sqlite.CPGNode{
 		{ID: "m1", Name: "handleRequest", File: "server.go", Line: 10, Code: "def handleRequest"},
 		{ID: "m2", Name: "validateInput", File: "validate.go", Line: 5, Code: "def validateInput"},
 		{ID: "m3", Name: "processData", File: "process.go", Line: 20, Code: "def processData"},
@@ -143,7 +143,7 @@ func TestGetCallers_ReadsFromSQLite(t *testing.T) {
 	proj := "proj-callers"
 	ver := "v1"
 
-	if err := db.IngestNodeBatch(ctx, proj, ver, "METHOD", []sqlite.CPGNode{
+	if err := db.IngestNodeBatch(ctx, proj, ver, string(cpg.NodeMethod), []sqlite.CPGNode{
 		{ID: "caller1", Name: "AuthMiddleware"},
 		{ID: "caller2", Name: "RateLimiter"},
 		{ID: "target", Name: "HandleRequest"},
@@ -184,7 +184,7 @@ func TestGetCallees_ReadsFromSQLite(t *testing.T) {
 	proj := "proj-callees"
 	ver := "v1"
 
-	if err := db.IngestNodeBatch(ctx, proj, ver, "METHOD", []sqlite.CPGNode{
+	if err := db.IngestNodeBatch(ctx, proj, ver, string(cpg.NodeMethod), []sqlite.CPGNode{
 		{ID: "caller", Name: "MainHandler"},
 		{ID: "callee1", Name: "ValidateInput"},
 		{ID: "callee2", Name: "SanitizeOutput"},
@@ -192,8 +192,8 @@ func TestGetCallees_ReadsFromSQLite(t *testing.T) {
 		t.Fatalf("IngestNodeBatch: %v", err)
 	}
 	if err := db.IngestEdgeBatch(ctx, proj, ver, []sqlite.CPGEdge{
-		{FromID: "caller", ToID: "callee1", EdgeType: "CALL"},
-		{FromID: "caller", ToID: "callee2", EdgeType: "CALL"},
+		{FromID: "caller", ToID: "callee1", EdgeType: string(cpg.EdgeCall)},
+		{FromID: "caller", ToID: "callee2", EdgeType: string(cpg.EdgeCall)},
 	}); err != nil {
 		t.Fatalf("IngestEdgeBatch: %v", err)
 	}
@@ -225,15 +225,15 @@ func TestGetCallGraph_FromSQLite(t *testing.T) {
 	proj := "proj-cg"
 	ver := "v1"
 
-	if err := db.IngestNodeBatch(ctx, proj, ver, "METHOD", []sqlite.CPGNode{
+	if err := db.IngestNodeBatch(ctx, proj, ver, string(cpg.NodeMethod), []sqlite.CPGNode{
 		{ID: "a", Name: "A"}, {ID: "b", Name: "B"}, {ID: "c", Name: "C"},
 	}); err != nil {
 		t.Fatalf("IngestNodeBatch: %v", err)
 	}
 	if err := db.IngestEdgeBatch(ctx, proj, ver, []sqlite.CPGEdge{
-		{FromID: "a", ToID: "b", EdgeType: "CALL"},
-		{FromID: "a", ToID: "c", EdgeType: "CALL"},
-		{FromID: "b", ToID: "c", EdgeType: "CALL"},
+		{FromID: "a", ToID: "b", EdgeType: string(cpg.EdgeCall)},
+		{FromID: "a", ToID: "c", EdgeType: string(cpg.EdgeCall)},
+		{FromID: "b", ToID: "c", EdgeType: string(cpg.EdgeCall)},
 	}); err != nil {
 		t.Fatalf("IngestEdgeBatch: %v", err)
 	}
@@ -268,7 +268,7 @@ func TestGetNeighboursAtDepth_FromSQLiteUsesRecursiveCTE(t *testing.T) {
 	proj := "proj-bfs"
 	ver := "v1"
 
-	if err := db.IngestNodeBatch(ctx, proj, ver, "METHOD", []sqlite.CPGNode{
+	if err := db.IngestNodeBatch(ctx, proj, ver, string(cpg.NodeMethod), []sqlite.CPGNode{
 		{ID: "root", Name: "Root"},
 		{ID: "l1a", Name: "Level1A"},
 		{ID: "l1b", Name: "Level1B"},
@@ -277,7 +277,7 @@ func TestGetNeighboursAtDepth_FromSQLiteUsesRecursiveCTE(t *testing.T) {
 		t.Fatalf("IngestNodeBatch: %v", err)
 	}
 	if err := db.IngestEdgeBatch(ctx, proj, ver, []sqlite.CPGEdge{
-		{FromID: "root", ToID: "l1a", EdgeType: "CALL"},
+		{FromID: "root", ToID: "l1a", EdgeType: string(cpg.EdgeCall)},
 		{FromID: "root", ToID: "l1b", EdgeType: "CALL"},
 		{FromID: "l1a", ToID: "l2", EdgeType: "CALL"},
 	}); err != nil {
@@ -318,7 +318,7 @@ func TestQueryNodesByFile_FromSQLite(t *testing.T) {
 	proj := "proj-file"
 	ver := "v1"
 
-	if err := db.IngestNodeBatch(ctx, proj, ver, "METHOD", []sqlite.CPGNode{
+	if err := db.IngestNodeBatch(ctx, proj, ver, string(cpg.NodeMethod), []sqlite.CPGNode{
 		{ID: "m1", Name: "Handler", File: "server.go"},
 		{ID: "m2", Name: "Helper", File: "util.go"},
 	}); err != nil {

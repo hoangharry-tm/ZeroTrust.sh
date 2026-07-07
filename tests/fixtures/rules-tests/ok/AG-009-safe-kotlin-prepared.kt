@@ -1,5 +1,0 @@
-val userId = request.getParameter("id")
-val pstmt = connection.prepareStatement("SELECT * FROM users WHERE id = ?")
-pstmt.setString(1, userId)
-pstmt.executeQuery()
-db.execRaw("DELETE FROM sessions WHERE id = ?", arrayOf(sessionId))

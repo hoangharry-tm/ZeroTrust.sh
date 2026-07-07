@@ -27,6 +27,10 @@ import (
 	"github.com/hoangharry-tm/zerotrust/pkg/sqlite"
 )
 
+// pageSize is the number of elements per paginated Joern HTTP query.
+// Matches the value used in IngestCPGToSQLite.
+const pageSize = 500
+
 // joernGraphCache is a thread-safe lookaside cache bound to a single scan
 // execution context. Eliminates redundant HTTP round-trips when the same
 // node type or edge set is queried multiple times (e.g. QueryNodes called
@@ -87,7 +91,12 @@ type joernEdge struct {
 }
 
 // joernFlow wraps a single taint flow returned by queryTaintFlows.
+// For project-wide queries, MethodID/MethodName/MethodFile carry the
+// surface method metadata so Go-side code can key paths by method node ID.
 type joernFlow struct {
+	MethodID     string      `json:"method_id"`
+	MethodName   string      `json:"method_name"`
+	MethodFile   string      `json:"method_file"`
 	Source       joernNode   `json:"source"`
 	Sink         joernNode   `json:"sink"`
 	Intermediate []joernNode `json:"intermediate"`
@@ -111,7 +120,6 @@ func (g *joernGraph) IngestCPGToSQLite(ctx context.Context, db *sqlite.DB, proje
 	var totalNodes, totalEdges int
 
 	// Drain METHOD nodes with stable pagination.
-	const pageSize = 500
 	offset := 0
 	for {
 		if err := ctx.Err(); err != nil {
@@ -238,23 +246,31 @@ func (g *joernGraph) QueryNodes(nodeType cpg.NodeType) ([]cpg.Node, error) {
 		}
 	}
 
-	q := nodeTypeQuery(nodeType)
-	slog.Info("joern: QueryNodes — fetching all nodes", "type", nodeType)
-	raw, err := g.client.doQuery(g.ctx, q)
-	if err != nil {
-		return nil, fmt.Errorf("joern: QueryNodes(%s): %w", nodeType, err)
-	}
-	nodes, err := parseNodes(raw)
-	if err != nil {
-		return nil, err
+	// Fallback: paginated Joern HTTP reads with stable sortBy drop/take ordering.
+	var allNodes []cpg.Node
+	offset := 0
+	for {
+		raw, err := g.client.doQuery(g.ctx, paginatedNodeQuery(nodeType, offset, pageSize))
+		if err != nil {
+			return nil, fmt.Errorf("joern: QueryNodes(%s) page %d: %w", nodeType, offset, err)
+		}
+		page, err := parseNodes(raw)
+		if err != nil {
+			return nil, err
+		}
+		if len(page) == 0 {
+			break
+		}
+		allNodes = append(allNodes, page...)
+		offset += pageSize
 	}
 
 	g.cache.mu.Lock()
-	g.cache.methodCache[nodeType] = nodes
+	g.cache.methodCache[nodeType] = allNodes
 	g.cache.mu.Unlock()
 
-	slog.Info("joern: QueryNodes done", "type", nodeType, "count", len(nodes))
-	return nodes, nil
+	slog.Info("joern: QueryNodes done", "type", nodeType, "count", len(allNodes))
+	return allNodes, nil
 }
 
 // drainNodeCursor exhausts cur into a []cpg.Node slice, then closes it.
@@ -472,16 +488,25 @@ func (g *joernGraph) GetCallGraph() (cpg.CallGraph, error) {
 			return cg, nil
 		}
 	}
-	q := queryAllEdges()
-	slog.Info("joern: GetCallGraph — querying all edges (may be slow on large CPGs)")
-	raw, err := g.client.doQuery(g.ctx, q)
-	if err != nil {
-		return nil, fmt.Errorf("joern: GetCallGraph: %w", err)
-	}
-
+	// Fallback: paginated Joern HTTP reads with stable sortBy drop/take ordering.
+	slog.Info("joern: GetCallGraph — querying paginated edges")
 	var edges []joernEdge
-	if err := json.Unmarshal(raw, &edges); err != nil {
-		return nil, fmt.Errorf("joern: GetCallGraph: %w: %w", ErrMalformedResponse, err)
+	offset := 0
+	for {
+		q := queryAllEdgesPaginated(offset, pageSize)
+		raw, err := g.client.doQuery(g.ctx, q)
+		if err != nil {
+			return nil, fmt.Errorf("joern: GetCallGraph page %d: %w", offset, err)
+		}
+		var page []joernEdge
+		if err := json.Unmarshal(raw, &page); err != nil {
+			return nil, fmt.Errorf("joern: GetCallGraph: %w: %w", ErrMalformedResponse, err)
+		}
+		if len(page) == 0 {
+			break
+		}
+		edges = append(edges, page...)
+		offset += pageSize
 	}
 
 	cg := make(cpg.CallGraph, len(edges))
@@ -659,7 +684,7 @@ func (g *joernGraph) TaintPaths(sources []cpg.TaintSource, sinks []cpg.TaintSink
 		return nil, fmt.Errorf("joern: TaintPaths: sinks must not be empty")
 	}
 
-	// Extract the method node ID from the first source or sink.
+	// Extract method ID from source.
 	methodID := ""
 	for _, s := range sources {
 		if s.NodeID != "" {
@@ -668,18 +693,27 @@ func (g *joernGraph) TaintPaths(sources []cpg.TaintSource, sinks []cpg.TaintSink
 		}
 	}
 	if methodID == "" {
-		for _, s := range sinks {
-			if s.NodeID != "" {
-				methodID = s.NodeID
-				break
+		return nil, fmt.Errorf("joern: TaintPaths: no node ID in sources")
+	}
+
+	// Build sink names from language taint config.
+	sinkNames := make([]string, 0)
+	lang, ok := DetectLanguage(sources[0].File)
+	if ok {
+		if cfg, ok2 := TaintConfigs[lang]; ok2 {
+			for _, sd := range cfg.Sinks {
+				sinkNames = append(sinkNames, sd.Name)
 			}
 		}
 	}
-	if methodID == "" {
-		return nil, fmt.Errorf("joern: TaintPaths: no node IDs provided in sources or sinks")
+	if len(sinkNames) == 0 {
+		// Hard fallback: common dangerous call names across languages
+		sinkNames = []string{"executeQuery", "executeUpdate", "execute", "prepareStatement",
+			"exec", "Runtime.exec", "eval", "readObject", "sendRedirect", "forward",
+			"FileWriter", "FileOutputStream", "query", "rawQuery"}
 	}
 
-	q := queryTaintFlows(methodID)
+	q := queryTaintFlows(methodID, sinkNames)
 	slog.Debug("joern: TaintPaths query", "query", q, "sources", len(sources), "sinks", len(sinks))
 	raw, err := g.client.doQuery(g.ctx, q)
 	if err != nil {
@@ -697,7 +731,6 @@ func (g *joernGraph) TaintPaths(sources []cpg.TaintSource, sinks []cpg.TaintSink
 			break
 		}
 
-		// Classify the sink kind using the language-specific taint taxonomy.
 		sinkKind := classifySinkKind(f.Sink.Name, f.Sink.File)
 
 		// Classify source kind using the language-specific taint taxonomy.
@@ -709,12 +742,14 @@ func (g *joernGraph) TaintPaths(sources []cpg.TaintSource, sinks []cpg.TaintSink
 		path := cpg.TaintPath{
 			Source: cpg.TaintSource{
 				NodeID: f.Source.ID,
+			Name:   f.Source.Name,
 				Kind:   sourceKind,
 				File:   f.Source.File,
 				Line:   f.Source.Line,
 			},
 			Sink: cpg.TaintSink{
 				NodeID: f.Sink.ID,
+				Name:   f.Sink.Name,
 				Kind:   sinkKind,
 				File:   f.Sink.File,
 				Line:   f.Sink.Line,
@@ -733,6 +768,110 @@ func (g *joernGraph) TaintPaths(sources []cpg.TaintSource, sinks []cpg.TaintSink
 		paths = append(paths, path)
 	}
 	slog.Debug("joern: TaintPaths done", "paths", len(paths))
+	return paths, nil
+}
+
+// ProjectWideTaintPaths runs taint analysis across all surface methods in a
+// single project-wide query instead of one query per method. This enables
+// Joern to discover inter-procedural flows that cross multiple method frames
+// (e.g. controller → service → DAO → executeQuery).
+//
+// Parameters:
+//   - surfaceIDs: Joern METHOD node IDs of all surface methods.
+//   - lang: detected source language (used to select sink definitions from
+//     TaintConfigs). If empty, the hard fallback sink list is used.
+//
+// Returns all discovered source-to-sink paths, capped at config.C.CPGMaxTaintPaths.
+func (g *joernGraph) ProjectWideTaintPaths(surfaceIDs []string, lang string) ([]cpg.TaintPath, error) {
+	if len(surfaceIDs) == 0 {
+		return nil, fmt.Errorf("joern: ProjectWideTaintPaths: surfaceIDs must not be empty")
+	}
+
+	// Build sink names from language taint config.
+	sinkNames := make([]string, 0)
+	if lang != "" {
+		if cfg, ok := TaintConfigs[Language(lang)]; ok {
+			for _, sd := range cfg.Sinks {
+				sinkNames = append(sinkNames, sd.Name)
+			}
+		}
+	}
+	if len(sinkNames) == 0 {
+		sinkNames = []string{"executeQuery", "executeUpdate", "execute", "prepareStatement",
+			"exec", "Runtime.exec", "eval", "readObject", "sendRedirect", "forward",
+			"FileWriter", "FileOutputStream", "query", "rawQuery"}
+	}
+
+	q := queryProjectWideTaintFlows(sinkNames, surfaceIDs)
+	slog.Debug("joern: ProjectWideTaintPaths query", "query", q, "surfaces", len(surfaceIDs))
+	raw, err := g.client.doQuery(g.ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("joern: ProjectWideTaintPaths: reachableByFlows: %w", err)
+	}
+
+	var flows []joernFlow
+	if err := json.Unmarshal(raw, &flows); err != nil {
+		return nil, fmt.Errorf("joern: ProjectWideTaintPaths: %w: %w", ErrMalformedResponse, err)
+	}
+
+	// Diagnostic: log raw flow count and sample method IDs before filtering.
+	if len(flows) > 0 {
+		sample := flows[0].MethodID
+		if len(flows) > 1 {
+			sample += ", " + flows[1].MethodID
+		}
+		slog.Debug("joern: ProjectWideTaintPaths raw", "total_flows", len(flows), "sample_method_ids", sample)
+	}
+
+	// Pass all flows through — surface attribution happens via BFS walk-up in
+	// enrichment.go. Filtering here would discard inter-procedural paths whose
+	// source method is a DAO/helper, not directly a surface controller.
+	paths := make([]cpg.TaintPath, 0, min(len(flows), config.C.CPGMaxTaintPaths))
+	for _, f := range flows {
+		if len(paths) >= config.C.CPGMaxTaintPaths {
+			break
+		}
+
+		// Joern path order is SINK→SOURCE: elems.head = CALL (sink), elems.last = MethodParameterIn (source).
+		// The Scala template labels them "source"/"sink" by position, so the JSON fields are inverted:
+		//   f.Source = head = the dangerous CALL (e.g. executeQuery)
+		//   f.Sink   = last = the MethodParameterIn (taint entry point)
+		sinkKind := classifySinkKind(f.Source.Name, f.Source.File)
+
+		sourceKind := classifySourceKind(f.MethodName, f.MethodFile)
+		if sourceKind == "" {
+			sourceKind = f.Sink.Type
+		}
+
+		path := cpg.TaintPath{
+			Source: cpg.TaintSource{
+				NodeID: f.MethodID,
+				Name:   f.MethodName,
+				Kind:   sourceKind,
+				File:   f.MethodFile,
+				Line:   0,
+			},
+			Sink: cpg.TaintSink{
+				NodeID: f.Source.ID,
+				Name:   f.Source.Name,
+				Kind:   sinkKind,
+				File:   f.Source.File,
+				Line:   f.Source.Line,
+			},
+		}
+		intermediate := make([]cpg.Node, len(f.Intermediate))
+		for i, ev := range f.Intermediate {
+			intermediate[i] = cpg.Node{
+				ID:   ev.ID,
+				Name: ev.Name,
+				File: ev.File,
+				Line: ev.Line,
+			}
+		}
+		path.IntermediateNodes = intermediate
+		paths = append(paths, path)
+	}
+	slog.Info("joern: ProjectWideTaintPaths done", "surfaces", len(surfaceIDs), "paths", len(paths))
 	return paths, nil
 }
 
@@ -820,6 +959,24 @@ func nodeTypeQuery(nt cpg.NodeType) string {
 		return queryLiterals()
 	default:
 		return queryNodeTypeGeneric(string(nt))
+	}
+}
+
+// paginatedNodeQuery returns the paginated query for the given node type.
+func paginatedNodeQuery(nt cpg.NodeType, offset, take int) string {
+	switch nt {
+	case cpg.NodeMethod:
+		return queryMethodsPaginated(offset, take)
+	case cpg.NodeCall:
+		return queryCallsPaginated(offset, take)
+	case cpg.NodeParameter:
+		return queryParamsPaginated(offset, take)
+	case cpg.NodeIdentifier:
+		return queryIdentifiersPaginated(offset, take)
+	case cpg.NodeLiteral:
+		return queryLiteralsPaginated(offset, take)
+	default:
+		return nodeTypeQuery(nt)
 	}
 }
 

@@ -150,7 +150,7 @@ func (r *MinimalRenderer) printSummary() {
 		finding.SeveritySuppressed,
 	} {
 		if n := r.bySeverity[sev]; n > 0 {
-			parts = append(parts, fmt.Sprintf("%d %s", n, strings.ToLower(string(sev))))
+			parts = append(parts, fmt.Sprintf("%d %s", n, strings.ToLower(sev.String())))
 		}
 	}
 
@@ -180,18 +180,18 @@ func (r *MinimalRenderer) printf(format string, a ...any) {
 // severityLabel returns an optionally coloured severity string.
 func (r *MinimalRenderer) severityLabel(sev finding.SeverityLabel) string {
 	if !r.hasColor {
-		return string(sev)
+		return sev.String()
 	}
 	switch sev {
 	case finding.SeverityBlock:
-		return color.New(color.FgRed, color.Bold).Sprint(string(sev))
+		return color.New(color.FgRed, color.Bold).Sprint(sev.String())
 	case finding.SeverityHigh:
-		return color.New(color.FgRed).Sprint(string(sev))
+		return color.New(color.FgRed).Sprint(sev.String())
 	case finding.SeverityMedium:
-		return color.New(color.FgYellow).Sprint(string(sev))
+		return color.New(color.FgYellow).Sprint(sev.String())
 	case finding.SeverityLow:
-		return string(sev)
+		return sev.String()
 	default:
-		return color.New(color.Faint).Sprint(string(sev))
+		return color.New(color.Faint).Sprint(sev.String())
 	}
 }

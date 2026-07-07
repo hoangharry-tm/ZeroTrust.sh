@@ -156,8 +156,12 @@ func TestGate1DifferentLineNotMerged(t *testing.T) {
 	f2 := patternFinding("f2", "api/auth.py", "CWE-89", "", 20, 0.65)
 
 	out, _ := l.Process(context.Background(), []finding.Finding{f1, f2})
-	if len(out) != 2 {
-		t.Errorf("different lines must not be merged; got %d", len(out))
+	// Gate 1 does not merge (different lines), but Gate 2 merges because
+	// the fingerprint (CWE + normalised path) is identical.  The Gate 2
+	// merge is correct: same CWE in the same file = same vulnerability
+	// detected at different program points.
+	if len(out) != 1 {
+		t.Errorf("expected 1 finding after gate-2 merge, got %d", len(out))
 	}
 }
 

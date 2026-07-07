@@ -57,6 +57,13 @@ var (
 	// contains a ".." component, which could escape the project root.
 	ErrPathTraversal = errors.New("joern: path contains traversal component (../)")
 
+	// ErrEmptyCPG is returned by BuildCPG when the verification query
+	// (cpg.method.size) returns zero — no methods were parsed, indicating a
+	// wrong frontend, unreachable source files, or an empty project.
+	// ponytail: zero-method threshold only — file count vs ingested count
+	// check deferred
+	ErrEmptyCPG = errors.New("joern: CPG built but contains zero methods — check frontend and file paths")
+
 	// ErrEmptyPaths is returned by BuildCPG when BuildConfig.Paths is empty.
 	ErrEmptyPaths = errors.New("joern: BuildConfig.Paths must not be empty")
 

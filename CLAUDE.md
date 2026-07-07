@@ -15,7 +15,7 @@ Local, privacy-first CLI SAST vulnerability scanner. Performs comprehensive, ful
 - `cmd/zerotrust/` - CLI entrypoint
 - `internal/` - Go backend logic (ingestion, pattern routing, dedup, reporting)
 - `worker/` - Python IPC worker (handlers, CodeT5+ models, schemas)
-- `rules/`, `tests/`, `docs/`, `pipeline/` - Supporting rules and testbeds
+- `rules/`, `docs/` - Supporting rules and documentation
 
 ## Token Optimization & Navigation Guidelines
 

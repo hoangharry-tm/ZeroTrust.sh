@@ -45,6 +45,8 @@ func New(scanners ...scanner.Scanner) *Engine {
 // Run detects the target stack, filters eligible scanners via Supports,
 // dispatches them concurrently, and returns the merged findings.
 // A scanner error is logged and skipped — it does not abort the run.
+// ponytail: scanner errors are non-fatal by design — one scanner failing
+// should not abort other scanners.
 // ctx should carry a deadline; all spawned goroutines respect it.
 func (e *Engine) Run(ctx context.Context, target string) ([]finding.Finding, error) {
 	stack, err := detector.Detect(target)

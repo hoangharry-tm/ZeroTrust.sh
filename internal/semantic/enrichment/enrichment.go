@@ -39,6 +39,7 @@ package enrichment
 import (
 	"context"
 	"log/slog"
+	"path/filepath"
 	"runtime"
 	"sync"
 	"time"
@@ -101,6 +102,14 @@ type EnrichedSurface struct {
 	// ResourceIDFlows lists untrusted ID taint flows observed in this surface.
 	// Non-empty means IsIDORCandidate is true in the embedded Surface.
 	ResourceIDFlows []ResourceIDFlow
+	// SinkNodes lists CPG node IDs or method signatures that match dangerous
+	// sink patterns at this surface. Populated by the enrichment layer from
+	// the CPG's sink pre-flagging pass.
+	SinkNodes []string
+	// CallPath lists the node types (cpg.NodeType values) along the taint
+	// propagation path from source to sink. Empty when the CPG taint
+	// tracker produced no path.
+	CallPath []string
 }
 
 // Enricher adds CVE, call graph, and IDOR data to a surface list.
@@ -160,6 +169,74 @@ func (e *Enricher) Enrich(ctx context.Context, surfaces []targeting.Surface, pro
 		cvesByPkg = make(map[string][]CVEMatch)
 	}
 
+	// ── Project-wide taint analysis ─────────────────────────────────────────
+	// Run a single Joern query across all surface methods instead of one query
+	// per method. This discovers inter-procedural flows that cross multiple
+	// method frames (e.g. controller → service → DAO → executeQuery).
+	surfaceIDs := make([]string, len(surfaces))
+	for i, s := range surfaces {
+		surfaceIDs[i] = s.ID
+	}
+	lang := detectLangFromFile(surfaces)
+	pathsByMethodID := make(map[string][]cpg.TaintPath)
+	if e.graph != nil && len(surfaceIDs) > 0 {
+		allPaths, err := e.graph.ProjectWideTaintPaths(surfaceIDs, lang)
+		if err != nil {
+			slog.Warn("enrichment: ProjectWideTaintPaths failed; surfaces will have empty sink nodes",
+				"err", err, "surfaces", len(surfaceIDs))
+		} else {
+			for _, p := range allPaths {
+				key := p.Source.NodeID
+				pathsByMethodID[key] = append(pathsByMethodID[key], p)
+			}
+			slog.Info("enrichment: ProjectWideTaintPaths result", "total_paths", len(allPaths))
+		}
+
+		// Walk-up: attribute paths to their surface ancestor when the direct
+		// source method is not itself a surface (inter-procedural case).
+		if e.graph != nil && len(allPaths) > 0 {
+			surfaceIDSet := make(map[string]struct{}, len(surfaces))
+			for _, s := range surfaces {
+				surfaceIDSet[s.ID] = struct{}{}
+			}
+			for _, p := range allPaths {
+				sourceID := p.Source.NodeID
+				if sourceID == "" {
+					continue
+				}
+				if _, direct := surfaceIDSet[sourceID]; direct {
+					continue // already attributed directly
+				}
+				// BFS upward through callers to find the closest surface ancestor.
+				visited := map[string]bool{sourceID: true}
+				queue := []string{sourceID}
+				found := false
+				for depth := 0; depth < 5 && len(queue) > 0 && !found; depth++ {
+					var next []string
+					for _, id := range queue {
+						callers, cerr := e.graph.GetCallers(id)
+						if cerr != nil {
+							continue
+						}
+						for _, caller := range callers {
+							if visited[caller.ID] {
+								continue
+							}
+							visited[caller.ID] = true
+							if _, isSurface := surfaceIDSet[caller.ID]; isSurface {
+								pathsByMethodID[caller.ID] = append(pathsByMethodID[caller.ID], p)
+								found = true
+							}
+							next = append(next, caller.ID)
+						}
+					}
+					queue = next
+				}
+			}
+			slog.Info("enrichment: walk-up complete", "mapped_surfaces", len(pathsByMethodID))
+		}
+	}
+
 	limit := runtime.GOMAXPROCS(0) * 2
 	g, gctx := errgroup.WithContext(ctx)
 	g.SetLimit(limit)
@@ -193,9 +270,39 @@ func (e *Enricher) Enrich(ctx context.Context, surfaces []targeting.Surface, pro
 				}
 			}
 
+			// Fetch function source code for triage prompt context.
+			if e.graph != nil && s.File != "" {
+				relPath := s.File
+				if filepath.IsAbs(s.File) {
+					relPath, _ = filepath.Rel(projectRoot, s.File)
+				}
+				nodes, nerr := e.graph.QueryNodesByFile(relPath, cpg.NodeMethod)
+				if nerr == nil {
+					for _, n := range nodes {
+						if n.Name == s.FunctionName && n.Code != "" {
+							es.Code = n.Code
+							break
+						}
+					}
+				}
+			}
+
 			local := []EnrichedSurface{es}
 			ApplyCVEMatches(local, cvesByPkg)
 			es = local[0]
+
+			if paths, ok := pathsByMethodID[s.ID]; ok {
+				for _, p := range paths {
+					sinkLabel := p.Sink.Name
+					if sinkLabel == "" {
+						sinkLabel = string(p.Sink.Kind)
+					}
+					es.SinkNodes = append(es.SinkNodes, sinkLabel)
+					for _, n := range p.IntermediateNodes {
+						es.CallPath = append(es.CallPath, n.Name)
+					}
+				}
+			}
 
 			if flows, ferr := e.DetectIDORFlows(gctx, s); ferr == nil {
 				es.ResourceIDFlows = flows
@@ -231,6 +338,26 @@ func (e *Enricher) Enrich(ctx context.Context, surfaces []targeting.Surface, pro
 	if err := g.Wait(); err != nil {
 		return nil, err
 	}
+
+	var withCode, withSinkNodes, withCallPath int
+	for _, es := range enriched {
+		if es.Code != "" {
+			withCode++
+		}
+		if len(es.SinkNodes) > 0 {
+			withSinkNodes++
+		}
+		if len(es.CallPath) > 0 {
+			withCallPath++
+		}
+	}
+	slog.Info("enrichment: surface coverage",
+		"total", len(enriched),
+		"with_code", withCode,
+		"with_sink_nodes", withSinkNodes,
+		"with_call_path", withCallPath,
+	)
+
 	slog.Info("enrichment complete", slog.Int("enriched", len(enriched)), slog.Int("auto_flagged", autoFlagged))
 	return enriched, nil
 }
@@ -257,6 +384,27 @@ func (e *Enricher) DetectIDORFlows(_ context.Context, surface targeting.Surface)
 	}}
 	slog.Debug("enrichment: IDOR flows detected", slog.String("surface_id", surface.ID), slog.Int("flows", len(flows)))
 	return flows, nil
+}
+
+// detectLangFromFile detects the source language from the first surface's file
+// extension. Returns "java", "python", "go", "javascript", or empty string.
+func detectLangFromFile(surfaces []targeting.Surface) string {
+	if len(surfaces) == 0 {
+		return ""
+	}
+	ext := filepath.Ext(surfaces[0].File)
+	switch ext {
+	case ".java":
+		return "java"
+	case ".py":
+		return "python"
+	case ".go":
+		return "go"
+	case ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs":
+		return "javascript"
+	default:
+		return ""
+	}
 }
 
 func nodeIDs(nodes []cpg.Node) []string {

@@ -64,6 +64,7 @@ type Surface struct {
 	Kind            SurfaceKind
 	CallGraphDepth  int
 	IsIDORCandidate bool
+	IsSecondOrder   bool
 	CVSSScore       float64
 	HasCVEMatch     bool
 	ConfidenceScore float64
@@ -85,7 +86,8 @@ func (cg CallGraph) CallGraphDepth(id string) int {
 type Targeter struct {
 	graph     cpg.Graph
 	callGraph cpg.CallGraph
-	root      string // absolute path to project root; used by AnalyzeImports
+	fileClass map[string]FileClass // populated during Run()
+	root      string                // absolute path to project root; used by AnalyzeImports
 }
 
 // New returns a Targeter. root is the absolute path to the project root,
@@ -179,6 +181,7 @@ func (t *Targeter) Run(ctx context.Context) ([]Surface, error) {
 	if err != nil {
 		return nil, fmt.Errorf("targeting: import analysis: %w", err)
 	}
+	t.fileClass = fileClasses
 
 	// Phase 2: bulk-fetch call graph from Joern (one HTTP round-trip).
 	joernCG, err := t.graph.GetCallGraph()
@@ -280,6 +283,14 @@ func (t *Targeter) Run(ctx context.Context) ([]Surface, error) {
 		merged[s.ID] = s
 	}
 
+	// Phase 7: second-order source detection.
+	secondOrderSurfaces := DetectSecondOrder(joernCG, methods, fileClasses, forwardReachable, backwardReachable)
+	for _, s := range secondOrderSurfaces {
+		if _, exists := merged[s.ID]; !exists {
+			merged[s.ID] = s
+		}
+	}
+
 	out := make([]Surface, 0, len(merged))
 	for _, s := range merged {
 		out = append(out, s)
@@ -343,7 +354,7 @@ func AutoFlagCVESurfaces(surfaces []Surface, cal config.Config) (flagged []Surfa
 func cvssConfidence(cvss float64, cal config.Config) float64 {
 	if cal.CVSSPlattSlope != 0 {
 		// ponytail: Platt sigmoid from calibration; replaces band bucketing once labeled data is available
-		p := 1.0 / (1.0 + math.Exp(-(cal.CVSSPlattSlope*cvss+cal.CVSSPlattIntercept)))
+		p := 1.0 / (1.0 + math.Exp(-(cal.CVSSPlattSlope*cvss + cal.CVSSPlattIntercept)))
 		if cvss < config.C.CVSSMedium {
 			return 0
 		}

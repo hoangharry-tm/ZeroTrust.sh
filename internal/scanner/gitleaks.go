@@ -18,12 +18,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"os/exec"
 
 	"github.com/hoangharry-tm/zerotrust/internal/detector"
 	"github.com/hoangharry-tm/zerotrust/internal/finding"
 )
+
+var _ Scanner = (*GitleaksScanner)(nil)
 
 // GitleaksScanner wraps the gitleaks binary for hardcoded-secret detection.
 type GitleaksScanner struct {
@@ -65,6 +69,10 @@ func (g *GitleaksScanner) Scan(ctx context.Context, target string) ([]finding.Fi
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
+		if errors.Is(err, exec.ErrNotFound) {
+			slog.Warn("gitleaks binary not found, skipping", "binary", g.binaryPath)
+			return nil, nil
+		}
 		return nil, fmt.Errorf("gitleaks: %w (stderr: %s)", err, stderr.String())
 	}
 	if stdout.Len() == 0 {

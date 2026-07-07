@@ -41,8 +41,9 @@ type BoundaryKind uint8
 const (
 	BoundaryNone   BoundaryKind = 0
 	BoundarySource BoundaryKind = 1 << iota // imports HTTP / external-input packages
-	BoundarySink                             // imports DB / exec / filesystem packages
-	BoundaryAuth                             // imports auth / session / JWT packages
+	BoundarySink                            // imports DB / exec / filesystem packages
+	BoundaryAuth                            // imports auth / session / JWT packages
+	BoundaryStorage                         // imports DB/cache/file-write packages (persistence)
 )
 
 // FileClass holds the boundary classification for one source file.
@@ -142,6 +143,34 @@ var authPkgPrefixes = map[string][]string{
 	},
 }
 
+// storagePkgPrefixes lists import substrings whose presence marks a file as
+// performing persistence writes (DB, cache, file writes).
+var storagePkgPrefixes = map[string][]string{
+	".java": {
+		"org.springframework.data",
+		"org.hibernate",
+		"javax.persistence",
+		"jakarta.persistence",
+		"redis.clients",
+		"com.google.cloud.storage",
+		"software.amazon.awssdk.services.s3",
+	},
+	".py": {
+		"sqlalchemy", "django.db",
+		"pymongo", "motor",
+		"redis", "aioredis",
+		"boto3", "botocore",
+	},
+	".go": {
+		`"database/sql"`,
+		`"go.mongodb.org/mongo-driver"`,
+		`"github.com/go-redis/redis"`,
+		`"gorm.io/gorm"`,
+		`"github.com/jackc/pgx"`,
+		`"github.com/lib/pq"`,
+	},
+}
+
 // skipDirs are directory name substrings that are always excluded from the walk.
 var skipDirs = []string{
 	"vendor", "node_modules", ".git",
@@ -157,7 +186,8 @@ func classifyFile(path string) BoundaryKind {
 	srcs := sourcePkgPrefixes[ext]
 	sinks := sinkPkgPrefixes[ext]
 	auths := authPkgPrefixes[ext]
-	if len(srcs)+len(sinks)+len(auths) == 0 {
+	storage := storagePkgPrefixes[ext]
+	if len(srcs)+len(sinks)+len(auths)+len(storage) == 0 {
 		return BoundaryNone
 	}
 
@@ -169,7 +199,7 @@ func classifyFile(path string) BoundaryKind {
 
 	const maxImportLines = 250 // imports are always near the top
 	var bound BoundaryKind
-	all := BoundarySource | BoundarySink | BoundaryAuth
+	all := BoundarySource | BoundarySink | BoundaryAuth | BoundaryStorage
 
 	scanner := bufio.NewScanner(f)
 	n := 0
@@ -189,6 +219,11 @@ func classifyFile(path string) BoundaryKind {
 		for _, p := range auths {
 			if strings.Contains(line, p) {
 				bound |= BoundaryAuth
+			}
+		}
+		for _, p := range storage {
+			if strings.Contains(line, p) {
+				bound |= BoundaryStorage
 			}
 		}
 		if bound == all {

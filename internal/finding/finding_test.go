@@ -207,3 +207,25 @@ func TestComputeID_KnownHash(t *testing.T) {
 		t.Errorf("ComputeID formula changed:\n got  %s\n want %s", got, want)
 	}
 }
+
+// ─── SeverityLabel.String ────────────────────────────────────────────────────
+
+func TestSeverityLabelString(t *testing.T) {
+	tests := []struct {
+		label SeverityLabel
+		want  string
+	}{
+		{SeverityBlock, "BLOCK"},
+		{SeverityHigh, "HIGH"},
+		{SeverityMedium, "MEDIUM"},
+		{SeverityLow, "LOW"},
+		{SeveritySuppressed, "SUPPRESSED"},
+		{SeverityLabel(99), "UNKNOWN"},
+	}
+	for _, tc := range tests {
+		got := tc.label.String()
+		if got != tc.want {
+			t.Errorf("SeverityLabel(%d).String() = %q, want %q", int(tc.label), got, tc.want)
+		}
+	}
+}

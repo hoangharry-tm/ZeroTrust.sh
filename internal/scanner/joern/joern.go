@@ -78,7 +78,7 @@ import (
 	"time"
 
 	"github.com/hoangharry-tm/zerotrust/internal/config"
-	"github.com/hoangharry-tm/zerotrust/internal/tuning"
+	
 	"github.com/hoangharry-tm/zerotrust/pkg/cpg"
 	"github.com/hoangharry-tm/zerotrust/pkg/sqlite"
 )
@@ -88,11 +88,11 @@ const (
 	defaultServerURL  = "http://127.0.0.1:8080"
 	defaultBinaryPath = "joern" // Homebrew installs as "joern", not "joern-server"
 	defaultHost       = "127.0.0.1"
-	defaultPingInterval   = tuning.JoernPingInterval
-	defaultPingTimeout    = tuning.JoernPingTimeout
-	defaultStopTimeout    = tuning.JoernStopTimeout
-	defaultQueryTimeout   = tuning.JoernQueryTimeout
-	defaultBuildTimeout   = tuning.JoernBuildTimeout
+	defaultPingInterval   = config.JoernPingInterval
+	defaultPingTimeout    = config.JoernPingTimeout
+	defaultStopTimeout    = config.JoernStopTimeout
+	defaultQueryTimeout   = config.JoernQueryTimeout
+	defaultBuildTimeout   = config.JoernBuildTimeout
 )
 
 // Option configures a Client.

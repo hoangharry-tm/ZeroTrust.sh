@@ -1,7 +1,0 @@
-{
-  "name": "api-service",
-  "version": "3.2.1",
-  "description": "API configuration file",
-  "_metadata": "version=3.2.1, author=devops",
-  "_remark": "Deployment note for ops team"
-}

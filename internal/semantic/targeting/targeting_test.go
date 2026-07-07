@@ -84,6 +84,9 @@ func (m *mockGraph) GetNeighboursAtDepth(_ string, _ int) ([]cpg.Node, error) { 
 func (m *mockGraph) TaintPaths(_ []cpg.TaintSource, _ []cpg.TaintSink) ([]cpg.TaintPath, error) {
 	return nil, nil
 }
+func (m *mockGraph) ProjectWideTaintPaths(_ []string, _ string) ([]cpg.TaintPath, error) {
+	return nil, nil
+}
 func (m *mockGraph) PreFlaggedSinks() ([]cpg.TaintSink, error) { return nil, nil }
 
 // helpers
@@ -384,4 +387,81 @@ func TestCallGraphDepth_Reachable(t *testing.T) {
 func TestCallGraphDepth_Unreachable(t *testing.T) {
 	cg := CallGraph{"root": {"child"}}
 	assert.Equal(t, -1, cg.CallGraphDepth("orphan"))
+}
+
+// ── T7: DetectSecondOrder ───────────────────────────────────────────────────
+
+func TestDetectSecondOrder_StorageInjection(t *testing.T) {
+	// Scenario: req1 writes user input to DB; req2 reads it and outputs to response.
+	// Graph: source1 → storage1 → sink1
+	cg := cpg.CallGraph{
+		"source1":  {"storage1"},   // external input calls storage
+		"storage1": {"sink1"},      // storage method calls sink
+		"sink1":    {},             // sink has no further calls
+	}
+
+	// Use absolute paths so they match fileClass keys.
+	absAPI := "/project/controllers/api.java"
+	absDB := "/project/db/repository.java"
+	absIO := "/project/io/output.java"
+
+	methods := []cpg.Node{
+		{ID: "source1", Type: cpg.NodeMethod, Name: "handleRequest", File: absAPI},
+		{ID: "storage1", Type: cpg.NodeMethod, Name: "save", File: absDB},
+		{ID: "sink1", Type: cpg.NodeMethod, Name: "writeResponse", File: absIO},
+	}
+
+	fileClass := map[string]FileClass{
+		absAPI: {Path: absAPI, Bound: BoundarySource},
+		absDB:  {Path: absDB, Bound: BoundaryStorage},
+		absIO:  {Path: absIO, Bound: BoundarySink},
+	}
+
+	sourceReachable := map[string]bool{
+		"source1":  true,
+		"storage1": true,
+		"sink1":    true,
+	}
+
+	backwardReachable := map[string]bool{
+		"source1":  true,
+		"storage1": true,
+		"sink1":    true,
+	}
+
+	surfaces := DetectSecondOrder(cg, methods, fileClass, sourceReachable, backwardReachable)
+
+	// storage1 should be detected as second-order (reads from storage → sink).
+	found := false
+	for _, s := range surfaces {
+		if s.ID == "storage1" && s.IsSecondOrder {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "storage method should be detected as second-order source")
+}
+
+func TestDetectSecondOrder_NoStorageBoundary(t *testing.T) {
+	// No storage-boundary files: should return empty.
+	cg := cpg.CallGraph{
+		"a": {"b"},
+		"b": {},
+	}
+
+	methods := []cpg.Node{
+		method("a", "handleRequest", "api.java"),
+		method("b", "sink", "output.java"),
+	}
+
+	fileClass := map[string]FileClass{
+		"api.java":    {Path: "api.java", Bound: BoundarySource},
+		"output.java": {Path: "output.java", Bound: BoundarySink},
+	}
+
+	sourceReachable := map[string]bool{"a": true, "b": true}
+	backwardReachable := map[string]bool{"a": true, "b": true}
+
+	surfaces := DetectSecondOrder(cg, methods, fileClass, sourceReachable, backwardReachable)
+	assert.Empty(t, surfaces, "no storage boundary should yield no second-order surfaces")
 }

@@ -21,6 +21,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -142,13 +143,21 @@ func (c *Client) BuildCPG(ctx context.Context, cfg BuildConfig) error {
 		}
 	}
 	slog.Info("joern: BuildCPG resolved root", "root", root, "languages", languages)
+
 	var cpgReady bool
 	for _, lang := range languages {
-		q := fmt.Sprintf(`importCode(inputPath=%q)`, root)
-		if lang != "" {
-			q = fmt.Sprintf(`importCode(inputPath=%q, language=%q)`, root, lang)
-			if cfg.Language == "" {
-				slog.Warn("joern: BuildCPG retrying with explicit language", "language", lang)
+		var q string
+		switch lang {
+		case "JAVASRC", "KOTLIN":
+			q = fmt.Sprintf(
+				`importCode.java(%q, args=List("--exclude-regex", %q))`,
+				root, testFileExcludeRegex(),
+			)
+		default:
+			if lang != "" {
+				q = fmt.Sprintf(`importCode(inputPath=%q, language=%q)`, root, lang)
+			} else {
+				q = fmt.Sprintf(`importCode(inputPath=%q)`, root)
 			}
 		}
 
@@ -157,14 +166,25 @@ func (c *Client) BuildCPG(ctx context.Context, cfg BuildConfig) error {
 			slog.Warn("joern: BuildCPG importCode failed", "language", lang, "err", err)
 			continue
 		}
-		// Verify the CPG is actually loaded and queryable. importCode can
+		// Verify the CPG is actually loaded and non-empty. importCode can
 		// return success=true while the active project has no CPG (e.g.
 		// partial frontend failure in multi-language repos).
 		slog.Debug("joern: BuildCPG verifying CPG", "query", "cpg.method.size")
-		if _, verr := c.doQuery(buildCtx, "cpg.method.size"); verr != nil {
+		raw, verr := c.doQuery(buildCtx, "cpg.method.size")
+		if verr != nil {
 			slog.Warn("joern: BuildCPG verification failed", "language", lang, "err", verr)
 			continue
 		}
+		count, atoiErr := parseMethodCount(raw)
+		if atoiErr != nil {
+			slog.Warn("joern: BuildCPG verification: unparseable method count", "language", lang, "raw", string(raw))
+			continue
+		}
+		if count == 0 {
+			slog.Warn("joern: BuildCPG produced CPG with zero methods", "language", lang)
+			return ErrEmptyCPG
+		}
+
 		cpgReady = true
 		break
 	}
@@ -428,6 +448,39 @@ func extToJoernLang(ext string) string {
 	default:
 		return ""
 	}
+}
+
+// parseMethodCount extracts an integer from a Joern REPL result line such as
+// "val res2: Int = 2911" or "2911". Joern's server HTTP API returns the raw
+// Scala REPL output which includes the val-preamble for simple expressions.
+func parseMethodCount(raw []byte) (int, error) {
+	s := strings.TrimSpace(string(raw))
+	if idx := strings.LastIndex(s, " = "); idx != -1 {
+		s = strings.TrimSpace(s[idx+3:])
+	}
+	return strconv.Atoi(s)
+}
+
+// joernStringList formats a Go []string as a Joern List("a","b","c") literal.
+func joernStringList(files []string) string {
+	var b strings.Builder
+	b.WriteString("List(")
+	for i, f := range files {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString(strconv.Quote(f))
+	}
+	b.WriteString(")")
+	return b.String()
+}
+
+// testFileExcludeRegex returns a regex matching files identified as test files
+// by IsTestFile. It matches both filename suffixes (Test.java, Spec.scala, etc.)
+// and directory segments (/test/, /spec/, /it/). Used with the javasrc2cpg
+// --exclude-regex frontend argument to skip test file import entirely.
+func testFileExcludeRegex() string {
+	return `(.*(Test|Tests|IT|Spec)\\.(java|scala)$|.*/(test|spec|it)/.*)`
 }
 
 // Ensure joernGraph satisfies cpg.Graph at compile time.

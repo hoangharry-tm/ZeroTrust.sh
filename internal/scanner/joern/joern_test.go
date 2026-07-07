@@ -240,6 +240,9 @@ func TestBuildCPG_SendsImportCodeQuery(t *testing.T) {
 	var queries []string
 	srv := mockServer(t, func(q string) (string, bool) {
 		queries = append(queries, q)
+		if strings.Contains(q, "cpg.method.size") {
+			return "42", true
+		}
 		return `""`, true
 	})
 	c := newTestClient(t, srv)
@@ -261,7 +264,13 @@ func TestBuildCPG_SendsImportCodeQuery(t *testing.T) {
 
 func TestBuildCPG_WithLanguageOverride(t *testing.T) {
 	var queries []string
-	srv := mockServer(t, func(q string) (string, bool) { queries = append(queries, q); return `""`, true })
+	srv := mockServer(t, func(q string) (string, bool) {
+		queries = append(queries, q)
+		if strings.Contains(q, "cpg.method.size") {
+			return "1", true
+		}
+		return `""`, true
+	})
 	c := newTestClient(t, srv)
 	_ = c.BuildCPG(context.Background(), BuildConfig{
 		Paths:    []string{"/project/src"},
@@ -423,7 +432,14 @@ func TestQueryNodes_Method(t *testing.T) {
 		{ID: "1", Name: "getUser", File: "MainController.java", Line: 34},
 		{ID: "2", Name: "search", File: "MainController.java", Line: 40},
 	}
-	srv := mockServer(t, func(_ string) (string, bool) { return jsonArray(t, nodes), true })
+	var calls int
+	srv := mockServer(t, func(_ string) (string, bool) {
+		calls++
+		if calls > 1 {
+			return "[]", true
+		}
+		return jsonArray(t, nodes), true
+	})
 	c := newTestClient(t, srv)
 	g := c.Graph()
 
@@ -509,7 +525,14 @@ func TestGetCallGraph_BuildsMap(t *testing.T) {
 		{From: "fn:main", To: "fn:auth", Type: "CALL"},
 		{From: "fn:helper", To: "fn:db", Type: "CALL"},
 	}
-	srv := mockServer(t, func(_ string) (string, bool) { return jsonArray(t, edges), true })
+	var calls int
+	srv := mockServer(t, func(_ string) (string, bool) {
+		calls++
+		if calls > 1 {
+			return "[]", true
+		}
+		return jsonArray(t, edges), true
+	})
 	c := newTestClient(t, srv)
 	g := c.Graph()
 

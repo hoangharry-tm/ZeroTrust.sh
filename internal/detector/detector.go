@@ -68,22 +68,22 @@ var extToLang = map[string]string{
 
 // knownManifests lists files whose presence signals a package ecosystem.
 var knownManifests = map[string]struct{}{
-	"go.mod":           {},
-	"go.sum":           {},
-	"cargo.toml":       {},
-	"cargo.lock":       {},
-	"package.json":     {},
+	"go.mod":            {},
+	"go.sum":            {},
+	"cargo.toml":        {},
+	"cargo.lock":        {},
+	"package.json":      {},
 	"package-lock.json": {},
-	"yarn.lock":        {},
-	"requirements.txt": {},
-	"pipfile.lock":     {},
-	"poetry.lock":      {},
-	"gemfile":          {},
-	"gemfile.lock":     {},
-	"mix.exs":          {},
-	"mix.lock":         {},
-	"pom.xml":          {},
-	"build.gradle":     {},
+	"yarn.lock":         {},
+	"requirements.txt":  {},
+	"pipfile.lock":      {},
+	"poetry.lock":       {},
+	"gemfile":           {},
+	"gemfile.lock":      {},
+	"mix.exs":           {},
+	"mix.lock":          {},
+	"pom.xml":           {},
+	"build.gradle":      {},
 }
 
 // Detect walks target and returns a StackProfile.

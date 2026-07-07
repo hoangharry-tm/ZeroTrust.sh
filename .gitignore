@@ -48,3 +48,6 @@ tests/corpus/*
 pipeline/notebooks/*.ipynb
 *.log
 /zerotrust
+
+# Dot files
+.*

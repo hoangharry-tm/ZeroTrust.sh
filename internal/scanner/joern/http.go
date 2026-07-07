@@ -25,7 +25,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/hoangharry-tm/zerotrust/internal/tuning"
+	"github.com/hoangharry-tm/zerotrust/internal/config"
 )
 
 // queryRequest is the JSON body sent to POST /query.
@@ -52,7 +52,7 @@ type queryResultResponse struct {
 }
 
 // resultPollInterval is how long to wait between GET /result/{uuid} retries.
-const resultPollInterval = tuning.JoernResultPollInterval
+const resultPollInterval = config.JoernResultPollInterval
 
 // doQuery sends a Joern DSL expression to POST /query, then polls
 // GET /result/{uuid} until the result is ready. Returns the raw stdout bytes
@@ -149,7 +149,7 @@ func (c *Client) fetchResult(ctx context.Context, uuid string) ([]byte, error) {
 		// Idle-freeze detection: if we've been receiving only 202/204 for
 		// longer than JoernIdleTimeout, Joern is likely frozen (GC deadlock,
 		// OOM without crash). Surface ErrBuildTimeout so callers can decide.
-		if time.Since(idleStart) > tuning.JoernIdleTimeout {
+		if time.Since(idleStart) > config.JoernIdleTimeout {
 			slog.Warn("joern: fetchResult idle timeout — Joern appears frozen",
 				slog.Duration("idle", time.Since(idleStart)),
 				slog.Duration("elapsed", time.Since(start)),

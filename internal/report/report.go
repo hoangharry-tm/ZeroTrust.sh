@@ -65,7 +65,7 @@ type templateData struct {
 func (d templateData) CountBySeverity(sev string) int {
 	n := 0
 	for _, f := range d.Findings {
-		if string(f.SeverityLabel) == sev {
+		if f.SeverityLabel.String() == sev {
 			n++
 		}
 	}

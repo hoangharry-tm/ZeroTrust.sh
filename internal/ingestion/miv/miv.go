@@ -48,7 +48,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/hoangharry-tm/zerotrust/internal/tuning"
+	"github.com/hoangharry-tm/zerotrust/internal/config"
 )
 
 //go:embed data/registry.json
@@ -136,7 +136,7 @@ func New(registryPath, publicKeyPath string, logger *slog.Logger) *Verifier {
 		registryPath:  registryPath,
 		publicKeyPath: publicKeyPath,
 		rekorURL:      "https://rekor.sigstore.dev",
-		httpClient:    &http.Client{Timeout: tuning.RekorHTTPTimeout},
+		httpClient:    &http.Client{Timeout: config.RekorHTTPTimeout},
 		logger:        logger,
 	}
 }
