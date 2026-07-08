@@ -39,15 +39,15 @@ var Rulebook = map[string]Invariant{
 	"CWE-78": {
 		CWE:         "CWE-78",
 		Name:        "OS Command Injection",
-		SinkAnchors: []string{"os.exec", "exec.Command", "Runtime.exec", "subprocess.Popen", "ProcessBuilder.start", "exec", "system"},
+		SinkAnchors: []string{"os.exec", "exec.Command", "Runtime.exec", "subprocess.Popen", "ProcessBuilder.start"},
 		SafeNodes:   []string{"shellEscape", "commandAllowlist", "argSanitize"},
 		Reference:   "OWASP Top 10 2021: A03 Injection; CWE-78 specification",
 	},
 	"CWE-22": {
 		CWE:         "CWE-22",
 		Name:        "Path Traversal",
-		SinkAnchors: []string{"file.open", "os.OpenFile", "FileWriter", "fopen", "path.Join", "filepath.Join", "readFile", "writeFile"},
-		SafeNodes:   []string{"pathClean", "canonicalizePath", "pathValidate", "baseNameOnly"},
+		SinkAnchors: []string{"FileWriter", "FileOutputStream", "FileInputStream", "FileReader", "new File", "Paths.get", "Files.copy", "Files.write", "Files.readAllBytes", "Files.newInputStream", "ZipEntry", "ZipInputStream", "getCanonicalPath", "getAbsolutePath"},
+		SafeNodes:   []string{"pathClean", "canonicalizePath", "pathValidate", "baseNameOnly", "normalize", "toAbsolutePath", "startsWith"},
 		Reference:   "OWASP Top 10 2021: A01 Broken Access Control; CWE-22 specification",
 	},
 	"CWE-79": {

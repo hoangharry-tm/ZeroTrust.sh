@@ -19,9 +19,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync/atomic"
+	"time"
 )
 
 const ollamaDefaultBaseURL = "http://localhost:11434"
@@ -53,11 +55,13 @@ type generateRequest struct {
 	Prompt  string   `json:"prompt"`
 	Stream  bool     `json:"stream"`
 	Options *Options `json:"options,omitempty"`
+	Think   *bool    `json:"think,omitempty"`
 }
 
 type generateResponse struct {
-	Response string `json:"response"`
-	Done     bool   `json:"done"`
+	Response   string `json:"response"`
+	Done       bool   `json:"done"`
+	DoneReason string `json:"done_reason"`
 }
 
 // chatRequest is the Ollama /api/chat request body.
@@ -66,11 +70,13 @@ type chatRequest struct {
 	Messages []Message `json:"messages"`
 	Stream   bool      `json:"stream"`
 	Options  *Options  `json:"options,omitempty"`
+	Think    *bool     `json:"think,omitempty"`
 }
 
 type chatResponse struct {
-	Message Message `json:"message"`
-	Done    bool    `json:"done"`
+	Message    Message `json:"message"`
+	Done       bool    `json:"done"`
+	DoneReason string  `json:"done_reason"`
 }
 
 // SetMIVBlocked marks this client as blocked by the Model Integrity Verifier.
@@ -83,12 +89,16 @@ func (c *ollamaClient) Generate(ctx context.Context, prompt string, opts *Option
 	if c.mivBlock.Load() {
 		return "", ErrModelBlocked
 	}
-	body, err := json.Marshal(generateRequest{
+	gReq := generateRequest{
 		Model:   c.model,
 		Prompt:  prompt,
 		Stream:  false,
 		Options: opts,
-	})
+	}
+	if opts != nil {
+		gReq.Think = opts.Think
+	}
+	body, err := json.Marshal(gReq)
 	if err != nil {
 		return "", err
 	}
@@ -99,7 +109,20 @@ func (c *ollamaClient) Generate(ctx context.Context, prompt string, opts *Option
 	}
 	req.Header.Set("Content-Type", "application/json")
 
+	numPredict := 0
+	if opts != nil {
+		numPredict = opts.NumPredict
+	}
+	start := time.Now()
+	slog.Debug("ollama: generate request",
+		"component", "ollama",
+		"model", c.model,
+		"prompt_len", len(prompt),
+		"num_predict", numPredict,
+	)
+
 	resp, err := c.httpClient.Do(req)
+	elapsed := time.Since(start)
 	if err != nil {
 		return "", fmt.Errorf("ollama generate: %w", err)
 	}
@@ -113,6 +136,16 @@ func (c *ollamaClient) Generate(ctx context.Context, prompt string, opts *Option
 	if err := json.NewDecoder(resp.Body).Decode(&gr); err != nil {
 		return "", fmt.Errorf("ollama decode: %w", err)
 	}
+
+	slog.Debug("ollama: generate response",
+		"component", "ollama",
+		"model", c.model,
+		"status", resp.StatusCode,
+		"eval_count", 0,
+		"done_reason", gr.DoneReason,
+		"resp_len", len(gr.Response),
+		"elapsed_ms", elapsed.Milliseconds(),
+	)
 	return gr.Response, nil
 }
 
@@ -121,12 +154,16 @@ func (c *ollamaClient) Chat(ctx context.Context, messages []Message, opts *Optio
 	if c.mivBlock.Load() {
 		return Message{}, ErrModelBlocked
 	}
-	body, err := json.Marshal(chatRequest{
+	cReq := chatRequest{
 		Model:    c.model,
 		Messages: messages,
 		Stream:   false,
 		Options:  opts,
-	})
+	}
+	if opts != nil {
+		cReq.Think = opts.Think
+	}
+	body, err := json.Marshal(cReq)
 	if err != nil {
 		return Message{}, err
 	}
@@ -137,7 +174,20 @@ func (c *ollamaClient) Chat(ctx context.Context, messages []Message, opts *Optio
 	}
 	req.Header.Set("Content-Type", "application/json")
 
+	totalContentLen := 0
+	for _, m := range messages {
+		totalContentLen += len(m.Content)
+	}
+	start := time.Now()
+	slog.Debug("ollama: chat request",
+		"component", "ollama",
+		"model", c.model,
+		"msg_count", len(messages),
+		"content_len", totalContentLen,
+	)
+
 	resp, err := c.httpClient.Do(req)
+	elapsed := time.Since(start)
 	if err != nil {
 		return Message{}, fmt.Errorf("ollama chat: %w", err)
 	}
@@ -151,6 +201,15 @@ func (c *ollamaClient) Chat(ctx context.Context, messages []Message, opts *Optio
 	if err := json.NewDecoder(resp.Body).Decode(&cr); err != nil {
 		return Message{}, fmt.Errorf("ollama chat decode: %w", err)
 	}
+
+	slog.Debug("ollama: chat response",
+		"component", "ollama",
+		"model", c.model,
+		"status", resp.StatusCode,
+		"done_reason", cr.DoneReason,
+		"resp_len", len(cr.Message.Content),
+		"elapsed_ms", elapsed.Milliseconds(),
+	)
 	return cr.Message, nil
 }
 

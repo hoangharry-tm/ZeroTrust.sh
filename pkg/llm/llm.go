@@ -57,6 +57,9 @@ type Options struct {
 	TopP float64 `json:"top_p,omitempty"`
 	// Stop lists strings that halt generation when encountered.
 	Stop []string `json:"stop,omitempty"`
+	// Think disables chain-of-thought reasoning for thinking models (e.g. qwen3).
+	// nil = model default, boolPtr(false) = disable CoT.
+	Think *bool `json:"think,omitempty"`
 }
 
 // Role identifies the speaker in a chat turn.

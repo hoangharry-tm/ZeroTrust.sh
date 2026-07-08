@@ -39,8 +39,10 @@ package enrichment
 import (
 	"context"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -110,6 +112,8 @@ type EnrichedSurface struct {
 	// propagation path from source to sink. Empty when the CPG taint
 	// tracker produced no path.
 	CallPath []string
+	// ContractCWE is the CWE matched by the DCC stage, if any. Empty when no contract matched.
+	ContractCWE string
 }
 
 // Enricher adds CVE, call graph, and IDOR data to a surface list.
@@ -211,7 +215,11 @@ func (e *Enricher) Enrich(ctx context.Context, surfaces []targeting.Surface, pro
 				visited := map[string]bool{sourceID: true}
 				queue := []string{sourceID}
 				found := false
-				for depth := 0; depth < 8 && len(queue) > 0 && !found; depth++ {
+				// ponytail: depth=3 keeps attribution tight; depth=8 caused false
+			// attribution of SQL taint to structurally unrelated functions
+			// (crypto utilities, config handlers), poisoning the DCC with
+			// uniform CWE-89 violations.
+			for depth := 0; depth < 3 && len(queue) > 0 && !found; depth++ {
 					var next []string
 					for _, id := range queue {
 						callers, cerr := e.graph.GetCallers(id)
@@ -230,6 +238,11 @@ func (e *Enricher) Enrich(ctx context.Context, surfaces []targeting.Surface, pro
 							next = append(next, caller.ID)
 						}
 					}
+					slog.Debug("enrichment: bfs_depth",
+						"depth", depth,
+						"queue_size", len(queue),
+						"found", found,
+					)
 					queue = next
 				}
 			}
@@ -252,6 +265,13 @@ func (e *Enricher) Enrich(ctx context.Context, surfaces []targeting.Surface, pro
 	for _, s := range surfaces {
 		// s := s
 		g.Go(func() error {
+			slog.Debug("enrichment: input",
+				"function", s.FunctionName,
+				"file", s.File,
+				"kind", s.Kind,
+				"surface_id", s.ID,
+			)
+
 			es := EnrichedSurface{
 				Surface:  s,
 				Language: finding.LangFromPath(s.File),
@@ -280,7 +300,36 @@ func (e *Enricher) Enrich(ctx context.Context, surfaces []targeting.Surface, pro
 				if nerr == nil {
 					for _, n := range nodes {
 						if n.Name == s.FunctionName && n.Code != "" {
-							es.Code = n.Code
+							codePreview := n.Code
+							if len(codePreview) > 100 {
+								codePreview = codePreview[:100]
+							}
+							slog.Debug("enrichment: cpg_node_match",
+								"surface_id", s.ID,
+								"node_name", n.Name,
+								"node_code_preview", codePreview,
+							)
+							// n.Code is the Joern method signature only — try to read
+							// the actual function body from the source file instead.
+							absPath := s.File
+							if !filepath.IsAbs(absPath) {
+								absPath = filepath.Join(projectRoot, absPath)
+							}
+							if body := readFunctionBody(absPath, n.Line); body != "" {
+								slog.Debug("enrichment: read_function_body",
+									"surface_id", s.ID,
+									"success", true,
+									"chars", len(body),
+								)
+								es.Code = body
+							} else {
+								slog.Debug("enrichment: read_function_body",
+									"surface_id", s.ID,
+									"success", false,
+									"chars", 0,
+								)
+								es.Code = n.Code
+							}
 							break
 						}
 					}
@@ -307,6 +356,19 @@ func (e *Enricher) Enrich(ctx context.Context, surfaces []targeting.Surface, pro
 			if flows, ferr := e.DetectIDORFlows(gctx, s); ferr == nil {
 				es.ResourceIDFlows = flows
 			}
+
+			slog.Debug("enrichment: sink_nodes",
+				"surface_id", s.ID,
+				"sink_nodes", es.SinkNodes,
+			)
+			slog.Debug("enrichment: output",
+				"surface_id", s.ID,
+				"function", s.FunctionName,
+				"file", s.File,
+				"code_len", len(es.Code),
+				"sink_node_count", len(es.SinkNodes),
+				"call_path_len", len(es.CallPath),
+			)
 
 			mu.Lock()
 			done++
@@ -413,4 +475,39 @@ func nodeIDs(nodes []cpg.Node) []string {
 		ids[i] = n.ID
 	}
 	return ids
+}
+
+// readFunctionBody reads the source file at absPath and extracts the function
+// body starting at startLine (1-indexed). It tracks brace depth to find the
+// closing brace and returns up to 3000 chars. Returns "" on any read error.
+func readFunctionBody(absPath string, startLine int) string {
+	data, err := os.ReadFile(absPath)
+	if err != nil {
+		return ""
+	}
+	lines := strings.Split(string(data), "\n")
+	if startLine <= 0 || startLine > len(lines) {
+		return ""
+	}
+	// Walk from startLine-1 (0-indexed) collecting lines until brace depth returns to 0.
+	depth := 0
+	started := false
+	var out strings.Builder
+	for i := startLine - 1; i < len(lines) && out.Len() < 3000; i++ {
+		line := lines[i]
+		out.WriteString(line)
+		out.WriteByte('\n')
+		for _, ch := range line {
+			if ch == '{' {
+				depth++
+				started = true
+			} else if ch == '}' {
+				depth--
+			}
+		}
+		if started && depth <= 0 {
+			break
+		}
+	}
+	return strings.TrimSpace(out.String())
 }

@@ -42,6 +42,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -61,10 +62,10 @@ import (
 	"github.com/hoangharry-tm/zerotrust/internal/scanner"
 	"github.com/hoangharry-tm/zerotrust/internal/scanner/joern"
 	"github.com/hoangharry-tm/zerotrust/internal/scanner/opengrep"
+	analysis "github.com/hoangharry-tm/zerotrust/internal/semantic/analysis"
 	"github.com/hoangharry-tm/zerotrust/internal/semantic/contracts"
 	"github.com/hoangharry-tm/zerotrust/internal/semantic/crypto"
 	"github.com/hoangharry-tm/zerotrust/internal/semantic/enrichment"
-	analysis "github.com/hoangharry-tm/zerotrust/internal/semantic/analysis"
 	"github.com/hoangharry-tm/zerotrust/internal/semantic/targeting"
 	"github.com/hoangharry-tm/zerotrust/internal/semantic/triage"
 	"github.com/hoangharry-tm/zerotrust/pkg/sqlite"
@@ -90,8 +91,8 @@ type Pipeline struct {
 	orch *orchestrator.Engine
 
 	// Path B
-	target  *targeting.Targeter
-	enrich  *enrichment.Enricher
+	target        *targeting.Targeter
+	enrich        *enrichment.Enricher
 	checker       *contracts.Checker
 	triager       *triage.Triager
 	scan          *analysis.Scanner
@@ -234,6 +235,7 @@ func New(ctx context.Context, cfg Config) (*Pipeline, error) {
 		Provider: llm.ProviderOllama,
 		BaseURL:  cfg.OllamaURL,
 		Model:    cfg.ModelName,
+		Timeout:  600 * time.Second, // ponytail: 8192 num_predict for B5 needs up to ~480s; 600s gives margin
 	})
 	if err != nil {
 		return nil, fmt.Errorf("llm: %w", err)
@@ -241,7 +243,7 @@ func New(ctx context.Context, cfg Config) (*Pipeline, error) {
 
 	// Path A
 	og := opengrep.NewMulti(scanner.BinarySpec{Name: "opengrep"}, logger).
-		WithExclude(".github", "*/src/test/*", "*/src/it/*", "*/test/*", "*/tests/*")
+		WithExclude(".github", "test", "tests", "it")
 	orch := orchestrator.New(
 		scanner.NewGitleaks(scanner.BinarySpec{Name: "gitleaks"}),
 		scanner.NewOSV(scanner.BinarySpec{Name: "osv-scanner"}),
@@ -271,16 +273,16 @@ func New(ctx context.Context, cfg Config) (*Pipeline, error) {
 	rg := report.New(cfg.ReportPath)
 
 	return &Pipeline{
-		cfg:      cfg,
-		logger:   logger,
-		logFile:  logFile,
-		runID:    runID,
-		db:       db,
-		ingester: ingester,
-		provider: llmProvider,
-		opengrep: og,
-		joern:    jc,
-		orch:     orch,
+		cfg:           cfg,
+		logger:        logger,
+		logFile:       logFile,
+		runID:         runID,
+		db:            db,
+		ingester:      ingester,
+		provider:      llmProvider,
+		opengrep:      og,
+		joern:         jc,
+		orch:          orch,
 		target:        tgt,
 		enrich:        enr,
 		checker:       cc,
@@ -288,7 +290,7 @@ func New(ctx context.Context, cfg Config) (*Pipeline, error) {
 		triager:       tr,
 		scan:          sc,
 		dd:            dd,
-		rep:      rg,
+		rep:           rg,
 	}, nil
 }
 
@@ -613,6 +615,16 @@ func (p *Pipeline) emitDone(start time.Time, scored []finding.Finding) {
 // The remainder go through the LLM Verifier (CoD + SCoT + ASC) before emission.
 // Verifier failures degrade gracefully: unverified findings are emitted rather than
 // silently dropped.
+// isTestPath reports whether path is inside a test source tree and should be
+// excluded from pattern scanning. opengrep --exclude is ignored for explicit
+// file paths (only applies to directory tree scans), so we filter in Go.
+func isTestPath(path string) bool {
+	return strings.Contains(path, "/src/test/") ||
+		strings.Contains(path, "/src/it/") ||
+		strings.Contains(path, "/test/java/") ||
+		strings.Contains(path, "/tests/java/")
+}
+
 func (p *Pipeline) runPathA(ctx context.Context, res *ingestion.Result, scopeFiles []string, ch chan<- finding.Finding) error {
 	output.Emit(p.events, output.Event{Kind: output.EventStageStart, Stage: "path a"})
 
@@ -664,7 +676,14 @@ func (p *Pipeline) runPathA(ctx context.Context, res *ingestion.Result, scopeFil
 		var findings []finding.Finding
 		var err error
 		if len(changed) > 0 {
-			findings, err = p.opengrep.ScanFiles(gctx, changed)
+			// ponytail: opengrep --exclude is ignored for explicit file paths; filter in Go.
+			filtered := make([]string, 0, len(changed))
+			for _, p := range changed {
+				if !isTestPath(p) {
+					filtered = append(filtered, p)
+				}
+			}
+			findings, err = p.opengrep.ScanFiles(gctx, filtered)
 		} else {
 			findings, err = p.opengrep.Scan(gctx, p.cfg.Target)
 		}

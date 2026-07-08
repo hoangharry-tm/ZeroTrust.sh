@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/hoangharry-tm/zerotrust/internal/semantic/enrichment"
 	"github.com/hoangharry-tm/zerotrust/pkg/llm"
@@ -79,7 +80,16 @@ func (t *Triager) Filter(ctx context.Context, surfaces []enrichment.EnrichedSurf
 	results := make([]Result, 0, len(surfaces))
 
 	for _, surface := range surfaces {
-		code := surface.Code
+		slog.Debug("triage: input",
+			"function", surface.FunctionName,
+			"file", surface.File,
+			"has_code", surface.Code != "",
+			"has_sink_nodes", len(surface.SinkNodes) > 0,
+			"sink_nodes", surface.SinkNodes,
+			"code_len", len(surface.Code),
+		)
+
+		code := stripIndent(surface.Code)
 		if len(code) > 1500 {
 			code = code[:1500]
 		}
@@ -97,18 +107,43 @@ func (t *Triager) Filter(ctx context.Context, surfaces []enrichment.EnrichedSurf
 				"that this function is exploitable. 1.0 = certain vulnerability, 0.0 = certainly safe.",
 			surface.File, surface.FunctionName, taintInfo, surface.CVEMatches, code)
 
+		slog.Debug("triage: prompt",
+			"prompt", prompt,
+		)
+
 		score := t.threshold
 		explanation := "not evaluated"
 
-		resp, err := t.llm.Generate(ctx, prompt, nil)
+		// ponytail: 2048 tokens — qwen3.5:9b consumes 873–2323 thinking tokens before
+		// emitting output; 512 still exhausts mid-CoT → empty → threshold fallback.
+		slog.Debug("triage: pre_send",
+			"num_predict", 2048,
+		)
+		genStart := time.Now()
+		resp, err := t.llm.Generate(ctx, prompt, &llm.Options{NumPredict: 2048, Think: boolPtr(false)})
+		genElapsed := time.Since(genStart)
 		if err == nil {
+			slog.Debug("triage: response",
+				"raw_resp", resp,
+				"elapsed_ms", genElapsed.Milliseconds(),
+			)
+
 			// ponytail: simple confidence parsing — enhancement planned with
 			// structured JSON output in the post-MVP LLM reasoner.
 			confidence := parseConfidence(resp)
+			slog.Debug("triage: parse_result",
+				"confidence", confidence,
+				"fell_back_to_threshold", confidence < 0,
+			)
 			if confidence >= 0 {
 				score = confidence
 			}
 			explanation = resp
+		} else {
+			slog.Debug("triage: response",
+				"err", err.Error(),
+				"elapsed_ms", genElapsed.Milliseconds(),
+			)
 		}
 
 		var disp Disposition
@@ -157,6 +192,18 @@ func (t *Triager) Filter(ctx context.Context, surfaces []enrichment.EnrichedSurf
 	)
 
 	return results, nil
+}
+
+// boolPtr returns a pointer to b for use with llm.Options.Think.
+func boolPtr(b bool) *bool { return &b }
+
+// stripIndent removes leading whitespace from each line to reduce prompt token waste.
+func stripIndent(code string) string {
+	lines := strings.Split(code, "\n")
+	for i, l := range lines {
+		lines[i] = strings.TrimLeft(l, " \t")
+	}
+	return strings.Join(lines, "\n")
 }
 
 // parseConfidence scans all whitespace-delimited tokens in s and returns the

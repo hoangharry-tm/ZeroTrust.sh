@@ -67,7 +67,7 @@ func New() *Checker { return &Checker{} }
 func applicableCWEs(kind targeting.SurfaceKind) []string {
 	switch kind {
 	case targeting.SurfaceExternalInput:
-		return []string{"CWE-22", "CWE-78", "CWE-79", "CWE-89", "CWE-94", "CWE-502", "CWE-918"}
+		return []string{"CWE-22", "CWE-89", "CWE-78", "CWE-79", "CWE-94", "CWE-502", "CWE-918"}
 	case targeting.SurfaceAuthBoundary:
 		return []string{"CWE-862"}
 	case targeting.SurfaceIDORCandidate:
@@ -99,6 +99,13 @@ type cweResult struct {
 // Check runs all applicable rulebook invariants against surface and returns a Result.
 // It never calls any external service — purely structural CPG analysis.
 func (c *Checker) Check(ctx context.Context, surface enrichment.EnrichedSurface) Result {
+	slog.Debug("contracts: input",
+		"function", surface.FunctionName,
+		"file", surface.File,
+		"kind", surface.Kind,
+		"sink_nodes", surface.SinkNodes,
+		"call_path_len", len(surface.CallPath),
+	)
 	cweList := applicableCWEs(surface.Kind)
 	if len(cweList) == 0 {
 		return Result{
@@ -126,13 +133,34 @@ func (c *Checker) Check(ctx context.Context, surface enrichment.EnrichedSurface)
 		anchorMatched := false
 		for _, anchor := range inv.SinkAnchors {
 			for _, sinkNode := range surface.SinkNodes {
-				if strings.Contains(sinkNode, anchor) || anchor == sinkNode {
+				matched := strings.Contains(sinkNode, anchor) || anchor == sinkNode
+				slog.Debug("contracts: anchor_check",
+					"cwe", cwe,
+					"anchor", anchor,
+					"sink_node", sinkNode,
+					"matched", matched,
+				)
+				if matched {
 					anchorMatched = true
 					break
 				}
 			}
 			if anchorMatched {
 				break
+			}
+		}
+
+		if !anchorMatched && surface.Code != "" {
+			for _, anchor := range inv.SinkAnchors {
+				if strings.Contains(surface.Code, anchor) {
+					slog.Debug("contracts: anchor_check_code",
+						"cwe", cwe,
+						"anchor", anchor,
+						"matched", true,
+					)
+					anchorMatched = true
+					break
+				}
 			}
 		}
 
@@ -146,16 +174,29 @@ func (c *Checker) Check(ctx context.Context, surface enrichment.EnrichedSurface)
 		if len(surface.CallPath) == 0 {
 			v = VerdictInconclusive
 			evidence = "sink anchor " + inv.Name + " matched but call path is empty"
-		} else if hasSafeNode(surface.CallPath, inv.SafeNodes) {
-			v = VerdictSafe
-			evidence = "safe node on call path neutralizes " + cwe
 		} else {
-			v = VerdictViolation
-			evidence = invariant{
-				name:   inv.Name,
-				cwe:    cwe,
-				anchor: firstMatch(inv.SinkAnchors, surface.SinkNodes),
-			}.violationEvidence()
+			safeMatched := hasSafeNode(surface.CallPath, inv.SafeNodes)
+			callPathSample := surface.CallPath
+			if len(callPathSample) > 5 {
+				callPathSample = callPathSample[:5]
+			}
+			slog.Debug("contracts: safe_node_check",
+				"cwe", cwe,
+				"safe_nodes", inv.SafeNodes,
+				"call_path_sample", callPathSample,
+				"matched", safeMatched,
+			)
+			if safeMatched {
+				v = VerdictSafe
+				evidence = "safe node on call path neutralizes " + cwe
+			} else {
+				v = VerdictViolation
+				evidence = invariant{
+					name:   inv.Name,
+					cwe:    cwe,
+					anchor: firstMatch(inv.SinkAnchors, surface.SinkNodes),
+				}.violationEvidence()
+			}
 		}
 
 		if best == nil || v.greaterThan(best.verdict) || (v == best.verdict && v == VerdictViolation && cweNumber(cwe) < cweNumber(best.cwe)) {

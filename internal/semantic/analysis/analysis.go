@@ -23,7 +23,7 @@ package analysis
 import (
 	"context"
 	"log/slog"
-	"runtime"
+	"time"
 
 	"golang.org/x/sync/errgroup"
 
@@ -44,8 +44,10 @@ func New(provider llm.Provider) *Scanner {
 
 var analysisOpts = &llm.Options{
 	Temperature: 0.1,
-	NumPredict:  256,
-	TopP:        0.95,
+	// ponytail: 8192 — 4096 triggered done_reason=length at ~242s with empty output on
+	// complex auth surfaces; 8192 gives thinking model headroom within 500s wall time.
+	NumPredict: 8192,
+	TopP:       0.95,
 }
 
 // Scan runs Tier 3 analysis on escalated surfaces concurrently.
@@ -56,11 +58,6 @@ func (s *Scanner) Scan(ctx context.Context, surfaces []enrichment.EnrichedSurfac
 		return nil, nil
 	}
 
-	concurrency := runtime.NumCPU()
-	if concurrency > 4 {
-		concurrency = 4
-	}
-
 	type indexedFinding struct {
 		index    int
 		finding  finding.Finding
@@ -69,7 +66,7 @@ func (s *Scanner) Scan(ctx context.Context, surfaces []enrichment.EnrichedSurfac
 
 	results := make([]indexedFinding, len(surfaces))
 	g, gctx := errgroup.WithContext(ctx)
-	g.SetLimit(concurrency)
+	g.SetLimit(1)
 
 	for i, surface := range surfaces {
 		i, surface := i, surface
@@ -101,28 +98,66 @@ func (s *Scanner) Scan(ctx context.Context, surfaces []enrichment.EnrichedSurfac
 }
 
 func (s *Scanner) scanOne(ctx context.Context, surface enrichment.EnrichedSurface) (*finding.Finding, error) {
+	slog.Debug(
+		"analysis: input",
+		"function", surface.FunctionName,
+		"file", surface.File,
+		"kind", surface.Kind,
+		"contract_cwe", surface.ContractCWE,
+		"has_sink_nodes", len(surface.SinkNodes) > 0,
+		"code_len", len(surface.Code),
+	)
+
 	prompt := buildPrompt(surface)
 
+	slog.Debug(
+		"analysis: prompt",
+		"prompt", prompt,
+	)
+
+	genStart := time.Now()
 	raw, err := s.provider.Generate(ctx, prompt, analysisOpts)
+	genElapsed := time.Since(genStart)
 	if err != nil {
+		slog.Debug(
+			"analysis: response",
+			"err", err.Error(),
+			"elapsed_ms", genElapsed.Milliseconds(),
+		)
 		return nil, err
 	}
 
+	slog.Debug(
+		"analysis: response",
+		"raw_resp", raw,
+		"elapsed_ms", genElapsed.Milliseconds(),
+	)
+
 	verdict := parseVerdict(raw)
-	slog.Debug("analysis: verdict",
-		"surface", surface.FunctionName,
-		"file", surface.File,
+	slog.Debug(
+		"analysis: parse_result",
+		"exploitable", verdict.Exploitable,
+		"cwe", verdict.CWE,
+		"severity", verdict.Severity,
+		"confidence", verdict.Confidence,
+		"explanation", verdict.Explanation,
+	)
+
+	passedGate := verdict.Exploitable || verdict.Confidence >= 0.6
+	slog.Debug(
+		"analysis: gate",
+		"passed", passedGate,
 		"exploitable", verdict.Exploitable,
 		"confidence", verdict.Confidence,
-		"cwe", verdict.CWE,
+		"reason", map[bool]string{true: "passed gate", false: "!exploitable && confidence < 0.6"}[passedGate],
 	)
-	if !verdict.Exploitable {
-		if verdict.Confidence < 0.6 {
-			return nil, nil
-		}
+
+	if !verdict.Exploitable && verdict.Confidence < 0.6 {
 		// confidence ≥ 0.6 with !exploitable: surface into finding for human review.
+		return nil, nil
 	}
 
 	f := verdictToFinding(surface, verdict)
 	return &f, nil
 }
+

@@ -55,9 +55,13 @@ func parseVerdict(raw string) Verdict {
 
 // verdictToFinding converts an exploitable Verdict + surface into a finding.Finding.
 func verdictToFinding(surface enrichment.EnrichedSurface, v Verdict) finding.Finding {
-	cwe := v.CWE
+	// Use DCC ground truth first, then kind-based mapping, then LLM advisory.
+	cwe := surface.ContractCWE
 	if cwe == "" {
 		cwe = applicableCWE(surface.Kind)
+	}
+	if cwe == "" {
+		cwe = v.CWE
 	}
 
 	severity := severityFromLabel(v.Severity)

@@ -30,6 +30,7 @@ package pipeline
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/hoangharry-tm/zerotrust/internal/finding"
 	"github.com/hoangharry-tm/zerotrust/internal/ingestion"
@@ -62,6 +63,10 @@ func (p *Pipeline) runPathB(ctx context.Context, _ *ingestion.Result, ch chan<- 
 		return nil
 	}
 
+	slog.Debug("path b: B2 input",
+		"surfaces", len(surfaces),
+	)
+
 	// B2: CVE Enrichment.
 	enriched, err := p.enrich.Enrich(ctx, surfaces, p.cfg.Target)
 	if err != nil {
@@ -90,6 +95,17 @@ func (p *Pipeline) runPathB(ctx context.Context, _ *ingestion.Result, ch chan<- 
 	}
 
 	// B3: Contract Check — deterministic CWE→invariant check.
+	b3names := make([]string, 0, 5)
+	for i, es := range enriched {
+		if i >= 5 {
+			break
+		}
+		b3names = append(b3names, es.FunctionName)
+	}
+	slog.Debug("path b: B3 input",
+		"surfaces", len(enriched),
+		"first_5", b3names,
+	)
 	results := p.checker.CheckAll(ctx, enriched)
 
 	var violations, inconclusives []contracts.Result
@@ -124,9 +140,24 @@ func (p *Pipeline) runPathB(ctx context.Context, _ *ingestion.Result, ch chan<- 
 	// B4: LLM Triage — lightweight coarse filter on inconclusive results.
 	inconclusiveSurfaces := make([]enrichment.EnrichedSurface, 0, len(inconclusives))
 	for _, r := range inconclusives {
-		inconclusiveSurfaces = append(inconclusiveSurfaces, r.Surface)
+		es := r.Surface
+		es.ContractCWE = r.CWE
+		slog.Debug("path b: B3→B4 handoff",
+			"function", es.FunctionName,
+			"contract_cwe", es.ContractCWE,
+			"sink_nodes", es.SinkNodes,
+		)
+		inconclusiveSurfaces = append(inconclusiveSurfaces, es)
 	}
 
+	b4names := make([]string, 0, len(inconclusiveSurfaces))
+	for _, es := range inconclusiveSurfaces {
+		b4names = append(b4names, es.FunctionName)
+	}
+	slog.Debug("path b: B4 input",
+		"surfaces", len(inconclusiveSurfaces),
+		"functions", b4names,
+	)
 	triageResults, err := p.triager.Filter(ctx, inconclusiveSurfaces)
 	if err != nil {
 		p.logger.Warn("path b triage error", "err", err)
@@ -138,6 +169,11 @@ func (p *Pipeline) runPathB(ctx context.Context, _ *ingestion.Result, ch chan<- 
 	for _, tr := range triageResults {
 		switch tr.Disposition {
 		case triage.DispositionEscalate:
+			slog.Debug("path b: B4→B5 handoff",
+				"function", tr.Surface.FunctionName,
+				"confidence", tr.Confidence,
+				"sink_nodes", tr.Surface.SinkNodes,
+			)
 			escalated = append(escalated, tr.Surface)
 		case triage.DispositionDrop:
 			droppedCount++
@@ -155,9 +191,23 @@ func (p *Pipeline) runPathB(ctx context.Context, _ *ingestion.Result, ch chan<- 
 	for _, es := range escalated {
 		if len(es.SinkNodes) > 0 {
 			taintConfirmed = append(taintConfirmed, es)
+		} else {
+			slog.Debug("path b: taint gate dropped",
+				"function", es.FunctionName,
+				"file", es.File,
+			)
 		}
 	}
 	p.logger.Info("path b: taint gate", "escalated", len(escalated), "taint_confirmed", len(taintConfirmed))
+
+	b5names := make([]string, 0, len(taintConfirmed))
+	for _, es := range taintConfirmed {
+		b5names = append(b5names, es.FunctionName)
+	}
+	slog.Debug("path b: B5 input",
+		"surfaces", len(taintConfirmed),
+		"functions", b5names,
+	)
 
 	// B5: LLM Reasoner — full analysis on escalated surfaces.
 	analysisFindings, err := p.scan.Scan(ctx, taintConfirmed)

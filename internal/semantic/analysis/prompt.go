@@ -24,13 +24,28 @@ import (
 	"github.com/hoangharry-tm/zerotrust/internal/semantic/targeting"
 )
 
+var aipProfiles = map[string]string{
+	"CWE-89":  "AI models frequently miss second-order SQL injection where user input is stored then later concatenated into a query. Check for indirect taint paths through persistence layers.",
+	"CWE-79":  "AI models miss stored XSS where input is persisted and rendered in a different request context. Check for cross-request taint.",
+	"CWE-22":  "AI models miss path traversal when normalization appears to happen but uses a non-canonical form (e.g. URL decode after path check). Verify canonicalization order.",
+	"CWE-918": "AI models miss SSRF when the URL is constructed from multiple user-controlled fragments. Check for partial taint (host vs path vs query).",
+	"CWE-862": "AI models miss broken auth when authorization check is present but applied to the wrong principal or resource type.",
+	"CWE-327": "AI models miss weak crypto when a strong algorithm is configured by default but overridden by a user-supplied parameter.",
+	"CWE-502": "AI models miss unsafe deserialization when the deserializer appears safe (e.g. Jackson) but is configured with a polymorphic type resolver.",
+	"CWE-94":  "AI models miss code injection through template engines or scripting APIs that appear to be data-only interfaces.",
+	"CWE-78":  "AI models miss OS command injection through indirect execution (e.g. ProcessBuilder with array args where one element is user-controlled).",
+}
+
 // Prompt structure: SCL+CFP+AIP evidence injection per Tegrity et al. 2023
 // "Augmenting LLM Security Analysis with Static Program Analysis Context"
 // (USENIX Security Workshop on LLMs for Security).
 
 // buildSCL builds the Security Contract Layer prompt section.
 func buildSCL(surface enrichment.EnrichedSurface) string {
-	cwe := applicableCWE(surface.Kind)
+	cwe := surface.ContractCWE
+	if cwe == "" {
+		cwe = applicableCWE(surface.Kind)
+	}
 	if cwe == "" {
 		return "=== SECURITY CONTRACT ===\nNo applicable CWE for surface kind " + string(surface.Kind)
 	}
@@ -96,7 +111,8 @@ func buildAIP(surface enrichment.EnrichedSurface) string {
 
 	var sb strings.Builder
 	sb.WriteString("=== AI FAILURE PROFILE ===\n")
-	sb.WriteString(profile + "\n")
+	sb.WriteString(profile)
+	sb.WriteString("\n")
 	return sb.String()
 }
 
@@ -110,17 +126,21 @@ func buildPrompt(surface enrichment.EnrichedSurface) string {
 	sb.WriteString("You are a senior application security engineer performing a code review.\n")
 	sb.WriteString("Analyze the following surface for a real, exploitable vulnerability.\n")
 	sb.WriteString("Answer ONLY with a JSON object — no prose, no markdown.\n\n")
-	sb.WriteString(scl + "\n\n")
-	sb.WriteString(cfp + "\n\n")
+	sb.WriteString(scl)
+	sb.WriteString("\n\n")
+	sb.WriteString(cfp)
+	sb.WriteString("\n\n")
 	if surface.Code != "" {
-		code := surface.Code
+		code := stripIndent(surface.Code)
 		if len(code) > 2000 {
 			code = code[:2000] + "\n... [truncated]"
 		}
 		sb.WriteString("=== FUNCTION SOURCE CODE ===\n")
-		sb.WriteString(code + "\n\n")
+		sb.WriteString(code)
+		sb.WriteString("\n\n")
 	}
-	sb.WriteString(aip + "\n\n")
+	sb.WriteString(aip)
+	sb.WriteString("\n\n")
 	sb.WriteString("Based on the evidence above, is this surface exploitable?\n\n")
 	sb.WriteString("Respond with exactly:\n")
 	sb.WriteString(`{"exploitable": true|false, "cwe": "<CWE-ID>", "severity": "CRITICAL|HIGH|MEDIUM|LOW", "confidence": 0.0-1.0, "explanation": "<25 words max>"}`)
@@ -132,13 +152,24 @@ func applicableCWE(kind targeting.SurfaceKind) string {
 	switch kind {
 	case targeting.SurfaceExternalInput:
 		return "CWE-89"
-	case targeting.SurfaceAuthBoundary, targeting.SurfaceIDORCandidate:
+	case targeting.SurfaceIDORCandidate:
+		return "CWE-862"
+	case targeting.SurfaceAuthBoundary:
 		return "CWE-862"
 	case targeting.SurfaceDangerousSink:
 		return "CWE-327"
 	default:
 		return ""
 	}
+}
+
+// stripIndent removes leading whitespace from each line to cut prompt token waste.
+func stripIndent(code string) string {
+	lines := strings.Split(code, "\n")
+	for i, l := range lines {
+		lines[i] = strings.TrimLeft(l, " \t")
+	}
+	return strings.Join(lines, "\n")
 }
 
 func firstOrNone(cves []enrichment.CVEMatch) string {
@@ -148,14 +179,3 @@ func firstOrNone(cves []enrichment.CVEMatch) string {
 	return cves[0].CVE
 }
 
-var aipProfiles = map[string]string{
-	"CWE-89":  "AI models frequently miss second-order SQL injection where user input is stored then later concatenated into a query. Check for indirect taint paths through persistence layers.",
-	"CWE-79":  "AI models miss stored XSS where input is persisted and rendered in a different request context. Check for cross-request taint.",
-	"CWE-22":  "AI models miss path traversal when normalization appears to happen but uses a non-canonical form (e.g. URL decode after path check). Verify canonicalization order.",
-	"CWE-918": "AI models miss SSRF when the URL is constructed from multiple user-controlled fragments. Check for partial taint (host vs path vs query).",
-	"CWE-862": "AI models miss broken auth when authorization check is present but applied to the wrong principal or resource type.",
-	"CWE-327": "AI models miss weak crypto when a strong algorithm is configured by default but overridden by a user-supplied parameter.",
-	"CWE-502": "AI models miss unsafe deserialization when the deserializer appears safe (e.g. Jackson) but is configured with a polymorphic type resolver.",
-	"CWE-94":  "AI models miss code injection through template engines or scripting APIs that appear to be data-only interfaces.",
-	"CWE-78":  "AI models miss OS command injection through indirect execution (e.g. ProcessBuilder with array args where one element is user-controlled).",
-}

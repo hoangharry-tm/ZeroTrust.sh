@@ -106,7 +106,6 @@ var javaSinks = []SinkDef{
 	{Name: "executeQuery", Kind: cpg.SinkSQL, CWE: "CWE-89"},
 	{Name: "executeUpdate", Kind: cpg.SinkSQL, CWE: "CWE-89"},
 	{Name: "execute", Kind: cpg.SinkSQL, CWE: "CWE-89"},
-	{Name: "prepareStatement", Kind: cpg.SinkSQL, CWE: "CWE-89"},
 	{Name: "exec", Kind: cpg.SinkCommand, CWE: "CWE-78"},
 	{Name: "Runtime.exec", Kind: cpg.SinkCommand, CWE: "CWE-78"},
 	{Name: "readObject", Kind: cpg.SinkDeserialization, CWE: "CWE-502"},
