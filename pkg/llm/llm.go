@@ -60,6 +60,10 @@ type Options struct {
 	// Think disables chain-of-thought reasoning for thinking models (e.g. qwen3).
 	// nil = model default, boolPtr(false) = disable CoT.
 	Think *bool `json:"think,omitempty"`
+	// NumCtx is the context window size in tokens (Ollama: num_ctx).
+	// Overrides the model's default (often 4096). Set to 2×NumPredict to give
+	// thinking models room for CoT + prompt + output without hitting done_reason=length.
+	NumCtx int `json:"num_ctx,omitempty"`
 }
 
 // Role identifies the speaker in a chat turn.

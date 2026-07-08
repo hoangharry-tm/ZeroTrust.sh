@@ -37,8 +37,10 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/hoangharry-tm/zerotrust/internal/config"
@@ -197,7 +199,8 @@ func (t *Targeter) Run(ctx context.Context) ([]Surface, error) {
 	}
 
 	byID := make(map[string]cpg.Node, len(methods))
-	var sourceSeeds, sinkSeeds, authSeeds []string
+	var sourceSeeds, sinkSeeds, authSeeds, fallbackAuthSeeds []string
+	var anyAuthMethod bool
 
 	for _, m := range methods {
 		byID[m.ID] = m
@@ -216,8 +219,17 @@ func (t *Targeter) Run(ctx context.Context) ([]Surface, error) {
 			sinkSeeds = append(sinkSeeds, m.ID)
 		}
 		if fc.Bound&BoundaryAuth != 0 {
-			authSeeds = append(authSeeds, m.ID)
+			fallbackAuthSeeds = append(fallbackAuthSeeds, m.ID)
+			if isAuthMethod(m, t.root) {
+				authSeeds = append(authSeeds, m.ID)
+				anyAuthMethod = true
+			}
 		}
+	}
+
+	// Fallback: if no method matched by name/annotation, use file-level classification.
+	if !anyAuthMethod {
+		authSeeds = fallbackAuthSeeds
 	}
 
 	slog.Info("targeting: seeds identified",
@@ -349,6 +361,51 @@ func AutoFlagCVESurfaces(surfaces []Surface, cal config.Config) (flagged []Surfa
 		flagged = append(flagged, s)
 	}
 	return flagged, remaining
+}
+
+// isAuthMethod returns true when the method name or annotations indicate
+// authentication-related behaviour. Used to filter file-level auth boundary
+// seeds to only methods that are themselves auth-relevant.
+func isAuthMethod(m cpg.Node, root string) bool {
+	name := strings.ToLower(m.Name)
+	patterns := []string{"auth", "login", "logout", "token", "verify", "validate",
+		"permission", "authorize", "authenticate", "access",
+		"security", "credential", "principal", "session", "jwt", "oauth"}
+	for _, p := range patterns {
+		if strings.Contains(name, p) {
+			return true
+		}
+	}
+
+	// Check Spring Security annotations (±5 lines around method declaration).
+	if m.File != "" && m.Line > 0 {
+		absPath := m.File
+		if !filepath.IsAbs(absPath) {
+			absPath = filepath.Join(root, absPath)
+		}
+		data, err := os.ReadFile(absPath)
+		if err == nil {
+			lines := strings.Split(string(data), "\n")
+			start := m.Line - 6
+			if start < 0 {
+				start = 0
+			}
+			end := m.Line + 4
+			if end > len(lines) {
+				end = len(lines)
+			}
+			for i := start; i < end; i++ {
+				line := lines[i]
+				if strings.Contains(line, "@PreAuthorize") ||
+					strings.Contains(line, "@Secured") ||
+					strings.Contains(line, "@RolesAllowed") ||
+					strings.Contains(line, "@WithMockUser") {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 func cvssConfidence(cvss float64, cal config.Config) float64 {

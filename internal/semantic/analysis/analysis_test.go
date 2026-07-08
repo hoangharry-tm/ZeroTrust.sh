@@ -188,8 +188,32 @@ func TestBuildCFP_CapsCallPathAt10(t *testing.T) {
 	}
 }
 
+func TestBuildAIP_RespectsContractCWE(t *testing.T) {
+	surface := makeSurface("s1", targeting.SurfaceAuthBoundary)
+	surface.ContractCWE = "CWE-89"
+	aip := buildAIP(surface)
+	// CWE-89 profile mentions "SQL injection" — verify right profile is selected.
+	if !strings.Contains(aip, "SQL injection") {
+		t.Errorf("buildAIP with ContractCWE=CWE-89 should contain SQL injection profile, got:\n%s", aip)
+	}
+	// CWE-862 profile mentions "authorization" — must not appear.
+	if strings.Contains(aip, "authorization") {
+		t.Errorf("buildAIP should NOT use kind-based CWE-862 when ContractCWE=CWE-89, got:\n%s", aip)
+	}
+}
+
+func TestBuildAIP_KindFallbackWhenNoContractCWE(t *testing.T) {
+	surface := makeSurface("s1", targeting.SurfaceAuthBoundary)
+	surface.ContractCWE = ""
+	aip := buildAIP(surface)
+	// Auth boundary without contract CWE falls back to CWE-862.
+	if !strings.Contains(aip, "authorization") {
+		t.Errorf("buildAIP should fall back to CWE-862 when ContractCWE is empty, got:\n%s", aip)
+	}
+}
+
 func TestParseVerdict_ProseWrappedJSON(t *testing.T) {
-	raw := `Sure! Here's my analysis: {"exploitable":true,"cwe":"CWE-22","severity":"HIGH","confidence":0.9,"explanation":"path traversal"}`
+	raw := `Sure! Here's my analysis: {"exploitable":true,"cwe":"CWE-22","severity":"HIGH","confidence":0.9,"explanation":"path traversal","taint_mismatch":false}`
 	v := parseVerdict(raw)
 	if !v.Exploitable {
 		t.Error("want exploitable=true")
@@ -202,5 +226,38 @@ func TestParseVerdict_ProseWrappedJSON(t *testing.T) {
 	}
 	if v.Explanation != "path traversal" {
 		t.Errorf("want explanation 'path traversal', got %s", v.Explanation)
+	}
+	if v.TaintMismatch {
+		t.Error("want taint_mismatch=false")
+	}
+}
+
+func TestParseVerdict_TaintMismatchParsed(t *testing.T) {
+	raw := `{"exploitable":false,"cwe":"CWE-89","severity":"LOW","confidence":0.3,"explanation":"no DB calls in func","taint_mismatch":true}`
+	v := parseVerdict(raw)
+	if v.Exploitable {
+		t.Error("want exploitable=false")
+	}
+	if !v.TaintMismatch {
+		t.Error("want taint_mismatch=true")
+	}
+}
+
+func TestScan_TaintMismatchDropsSurface(t *testing.T) {
+	p := &mockProvider{
+		generateFunc: func(_ context.Context, _ string, _ *llm.Options) (string, error) {
+			return `{"exploitable":false,"cwe":"CWE-89","severity":"LOW","confidence":0.2,"explanation":"no DB calls","taint_mismatch":true}`, nil
+		},
+	}
+	s := New(p)
+	surfaces := []enrichment.EnrichedSurface{
+		{Surface: targeting.Surface{ID: "s1", File: "x.go", Kind: targeting.SurfaceExternalInput}},
+	}
+	findings, err := s.Scan(context.Background(), surfaces)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("want 0 findings (taint_mismatch dropped), got %d", len(findings))
 	}
 }

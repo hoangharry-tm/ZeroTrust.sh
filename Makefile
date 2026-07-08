@@ -27,10 +27,73 @@ test-rules:
 	@./scripts/rules/test_rules.sh
 
 
-scan-webgoat: build
-	rm -rf ~/mh_code/webgoat/.zerotrust && rm -f /tmp/zt-scan/scan.log /tmp/zt-scan/report.html && rm -rf ./workspace/
-	@pgrep -f "ollama serve" > /dev/null || (ollama serve &> /tmp/zt-scan/ollama.log & sleep 2)
-	./build/zerotrust ~/mh_code/webgoat --native --report /tmp/zt-scan/report.html --offline --verbose --joern-bin /opt/homebrew/bin/joern > /tmp/zt-scan/scan.log 2>&1 &
+## Scan targets — full cleanup, build, and run with consistent configuration
+.PHONY: scan-clean scan-webgoat scan-webgoat-qwen2.5 scan-webgoat-qwen3.5 scan-webgoat-json
+
+scan-clean:
+	@echo "Cleaning artifacts and ports..."
+	@lsof -ti:8080 2>/dev/null | xargs kill -9 2>/dev/null || true
+	@sleep 1
+	@rm -rf /tmp/zt-scan /tmp/zt-*
+	@mkdir -p /tmp/zt-scan
+	@rm -rf ~/mh_code/webgoat/.zerotrust
+	@rm -rf ./workspace
+
+scan-webgoat: scan-clean build
+	@echo "Starting Ollama..."
+	@pgrep -f "ollama serve" > /dev/null || (ollama serve > /tmp/zt-scan/ollama.log 2>&1 & sleep 3)
+	@echo "Running scan with qwen3.5:9b..."
+	@./build/zerotrust scan ~/mh_code/webgoat \
+		--native \
+		--report /tmp/zt-scan/report.html \
+		--json-report /tmp/zt-scan/report.json \
+		--offline \
+		--verbose \
+		--joern-bin /opt/homebrew/bin/joern \
+		-m qwen3.5:9b \
+		2>&1 | tee /tmp/zt-scan/scan.log
+
+scan-webgoat-qwen2.5: scan-clean build
+	@echo "Starting Ollama..."
+	@pgrep -f "ollama serve" > /dev/null || (ollama serve > /tmp/zt-scan/ollama.log 2>&1 & sleep 3)
+	@echo "Running scan with qwen2.5-coder:7b..."
+	@./build/zerotrust scan ~/mh_code/webgoat \
+		--native \
+		--report /tmp/zt-scan/report.html \
+		--json-report /tmp/zt-scan/report.json \
+		--offline \
+		--verbose \
+		--joern-bin /opt/homebrew/bin/joern \
+		-m qwen2.5-coder:7b \
+		2>&1 | tee /tmp/zt-scan/scan.log
+
+scan-webgoat-qwen3.5: scan-clean build
+	@echo "Starting Ollama..."
+	@pgrep -f "ollama serve" > /dev/null || (ollama serve > /tmp/zt-scan/ollama.log 2>&1 & sleep 3)
+	@echo "Running scan with qwen3.5:9b..."
+	@./build/zerotrust scan ~/mh_code/webgoat \
+		--native \
+		--report /tmp/zt-scan/report.html \
+		--json-report /tmp/zt-scan/report.json \
+		--offline \
+		--verbose \
+		--joern-bin /opt/homebrew/bin/joern \
+		-m qwen3.5:9b \
+		2>&1 | tee /tmp/zt-scan/scan.log
+
+scan-webgoat-json: scan-clean build
+	@echo "Starting Ollama..."
+	@pgrep -f "ollama serve" > /dev/null || (ollama serve > /tmp/zt-scan/ollama.log 2>&1 & sleep 3)
+	@echo "Running scan with JSON output..."
+	@./build/zerotrust scan ~/mh_code/webgoat \
+		--native \
+		--report /tmp/zt-scan/report.html \
+		--json-report /tmp/zt-scan/report.json \
+		--offline \
+		--verbose \
+		--joern-bin /opt/homebrew/bin/joern \
+		-m qwen3.5:9b \
+		2>&1 | tee /tmp/zt-scan/scan.log
 
 # Run integration tests — requires a live Joern binary (Homebrew: brew install joern).
 # Set JOERN_BIN to override the resolved joern path.

@@ -69,7 +69,7 @@ func applicableCWEs(kind targeting.SurfaceKind) []string {
 	case targeting.SurfaceExternalInput:
 		return []string{"CWE-22", "CWE-89", "CWE-78", "CWE-79", "CWE-94", "CWE-502", "CWE-918"}
 	case targeting.SurfaceAuthBoundary:
-		return []string{"CWE-862"}
+		return []string{"CWE-862", "CWE-89", "CWE-78", "CWE-22"}
 	case targeting.SurfaceIDORCandidate:
 		// IDOR surfaces may also reach SQL/OS sinks — check both auth and injection CWEs.
 		return []string{"CWE-862", "CWE-89", "CWE-78", "CWE-22"}
@@ -150,7 +150,7 @@ func (c *Checker) Check(ctx context.Context, surface enrichment.EnrichedSurface)
 			}
 		}
 
-		if !anchorMatched && surface.Code != "" {
+		if !anchorMatched && surface.Code != "" && cwe != "CWE-89" {
 			for _, anchor := range inv.SinkAnchors {
 				if strings.Contains(surface.Code, anchor) {
 					slog.Debug("contracts: anchor_check_code",
@@ -175,7 +175,7 @@ func (c *Checker) Check(ctx context.Context, surface enrichment.EnrichedSurface)
 			v = VerdictInconclusive
 			evidence = "sink anchor " + inv.Name + " matched but call path is empty"
 		} else {
-			safeMatched := hasSafeNode(surface.CallPath, inv.SafeNodes)
+			safeMatched := hasSafeNode(surface.CallPath, inv.SafeNodes, surface.Code)
 			callPathSample := surface.CallPath
 			if len(callPathSample) > 5 {
 				callPathSample = callPathSample[:5]
@@ -242,7 +242,7 @@ func (v Verdict) greaterThan(other Verdict) bool {
 	return v > other
 }
 
-func hasSafeNode(callPath []string, safeNodes []string) bool {
+func hasSafeNode(callPath []string, safeNodes []string, code string) bool {
 	if len(safeNodes) == 0 {
 		return false
 	}
@@ -251,6 +251,12 @@ func hasSafeNode(callPath []string, safeNodes []string) bool {
 			if strings.Contains(node, safe) || node == safe {
 				return true
 			}
+		}
+	}
+	// Fallback: check function body source for safe sanitizer calls
+	for _, safe := range safeNodes {
+		if strings.Contains(code, safe) {
+			return true
 		}
 	}
 	return false

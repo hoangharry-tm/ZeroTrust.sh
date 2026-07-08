@@ -477,6 +477,34 @@ func nodeIDs(nodes []cpg.Node) []string {
 	return ids
 }
 
+// stripStringsAndComments removes line comments and double-quoted string contents
+// from a line so that brace counting is not fooled by braces inside literals.
+func stripStringsAndComments(line string) string {
+	// Remove // line comments
+	if idx := strings.Index(line, "//"); idx >= 0 {
+		line = line[:idx]
+	}
+	// Remove contents of double-quoted strings (simple, non-nested)
+	result := strings.Builder{}
+	inStr := false
+	for i := 0; i < len(line); i++ {
+		ch := line[i]
+		if ch == '\\' && inStr {
+			i++
+			continue
+		}
+		if ch == '"' {
+			inStr = !inStr
+			result.WriteByte(ch)
+			continue
+		}
+		if !inStr {
+			result.WriteByte(ch)
+		}
+	}
+	return result.String()
+}
+
 // readFunctionBody reads the source file at absPath and extracts the function
 // body starting at startLine (1-indexed). It tracks brace depth to find the
 // closing brace and returns up to 3000 chars. Returns "" on any read error.
@@ -497,7 +525,8 @@ func readFunctionBody(absPath string, startLine int) string {
 		line := lines[i]
 		out.WriteString(line)
 		out.WriteByte('\n')
-		for _, ch := range line {
+		stripped := stripStringsAndComments(line)
+		for _, ch := range stripped {
 			if ch == '{' {
 				depth++
 				started = true

@@ -214,7 +214,7 @@ func TestBuildReverseCG(t *testing.T) {
 
 func TestIdentifyIDOR_DetectsCandidate(t *testing.T) {
 	surfaces := map[string]Surface{
-		"h1": {ID: "h1", Kind: SurfaceExternalInput},
+		"h1": {ID: "h1", FunctionName: "getResource", Kind: SurfaceExternalInput},
 	}
 	canReachAuth := map[string]bool{} // h1 cannot reach auth
 	out := identifyIDOR(surfaces, canReachAuth)
@@ -225,7 +225,7 @@ func TestIdentifyIDOR_DetectsCandidate(t *testing.T) {
 
 func TestIdentifyIDOR_ExcludesWhenAuthReachable(t *testing.T) {
 	surfaces := map[string]Surface{
-		"h2": {ID: "h2", Kind: SurfaceExternalInput},
+		"h2": {ID: "h2", FunctionName: "getResource", Kind: SurfaceExternalInput},
 	}
 	canReachAuth := map[string]bool{"h2": true}
 	out := identifyIDOR(surfaces, canReachAuth)
@@ -260,10 +260,10 @@ func buildRunFixture(t *testing.T) (root string, g *mockGraph) {
 
 	g = &mockGraph{
 		nodes: []cpg.Node{
-			method("ctrl1", "getUser", "api/UserController.java"),
+			method("ctrl1", "getResource", "api/UserController.java"),
 			method("repo1", "findById", "repo/UserRepo.java"),
 			method("auth1", "validateToken", "auth/JwtUtil.java"),
-			method("svc1", "userService", "service/UserService.java"), // no boundary
+			method("svc1", "fetchRecord", "service/UserService.java"), // no boundary
 		},
 		callees: map[string][]cpg.Node{
 			"ctrl1": {{ID: "svc1"}},
@@ -389,7 +389,102 @@ func TestCallGraphDepth_Unreachable(t *testing.T) {
 	assert.Equal(t, -1, cg.CallGraphDepth("orphan"))
 }
 
-// ── T7: DetectSecondOrder ───────────────────────────────────────────────────
+// ── T7: isAuthMethod filter ─────────────────────────────────────────────────
+
+func TestIsAuthMethod_AuthNamePasses(t *testing.T) {
+	// Methods with auth-related names must be classified as auth methods.
+	root := t.TempDir()
+	writeTempFile(t, root, "auth.go", `package auth
+import "github.com/golang-jwt/jwt"
+`)
+	authNames := []string{"validateToken", "loginUser", "authenticateRequest", "checkAuth"}
+	for _, name := range authNames {
+		m := method("m1", name, filepath.Join(root, "auth.go"))
+		if !isAuthMethod(m, root) {
+			t.Errorf("isAuthMethod(%q) should be true", name)
+		}
+	}
+}
+
+func TestIsAuthMethod_NonAuthNameFiltered(t *testing.T) {
+	// Methods with non-auth names must NOT pass isAuthMethod.
+	root := t.TempDir()
+	writeTempFile(t, root, "auth.go", `package auth
+import "io.jsonwebtoken.Jwts"
+`)
+	nonAuthNames := []string{"trackProgress", "beforeBodyWrite", "follow", "toString", "getMetaData"}
+	for _, name := range nonAuthNames {
+		m := method("m1", name, filepath.Join(root, "auth.go"))
+		if isAuthMethod(m, root) {
+			t.Errorf("isAuthMethod(%q) should be false", name)
+		}
+	}
+}
+
+func TestIsAuthMethod_AnnotationDetected(t *testing.T) {
+	// Methods with @PreAuthorize annotation within ±5 lines must pass.
+	root := t.TempDir()
+	content := `package com.example
+import org.springframework.security.access.prepost.PreAuthorize;
+// some comment
+@PreAuthorize("hasRole('ADMIN')")
+public String adminOnly() { return "ok"; }
+`
+	f := writeTempFile(t, root, "AdminController.java", content)
+	m := cpg.Node{ID: "admin", Name: "adminOnly", File: f, Line: 5, Type: cpg.NodeMethod}
+	if !isAuthMethod(m, root) {
+		t.Error("adminOnly with @PreAuthorize annotation should be auth method")
+	}
+}
+
+func TestIsAuthMethod_FallbackOnNoMatch(t *testing.T) {
+	// When no method in an auth file matches by name or annotation, the
+	// Run() function should fall back to file-level classification.
+	// This test verifies the fallback path by creating a scenario where
+	// a non-auth-named method in an auth file is still reachable.
+	dir := t.TempDir()
+
+	// Source boundary file
+	writeTempFile(t, dir, "api/Controller.java",
+		"import org.springframework.web.bind.annotation.RestController;\n")
+	// Sink boundary file
+	writeTempFile(t, dir, "repo/Repo.java",
+		"import org.springframework.data.jpa.repository.JpaRepository;\n")
+	// Auth boundary file with NO auth-named method
+	writeTempFile(t, dir, "auth/SecurityConfig.java",
+		"import io.jsonwebtoken.Jwts;\n")
+
+	g := &mockGraph{
+		nodes: []cpg.Node{
+			method("ctrl1", "handleRequest", "api/Controller.java"),
+			method("repo1", "findById", "repo/Repo.java"),
+			// Non-auth-named method in auth file
+			method("sec1", "beforeBodyWrite", "auth/SecurityConfig.java"),
+		},
+		callees: map[string][]cpg.Node{
+			"ctrl1": {{ID: "sec1"}},
+			"sec1":  {{ID: "repo1"}},
+		},
+	}
+	tk := New(g, dir)
+	surfaces, err := tk.Run(context.Background())
+	require.NoError(t, err)
+
+	// With no matching auth method, fallback kicks in → beforeBodyWrite
+	// gets auth-boundary reachability → it becomes auth_boundary.
+	found := false
+	for _, s := range surfaces {
+		if s.ID == "sec1" {
+			found = true
+			// With fallback, beforeBodyWrite should be auth_boundary
+			assert.Equal(t, SurfaceAuthBoundary, s.Kind,
+				"beforeBodyWrite should be auth_boundary via fallback")
+		}
+	}
+	assert.True(t, found, "beforeBodyWrite must be a surface")
+}
+
+// ── T8: DetectSecondOrder ───────────────────────────────────────────────────
 
 func TestDetectSecondOrder_StorageInjection(t *testing.T) {
 	// Scenario: req1 writes user input to DB; req2 reads it and outputs to response.

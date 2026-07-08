@@ -113,6 +113,6 @@ func (c *Config) defaults() {
 		c.TokenCap = config.C.DefaultTokenCap
 	}
 	if c.TriageThreshold <= 0 {
-		c.TriageThreshold = 0.20
+		c.TriageThreshold = 0.50
 	}
 }

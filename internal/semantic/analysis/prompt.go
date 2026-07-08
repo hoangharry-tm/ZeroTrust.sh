@@ -17,6 +17,7 @@ package analysis
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/hoangharry-tm/zerotrust/internal/semantic/contracts"
@@ -93,7 +94,7 @@ func buildCFP(surface enrichment.EnrichedSurface) string {
 	var sb strings.Builder
 	sb.WriteString("=== CONTROL FLOW EVIDENCE ===\n")
 	sb.WriteString(fmt.Sprintf("Surface kind: %s\n", surface.Kind))
-	sb.WriteString(fmt.Sprintf("Source file: %s\n", sourceFile))
+	sb.WriteString(fmt.Sprintf("Source file: %s\n", shortPath(sourceFile)))
 	sb.WriteString(fmt.Sprintf("Sink nodes: %s\n", strings.Join(sinkNodes, ", ")))
 	sb.WriteString(fmt.Sprintf("Taint path (%d nodes): %s\n", len(surface.CallPath), strings.Join(callPath, " → ")))
 	sb.WriteString(fmt.Sprintf("CVE matches: %d (%s)\n", len(surface.CVEMatches), firstOrNone(surface.CVEMatches)))
@@ -103,7 +104,10 @@ func buildCFP(surface enrichment.EnrichedSurface) string {
 
 // buildAIP builds the AI Failure Profile prompt section.
 func buildAIP(surface enrichment.EnrichedSurface) string {
-	cwe := applicableCWE(surface.Kind)
+	cwe := surface.ContractCWE
+	if cwe == "" {
+		cwe = applicableCWE(surface.Kind)
+	}
 	profile, ok := aipProfiles[cwe]
 	if !ok {
 		profile = "No specific failure profile for this CWE."
@@ -125,6 +129,9 @@ func buildPrompt(surface enrichment.EnrichedSurface) string {
 	var sb strings.Builder
 	sb.WriteString("You are a senior application security engineer performing a code review.\n")
 	sb.WriteString("Analyze the following surface for a real, exploitable vulnerability.\n")
+	sb.WriteString("Base your answer ONLY on the source code and static analysis evidence provided below.\n")
+	sb.WriteString("Do NOT use prior knowledge about the project name, framework reputation, or codebase.\n")
+	sb.WriteString("If the provided evidence is insufficient to confirm exploitability, return exploitable=false.\n")
 	sb.WriteString("Answer ONLY with a JSON object — no prose, no markdown.\n\n")
 	sb.WriteString(scl)
 	sb.WriteString("\n\n")
@@ -143,7 +150,7 @@ func buildPrompt(surface enrichment.EnrichedSurface) string {
 	sb.WriteString("\n\n")
 	sb.WriteString("Based on the evidence above, is this surface exploitable?\n\n")
 	sb.WriteString("Respond with exactly:\n")
-	sb.WriteString(`{"exploitable": true|false, "cwe": "<CWE-ID>", "severity": "CRITICAL|HIGH|MEDIUM|LOW", "confidence": 0.0-1.0, "explanation": "<25 words max>"}`)
+	sb.WriteString(`{"exploitable": true|false, "cwe": "<CWE-ID>", "severity": "CRITICAL|HIGH|MEDIUM|LOW", "confidence": 0.0-1.0, "explanation": "<25 words max>", "taint_mismatch": true|false}`)
 	return sb.String()
 }
 
@@ -170,6 +177,16 @@ func stripIndent(code string) string {
 		lines[i] = strings.TrimLeft(l, " \t")
 	}
 	return strings.Join(lines, "\n")
+}
+
+// shortPath returns the last 2 path segments joined by "/".
+// If the path has fewer than 2 segments, it is returned as-is.
+func shortPath(p string) string {
+	parts := strings.Split(filepath.ToSlash(p), "/")
+	if len(parts) <= 2 {
+		return p
+	}
+	return strings.Join(parts[len(parts)-2:], "/")
 }
 
 func firstOrNone(cves []enrichment.CVEMatch) string {

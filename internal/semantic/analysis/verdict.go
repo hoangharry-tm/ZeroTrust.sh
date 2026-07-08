@@ -27,11 +27,12 @@ import (
 
 // Verdict is the structured JSON response from the LLM for one surface.
 type Verdict struct {
-	Exploitable bool    `json:"exploitable"`
-	CWE         string  `json:"cwe"`
-	Severity    string  `json:"severity"`
-	Confidence  float64 `json:"confidence"`
-	Explanation string  `json:"explanation"`
+	Exploitable   bool    `json:"exploitable"`
+	CWE           string  `json:"cwe"`
+	Severity      string  `json:"severity"`
+	Confidence    float64 `json:"confidence"`
+	Explanation   string  `json:"explanation"`
+	TaintMismatch bool    `json:"taint_mismatch"`
 }
 
 // parseVerdict extracts the JSON verdict from a raw LLM response.

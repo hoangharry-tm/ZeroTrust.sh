@@ -92,7 +92,7 @@ func TestVerdictSafe(t *testing.T) {
 		},
 		{
 			name:    "Path traversal with path clean",
-			surface: surfaceWith(targeting.SurfaceExternalInput, []string{"file.open"}, []string{"pathClean"}),
+			surface: surfaceWith(targeting.SurfaceExternalInput, []string{"FileWriter"}, []string{"pathClean"}),
 		},
 		{
 			name:    "XSS with HTML escape",
@@ -153,7 +153,7 @@ func TestVerdictViolation(t *testing.T) {
 		},
 		{
 			name:    "Path traversal violation",
-			surface: surfaceWith(targeting.SurfaceExternalInput, []string{"fopen"}, []string{"userInput"}),
+			surface: surfaceWith(targeting.SurfaceExternalInput, []string{"new File"}, []string{"userInput"}),
 			wantCWE: "CWE-22",
 		},
 		{
@@ -237,6 +237,19 @@ func TestVerdictInconclusive(t *testing.T) {
 				t.Errorf("expected VerdictInconclusive, got %s", result.Verdict)
 			}
 		})
+	}
+}
+
+func TestApplicableCWEs_AuthBoundaryIncludesInjection(t *testing.T) {
+	cwes := applicableCWEs(targeting.SurfaceAuthBoundary)
+	expected := []string{"CWE-862", "CWE-89", "CWE-78", "CWE-22"}
+	if len(cwes) != len(expected) {
+		t.Fatalf("applicableCWEs(SurfaceAuthBoundary) = %v, want %v", cwes, expected)
+	}
+	for i, cwe := range expected {
+		if cwes[i] != cwe {
+			t.Errorf("position %d: want %s, got %s", i, cwe, cwes[i])
+		}
 	}
 }
 
@@ -325,7 +338,7 @@ func TestViolationTiebreakByCWENumber(t *testing.T) {
 			ID:   "multi-cwe",
 			Kind: targeting.SurfaceExternalInput,
 		},
-		SinkNodes: []string{"exec.Command", "db.Query", "fopen"},
+		SinkNodes: []string{"exec.Command", "db.Query", "new File"},
 		CallPath:  []string{"userInput"},
 	}
 	c := New()

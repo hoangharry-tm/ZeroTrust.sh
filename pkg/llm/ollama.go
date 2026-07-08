@@ -62,6 +62,7 @@ type generateResponse struct {
 	Response   string `json:"response"`
 	Done       bool   `json:"done"`
 	DoneReason string `json:"done_reason"`
+	EvalCount  int    `json:"eval_count"`
 }
 
 // chatRequest is the Ollama /api/chat request body.
@@ -77,6 +78,7 @@ type chatResponse struct {
 	Message    Message `json:"message"`
 	Done       bool    `json:"done"`
 	DoneReason string  `json:"done_reason"`
+	EvalCount  int     `json:"eval_count"`
 }
 
 // SetMIVBlocked marks this client as blocked by the Model Integrity Verifier.
@@ -109,9 +111,10 @@ func (c *ollamaClient) Generate(ctx context.Context, prompt string, opts *Option
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	numPredict := 0
+	numPredict, numCtx := 0, 0
 	if opts != nil {
 		numPredict = opts.NumPredict
+		numCtx = opts.NumCtx
 	}
 	start := time.Now()
 	slog.Debug("ollama: generate request",
@@ -119,6 +122,7 @@ func (c *ollamaClient) Generate(ctx context.Context, prompt string, opts *Option
 		"model", c.model,
 		"prompt_len", len(prompt),
 		"num_predict", numPredict,
+		"num_ctx", numCtx,
 	)
 
 	resp, err := c.httpClient.Do(req)
@@ -141,7 +145,7 @@ func (c *ollamaClient) Generate(ctx context.Context, prompt string, opts *Option
 		"component", "ollama",
 		"model", c.model,
 		"status", resp.StatusCode,
-		"eval_count", 0,
+		"eval_count", gr.EvalCount,
 		"done_reason", gr.DoneReason,
 		"resp_len", len(gr.Response),
 		"elapsed_ms", elapsed.Milliseconds(),
@@ -206,6 +210,7 @@ func (c *ollamaClient) Chat(ctx context.Context, messages []Message, opts *Optio
 		"component", "ollama",
 		"model", c.model,
 		"status", resp.StatusCode,
+		"eval_count", cr.EvalCount,
 		"done_reason", cr.DoneReason,
 		"resp_len", len(cr.Message.Content),
 		"elapsed_ms", elapsed.Milliseconds(),

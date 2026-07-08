@@ -44,9 +44,12 @@ func New(provider llm.Provider) *Scanner {
 
 var analysisOpts = &llm.Options{
 	Temperature: 0.1,
-	// ponytail: 8192 — 4096 triggered done_reason=length at ~242s with empty output on
-	// complex auth surfaces; 8192 gives thinking model headroom within 500s wall time.
+	// ponytail: num_predict=8192 for output budget; num_ctx=16384 overrides Ollama's
+	// default 4096-token context window — thinking tokens + prompt + JSON all share one
+	// pool; without explicit num_ctx the model hits done_reason=length at ~3500 eval_count
+	// (prompt ~600tok + thinking ~3500tok > 4096 default ctx).
 	NumPredict: 8192,
+	NumCtx:     16384,
 	TopP:       0.95,
 }
 
@@ -141,7 +144,16 @@ func (s *Scanner) scanOne(ctx context.Context, surface enrichment.EnrichedSurfac
 		"severity", verdict.Severity,
 		"confidence", verdict.Confidence,
 		"explanation", verdict.Explanation,
+		"taint_mismatch", verdict.TaintMismatch,
 	)
+
+	if verdict.TaintMismatch && !verdict.Exploitable {
+		slog.Info("analysis: taint_mismatch dropped",
+			"surface_id", surface.ID,
+			"function", surface.FunctionName,
+		)
+		return nil, nil
+	}
 
 	passedGate := verdict.Exploitable || verdict.Confidence >= 0.6
 	slog.Debug(
