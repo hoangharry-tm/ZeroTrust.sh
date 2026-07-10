@@ -117,9 +117,10 @@ func (c *Checker) Check(ctx context.Context, surface enrichment.EnrichedSurface)
 	}
 
 	type candidate struct {
-		cwe      string
-		verdict  Verdict
-		evidence string
+		cwe         string
+		verdict     Verdict
+		evidence    string
+		sinkMatched bool // true if anchor matched via SinkNodes, false if via code text
 	}
 
 	var best *candidate
@@ -131,6 +132,7 @@ func (c *Checker) Check(ctx context.Context, surface enrichment.EnrichedSurface)
 		}
 
 		anchorMatched := false
+		sinkMatched := false
 		for _, anchor := range inv.SinkAnchors {
 			for _, sinkNode := range surface.SinkNodes {
 				matched := strings.Contains(sinkNode, anchor) || anchor == sinkNode
@@ -142,6 +144,7 @@ func (c *Checker) Check(ctx context.Context, surface enrichment.EnrichedSurface)
 				)
 				if matched {
 					anchorMatched = true
+					sinkMatched = true
 					break
 				}
 			}
@@ -151,8 +154,9 @@ func (c *Checker) Check(ctx context.Context, surface enrichment.EnrichedSurface)
 		}
 
 		if !anchorMatched && surface.Code != "" && cwe != "CWE-89" {
+			stripped := stripCode(surface.Code)
 			for _, anchor := range inv.SinkAnchors {
-				if strings.Contains(surface.Code, anchor) {
+				if strings.Contains(stripped, anchor) {
 					slog.Debug("contracts: anchor_check_code",
 						"cwe", cwe,
 						"anchor", anchor,
@@ -199,16 +203,23 @@ func (c *Checker) Check(ctx context.Context, surface enrichment.EnrichedSurface)
 			}
 		}
 
-		if best == nil || v.greaterThan(best.verdict) || (v == best.verdict && v == VerdictViolation && cweNumber(cwe) < cweNumber(best.cwe)) {
-			best = &candidate{cwe: cwe, verdict: v, evidence: evidence}
+		if best == nil || v.greaterThan(best.verdict) ||
+			(v == best.verdict && v == VerdictViolation &&
+				(sinkMatched && !best.sinkMatched ||
+					(sinkMatched == best.sinkMatched && cweNumber(cwe) < cweNumber(best.cwe)))) {
+			best = &candidate{cwe: cwe, verdict: v, evidence: evidence, sinkMatched: sinkMatched}
 		}
 	}
 
 	if best == nil {
+		primaryCWE := ""
+		if list := applicableCWEs(surface.Kind); len(list) > 0 {
+			primaryCWE = list[0]
+		}
 		return Result{
 			Surface:  surface,
 			Verdict:  VerdictInconclusive,
-			CWE:      "",
+			CWE:      primaryCWE,
 			Evidence: "no sink anchor matched for any applicable CWE",
 		}
 	}
@@ -281,6 +292,33 @@ type invariant struct {
 
 func (i invariant) violationEvidence() string {
 	return "user-controlled value reaches " + i.name + " sink (" + i.anchor + ") with no safe node on path"
+}
+
+// stripCode removes single-line // comments and double-quoted string contents
+// from source code so that anchor matching does not fire on words inside
+// comments or string literals.
+func stripCode(code string) string {
+	var out strings.Builder
+	for i := 0; i < len(code); i++ {
+		if code[i] == '/' && i+1 < len(code) && code[i+1] == '/' {
+			for i < len(code) && code[i] != '\n' {
+				i++
+			}
+			if i < len(code) {
+				out.WriteByte('\n')
+			}
+			continue
+		}
+		if code[i] == '"' {
+			i++
+			for i < len(code) && !(code[i] == '"' && (i == 0 || code[i-1] != '\\')) {
+				i++
+			}
+			continue
+		}
+		out.WriteByte(code[i])
+	}
+	return out.String()
 }
 
 // CheckAll runs Check on every surface concurrently (bounded by runtime.NumCPU()).

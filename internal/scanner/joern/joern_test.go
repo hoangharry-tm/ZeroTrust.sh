@@ -276,8 +276,11 @@ func TestBuildCPG_WithLanguageOverride(t *testing.T) {
 		Paths:    []string{"/project/src"},
 		Language: "JAVASRC",
 	})
-	if len(queries) == 0 || !strings.Contains(queries[0], "JAVASRC") {
-		t.Errorf("BuildCPG with language: first query %v missing JAVASRC", queries)
+	// JAVASRC uses the Joern-idiomatic importCode.java() API (not the generic
+	// importCode(language="JAVASRC") form), so the string "JAVASRC" never appears.
+	// Verify the Java-specific API was used instead.
+	if len(queries) == 0 || !strings.Contains(queries[0], "importCode.java") {
+		t.Errorf("BuildCPG with language: first query %v missing importCode.java", queries)
 	}
 }
 
@@ -608,13 +611,14 @@ func TestGetNeighboursAtDepth_BFS(t *testing.T) {
 		callCount++
 		switch {
 		// callers of any node — return empty
-		case strings.Contains(q, "caller"):
+		case strings.Contains(q, ".caller"):
 			return "[]", true
-		// callees of root (id=1)
-		case strings.Contains(q, "1") && strings.Contains(q, "callee"):
+		// callees of root (id=1) — anchor on "id(1L)" to avoid false match from
+		// "126" in the nodeQuery template (_c>126 literal) firing for id(2L) queries.
+		case strings.Contains(q, "id(1L)") && strings.Contains(q, ".callee"):
 			return jsonArray(t, []joernNode{{ID: "2", Name: "A", File: "f.java", Line: 5}}), true
 		// callees of A (id=2)
-		case strings.Contains(q, "2") && strings.Contains(q, "callee"):
+		case strings.Contains(q, "id(2L)") && strings.Contains(q, ".callee"):
 			return jsonArray(t, []joernNode{{ID: "3", Name: "B", File: "f.java", Line: 10}}), true
 		default:
 			return "[]", true

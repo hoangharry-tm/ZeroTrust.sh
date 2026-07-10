@@ -21,6 +21,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -59,12 +61,17 @@ type Result struct {
 type Triager struct {
 	llm       llm.Provider
 	threshold float64
+	llmMode   string
 }
 
 // New returns a Triager that uses provider for inference and drops surfaces
-// whose confidence score falls below threshold.
-func New(provider llm.Provider, threshold float64) *Triager {
-	return &Triager{llm: provider, threshold: threshold}
+// whose confidence score falls below threshold. llmMode must be "small",
+// "mid" (default), or "frontier".
+func New(provider llm.Provider, threshold float64, llmMode string) *Triager {
+	if llmMode == "" {
+		llmMode = "mid"
+	}
+	return &Triager{llm: provider, threshold: threshold, llmMode: llmMode}
 }
 
 // Filter evaluates each surface and returns a triage result. Surfaces with
@@ -87,40 +94,38 @@ func (t *Triager) Filter(ctx context.Context, surfaces []enrichment.EnrichedSurf
 			"has_sink_nodes", len(surface.SinkNodes) > 0,
 			"sink_nodes", surface.SinkNodes,
 			"code_len", len(surface.Code),
+			"llm_mode", t.llmMode,
 		)
 
-		code := stripIndent(surface.Code)
-		if len(code) > 1500 {
-			code = code[:1500]
+		code := strings.TrimSpace(surface.Code)
+		if len(code) < 50 || !strings.Contains(code, "{") {
+			slog.Debug("triage: stub dropped (no method body)",
+				"function", surface.FunctionName,
+				"file", surface.File,
+				"code_len", len(surface.Code),
+			)
+			results = append(results, Result{
+				Surface:     surface,
+				Disposition: DispositionDrop,
+				Confidence:  0.0,
+				Explanation: "stub: no method body",
+			})
+			continue
 		}
-		taintInfo := "No confirmed taint path."
-		if len(surface.SinkNodes) > 0 {
-			taintInfo = fmt.Sprintf("CONFIRMED taint path to dangerous sink: %v", surface.SinkNodes)
-		}
-		prompt := fmt.Sprintf(
-			"You are a security code reviewer. Assess whether this function contains an exploitable vulnerability.\n"+
-				"File: %s\nFunction: %s\n"+
-				"Taint analysis: %s\n"+
-				"CWE candidates: %v\n\n"+
-				"Source code:\n```\n%s\n```\n\n"+
-				"Reply with ONLY a single decimal number between 0.0 and 1.0 representing your confidence "+
-				"that this function is exploitable. 1.0 = certain vulnerability, 0.0 = certainly safe.",
-			surface.File, surface.FunctionName, taintInfo, surface.CVEMatches, code)
+
+		prompt := buildTriagePrompt(surface, t.llmMode)
+		opts := triageOpts(t.llmMode)
 
 		slog.Debug("triage: prompt",
 			"prompt", prompt,
+			"opts", fmt.Sprintf("%+v", opts),
 		)
 
 		score := t.threshold
 		explanation := "not evaluated"
 
-		// ponytail: 2048 tokens — qwen3.5:9b consumes 873–2323 thinking tokens before
-		// emitting output; 512 still exhausts mid-CoT → empty → threshold fallback.
-		slog.Debug("triage: pre_send",
-			"num_predict", 2048,
-		)
 		genStart := time.Now()
-		resp, err := t.llm.Generate(ctx, prompt, &llm.Options{NumPredict: 2048, Think: boolPtr(false)})
+		resp, err := t.llm.Generate(ctx, prompt, opts)
 		genElapsed := time.Since(genStart)
 		if err == nil {
 			slog.Debug("triage: response",
@@ -128,16 +133,11 @@ func (t *Triager) Filter(ctx context.Context, surfaces []enrichment.EnrichedSurf
 				"elapsed_ms", genElapsed.Milliseconds(),
 			)
 
-			// ponytail: simple confidence parsing — enhancement planned with
-			// structured JSON output in the post-MVP LLM reasoner.
 			confidence := parseConfidence(resp)
 			slog.Debug("triage: parse_result",
 				"confidence", confidence,
-				"fell_back_to_threshold", confidence < 0,
 			)
-			if confidence >= 0 {
-				score = confidence
-			}
+			score = confidence
 			explanation = resp
 		} else {
 			slog.Debug("triage: response",
@@ -194,6 +194,130 @@ func (t *Triager) Filter(ctx context.Context, surfaces []enrichment.EnrichedSurf
 	return results, nil
 }
 
+// buildTriagePrompt constructs the triage prompt for the given surface
+// using the mode-appropriate strategy.
+func buildTriagePrompt(surface enrichment.EnrichedSurface, mode string) string {
+	switch mode {
+	case "small":
+		return buildTriagePromptSmall(surface)
+	case "frontier":
+		return buildTriagePromptFrontier(surface)
+	default:
+		return buildTriagePromptMid(surface)
+	}
+}
+
+// buildTriagePromptSmall builds a zero-shot minimal prompt for ≤7B models.
+// Code truncated to ≤300 chars. Reply is single word: SAFE or UNSAFE.
+func buildTriagePromptSmall(surface enrichment.EnrichedSurface) string {
+	var sb strings.Builder
+	sb.WriteString("You are a security reviewer. Does this function contain an exploitable vulnerability?\n")
+	sb.WriteString("File: ")
+	sb.WriteString(filenameOnly(surface.File))
+	sb.WriteString("\nFunction: ")
+	sb.WriteString(surface.FunctionName)
+	sb.WriteString("\n\nCode:\n```\n")
+	code := obfuscateCode(stripIndent(surface.Code))
+	if len(code) > 300 {
+		code = code[:300]
+	}
+	sb.WriteString(code)
+	sb.WriteString("\n```\n\nReply with exactly one word: SAFE or UNSAFE")
+	return sb.String()
+}
+
+// buildTriagePromptMid builds an externalized step scaffold for 7B–30B models.
+// Uses 5-class anchored confidence labels.
+func buildTriagePromptMid(surface enrichment.EnrichedSurface) string {
+	code := obfuscateCode(stripIndent(surface.Code))
+	if len(code) > 1000 {
+		code = code[:1000] + "\n...[truncated]"
+	}
+
+	taintInfo := "No confirmed taint path."
+	if len(surface.SinkNodes) > 0 {
+		taintInfo = fmt.Sprintf("CONFIRMED taint path to dangerous sink: %v", surface.SinkNodes)
+	}
+
+	var sb strings.Builder
+	sb.WriteString("You are a security code reviewer. Score this function for exploitability.\n\n")
+	sb.WriteString("File: ")
+	sb.WriteString(shortPath(surface.File))
+	sb.WriteString("\nFunction: ")
+	sb.WriteString(surface.FunctionName)
+	sb.WriteString("\nTaint: ")
+	sb.WriteString(taintInfo)
+	sb.WriteString("\nCWE candidates: ")
+	sb.WriteString(fmt.Sprintf("%v", surface.CVEMatches))
+	sb.WriteString("\n\nCode:\n```\n")
+	sb.WriteString(code)
+	sb.WriteString("\n```\n\nReply with ONLY one of these labels — nothing else:\n")
+	sb.WriteString("  0.0  — certainly safe (no vulnerability pattern)\n")
+	sb.WriteString("  0.3  — probably safe (minor concern, unlikely exploitable)\n")
+	sb.WriteString("  0.5  — uncertain (insufficient evidence)\n")
+	sb.WriteString("  0.7  — probably vulnerable (strong pattern, needs verification)\n")
+	sb.WriteString("  1.0  — certainly vulnerable (confirmed exploitable pattern)")
+	return sb.String()
+}
+
+// buildTriagePromptFrontier builds a full prompt for frontier models (>30B or API).
+func buildTriagePromptFrontier(surface enrichment.EnrichedSurface) string {
+	code := obfuscateCode(stripIndent(surface.Code))
+	if len(code) > 1500 {
+		code = code[:1500]
+	}
+
+	taintInfo := "No confirmed taint path."
+	if len(surface.SinkNodes) > 0 {
+		taintInfo = fmt.Sprintf("CONFIRMED taint path to dangerous sink: %v", surface.SinkNodes)
+	}
+
+	var sb strings.Builder
+	sb.WriteString("You are a security code reviewer. Assess whether this function contains an exploitable vulnerability.\n")
+	sb.WriteString("File: ")
+	sb.WriteString(shortPath(surface.File))
+	sb.WriteString("\nFunction: ")
+	sb.WriteString(surface.FunctionName)
+	sb.WriteString("\nTaint analysis: ")
+	sb.WriteString(taintInfo)
+	sb.WriteString("\nCWE candidates: ")
+	sb.WriteString(fmt.Sprintf("%v", surface.CVEMatches))
+	sb.WriteString("\n\nSource code:\n```\n")
+	sb.WriteString(code)
+	sb.WriteString("\n```\n\n")
+	sb.WriteString("Reply with ONLY a single decimal number between 0.0 and 1.0 representing your confidence ")
+	sb.WriteString("that this function is exploitable. 1.0 = certain vulnerability, 0.0 = certainly safe.\n")
+	sb.WriteString("Express your confidence as a decimal. Calibrate: 0.5 means genuine uncertainty, not a default.")
+	return sb.String()
+}
+
+// triageOpts returns LLM options appropriate for the given triage mode.
+func triageOpts(mode string) *llm.Options {
+	switch mode {
+	case "small":
+		return &llm.Options{Temperature: 0.0, NumPredict: 16, Think: boolPtr(false)}
+	case "frontier":
+		return &llm.Options{Temperature: 0.1, NumPredict: 256}
+	default: // mid
+		return &llm.Options{Temperature: 0.0, NumPredict: 32, Think: boolPtr(false)}
+	}
+}
+
+// filenameOnly extracts just the filename from a path.
+func filenameOnly(p string) string {
+	parts := strings.Split(p, "/")
+	return parts[len(parts)-1]
+}
+
+// shortPath returns the last 2 path segments joined by "/".
+func shortPath(p string) string {
+	parts := strings.Split(p, "/")
+	if len(parts) <= 2 {
+		return p
+	}
+	return strings.Join(parts[len(parts)-2:], "/")
+}
+
 // boolPtr returns a pointer to b for use with llm.Options.Think.
 func boolPtr(b bool) *bool { return &b }
 
@@ -206,17 +330,134 @@ func stripIndent(code string) string {
 	return strings.Join(lines, "\n")
 }
 
-// parseConfidence scans all whitespace-delimited tokens in s and returns the
-// last token that parses as a float64 in [0.0, 1.0]. Returns -1 when no valid
-// token is found.
-func parseConfidence(s string) float64 {
-	best := -1.0
-	for _, token := range strings.Fields(s) {
-		token = strings.TrimRight(token, ".,;:")
-		var v float64
-		if _, err := fmt.Sscanf(token, "%f", &v); err == nil && v >= 0 && v <= 1 {
-			best = v
+// obfuscateCode strips structural identity signals from code before LLM injection.
+// It removes package declarations, import blocks, line/block comments, and blanks
+// string literal contents — eliminating project-name leakage without knowing the
+// project name. Language-agnostic: works on Java, Go, Python, JS, etc.
+func obfuscateCode(code string) string {
+	var out strings.Builder
+	lines := strings.Split(code, "\n")
+	inBlockComment := false
+	inImportBlock := false
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+
+		// Track block comment state (/* ... */)
+		if inBlockComment {
+			if strings.Contains(trimmed, "*/") {
+				inBlockComment = false
+			}
+			continue
+		}
+		if strings.Contains(trimmed, "/*") && !strings.Contains(trimmed, "*/") {
+			inBlockComment = true
+			continue
+		}
+
+		// Strip package declarations (Java: "package x.y.z;", Go: "package foo")
+		if strings.HasPrefix(trimmed, "package ") {
+			continue
+		}
+
+		// Strip import blocks (Java multi-line: "import (", Go single: "import x")
+		if strings.HasPrefix(trimmed, "import ") || trimmed == "import (" {
+			inImportBlock = trimmed == "import ("
+			continue
+		}
+		if inImportBlock {
+			if trimmed == ")" {
+				inImportBlock = false
+			}
+			continue
+		}
+
+		// Strip line comments: // and # (any language), -- only when followed by
+		// a space (SQL convention). "--identifier" is a decrement op, not a comment.
+		isComment := strings.HasPrefix(trimmed, "//") ||
+			strings.HasPrefix(trimmed, "#") ||
+			strings.HasPrefix(trimmed, "-- ")
+		if isComment {
+			continue
+		}
+		if trimmed == "" {
+			continue
+		}
+
+		// Blank string literal contents while preserving structure.
+		// "hello world" → ""   'x' → ''
+		// Keeps quotes so concatenation patterns remain visible.
+		line = blankStringLiterals(line)
+
+		out.WriteString(line)
+		out.WriteByte('\n')
+	}
+	return strings.TrimSpace(out.String())
+}
+
+// blankStringLiterals replaces the contents of double and single-quoted string
+// literals with empty strings, preserving the quote characters themselves.
+func blankStringLiterals(line string) string {
+	var out strings.Builder
+	i := 0
+	for i < len(line) {
+		ch := line[i]
+		// Detect start of string literal
+		if ch == '"' || ch == '\'' {
+			quote := ch
+			out.WriteByte(quote) // opening quote
+			i++
+			// Skip content until closing (unescaped) quote
+			for i < len(line) {
+				c := line[i]
+				if c == '\\' {
+					i += 2 // skip escape sequence
+					continue
+				}
+				if c == quote {
+					break
+				}
+				i++
+			}
+			if i < len(line) {
+				out.WriteByte(quote) // closing quote
+				i++
+			}
+			continue
+		}
+		out.WriteByte(ch)
+		i++
+	}
+	return out.String()
+}
+
+// parseConfidence parses a confidence score from a raw LLM response.
+// For mid mode: matches anchored labels first (1.0, 0.7, 0.5, 0.3, 0.0).
+// For small mode: UNSAFE/SAFE.
+// Fallback: parse any float in response.
+// If nothing parseable: returns 0.5 (uncertain), NOT 0.0 (certainly safe).
+func parseConfidence(raw string) float64 {
+	// Anchored labels first (for mid mode)
+	for _, label := range []string{"1.0", "0.7", "0.5", "0.3", "0.0"} {
+		if strings.Contains(raw, label) {
+			v, _ := strconv.ParseFloat(label, 64)
+			return v
 		}
 	}
-	return best
+	// Small mode: UNSAFE/SAFE
+	upper := strings.ToUpper(strings.TrimSpace(raw))
+	if upper == "UNSAFE" {
+		return 1.0
+	}
+	if upper == "SAFE" {
+		return 0.0
+	}
+	// Fallback: parse any float in response
+	re := regexp.MustCompile(`\b(0\.\d+|1\.0)\b`)
+	if m := re.FindString(raw); m != "" {
+		v, _ := strconv.ParseFloat(m, 64)
+		return v
+	}
+	// No parseable value: return 0.5 (uncertain), NOT 0.0 (certainly safe)
+	return 0.5
 }

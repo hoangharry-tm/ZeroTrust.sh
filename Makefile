@@ -34,8 +34,6 @@ scan-clean:
 	@echo "Cleaning artifacts and ports..."
 	@lsof -ti:8080 2>/dev/null | xargs kill -9 2>/dev/null || true
 	@sleep 1
-	@rm -rf /tmp/zt-scan /tmp/zt-*
-	@mkdir -p /tmp/zt-scan
 	@rm -rf ~/mh_code/webgoat/.zerotrust
 	@rm -rf ./workspace
 

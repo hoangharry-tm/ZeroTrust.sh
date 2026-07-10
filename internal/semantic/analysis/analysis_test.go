@@ -3,7 +3,9 @@ package analysis
 import (
 	"context"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/hoangharry-tm/zerotrust/internal/finding"
 	"github.com/hoangharry-tm/zerotrust/internal/semantic/enrichment"
@@ -46,7 +48,7 @@ func TestScan_ExploitableVerdict_ReturnsFinding(t *testing.T) {
 			return `{"exploitable":true,"cwe":"CWE-89","severity":"HIGH","confidence":0.85,"explanation":"Direct SQL concat"}`, nil
 		},
 	}
-	s := New(p)
+	s := New(p, "mid")
 	surfaces := []enrichment.EnrichedSurface{makeSurface("s1", targeting.SurfaceExternalInput)}
 	findings, err := s.Scan(context.Background(), surfaces)
 	if err != nil {
@@ -63,43 +65,51 @@ func TestScan_ExploitableVerdict_ReturnsFinding(t *testing.T) {
 	}
 }
 
-func TestScan_NonExploitableVerdict_Dropped(t *testing.T) {
+func TestScan_NonExploitableVerdict_ReturnsFinding(t *testing.T) {
 	p := &mockProvider{
 		generateFunc: func(_ context.Context, _ string, _ *llm.Options) (string, error) {
 			return `{"exploitable":false,"cwe":"CWE-89","severity":"LOW","confidence":0.2,"explanation":"safe"}`, nil
 		},
 	}
-	s := New(p)
+	s := New(p, "mid")
 	surfaces := []enrichment.EnrichedSurface{makeSurface("s1", targeting.SurfaceExternalInput)}
 	findings, err := s.Scan(context.Background(), surfaces)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(findings) != 0 {
-		t.Fatalf("want 0 findings, got %d", len(findings))
+	if len(findings) != 1 {
+		t.Fatalf("want 1 finding, got %d", len(findings))
+	}
+	if findings[0].Exploitable {
+		t.Error("want Exploitable=false")
+	}
+	if findings[0].TaintMismatch {
+		t.Error("want TaintMismatch=false")
 	}
 }
 
-func TestScan_MalformedJSON_Dropped(t *testing.T) {
+func TestScan_MalformedJSON_ReturnsDefaultFinding(t *testing.T) {
 	p := &mockProvider{
 		generateFunc: func(_ context.Context, _ string, _ *llm.Options) (string, error) {
 			return "not json", nil
 		},
 	}
-	s := New(p)
+	s := New(p, "mid")
 	surfaces := []enrichment.EnrichedSurface{makeSurface("s1", targeting.SurfaceExternalInput)}
 	findings, err := s.Scan(context.Background(), surfaces)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(findings) != 0 {
-		t.Fatalf("want 0 findings, got %d", len(findings))
+	if len(findings) != 1 {
+		t.Fatalf("want 1 finding (default safe verdict), got %d", len(findings))
+	}
+	if findings[0].Exploitable {
+		t.Error("want Exploitable=false for malformed JSON")
 	}
 }
 
 func TestScan_BatchPreservesOrder(t *testing.T) {
-	// Exploitable surfaces at indices 0, 2, 4; non-exploitable at 1, 3.
-	// Prompts differ by CWE (auth→CWE-862 exploitable, sink→CWE-327 safe).
+	// All surfaces now return findings (no gates). Exploitable at 0, 2, 4.
 	p := &mockProvider{
 		generateFunc: func(_ context.Context, prompt string, _ *llm.Options) (string, error) {
 			if strings.Contains(prompt, "CWE-862") {
@@ -108,7 +118,7 @@ func TestScan_BatchPreservesOrder(t *testing.T) {
 			return `{"exploitable":false,"cwe":"CWE-327","severity":"LOW","confidence":0.1,"explanation":"safe"}`, nil
 		},
 	}
-	s := New(p)
+	s := New(p, "mid")
 	surfaces := []enrichment.EnrichedSurface{
 		{Surface: targeting.Surface{ID: "s0", File: "a.go", Kind: targeting.SurfaceAuthBoundary}},
 		{Surface: targeting.Surface{ID: "s1", File: "b.go", Kind: targeting.SurfaceDangerousSink}},
@@ -120,33 +130,29 @@ func TestScan_BatchPreservesOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(findings) != 3 {
-		t.Fatalf("want 3 findings, got %d", len(findings))
+	if len(findings) != 5 {
+		t.Fatalf("want 5 findings (all surfaces return), got %d", len(findings))
 	}
-	// Input indices 0, 2, 4 → output order must be files a.go, c.go, e.go.
-	if findings[0].Path != "a.go" {
-		t.Errorf("finding 0: want a.go, got %s", findings[0].Path)
-	}
-	if findings[1].Path != "c.go" {
-		t.Errorf("finding 1: want c.go, got %s", findings[1].Path)
-	}
-	if findings[2].Path != "e.go" {
-		t.Errorf("finding 2: want e.go, got %s", findings[2].Path)
+	// Input order preserved: indices 0,1,2,3,4 → a.go, b.go, c.go, d.go, e.go.
+	for i, want := range []string{"a.go", "b.go", "c.go", "d.go", "e.go"} {
+		if findings[i].Path != want {
+			t.Errorf("finding %d: want %s, got %s", i, want, findings[i].Path)
+		}
 	}
 }
 
 func TestScan_PerSurfaceErrorSkipped(t *testing.T) {
-	var callCount int
+	// callCount is accessed concurrently (g.SetLimit(2)) — must be atomic.
+	var callCount atomic.Int32
 	p := &mockProvider{
 		generateFunc: func(_ context.Context, _ string, _ *llm.Options) (string, error) {
-			callCount++
-			if callCount == 1 {
+			if callCount.Add(1) == 1 {
 				return "", assertAnError("llm error")
 			}
-			return `{"exploitable":true,"cwe":"CWE-89","severity":"HIGH","confidence":0.85,"explanation":"ok"}`, nil
+			return `{"exploitable":true,"cwe":"CWE-89","severity":"HIGH","confidence":0.85,"explanation":"ok","taint_mismatch":false}`, nil
 		},
 	}
-	s := New(p)
+	s := New(p, "mid")
 	surfaces := []enrichment.EnrichedSurface{
 		makeSurface("s1", targeting.SurfaceExternalInput),
 		makeSurface("s2", targeting.SurfaceExternalInput),
@@ -167,7 +173,7 @@ func (e assertAnError) Error() string { return string(e) }
 
 func TestBuildPrompt_ContainsCWE(t *testing.T) {
 	surface := makeSurface("s1", targeting.SurfaceExternalInput)
-	prompt := buildPrompt(surface)
+	prompt := buildPrompt(surface, "mid")
 	if !strings.Contains(prompt, "CWE-89") {
 		t.Errorf("prompt for ExternalInput surface should contain CWE-89, got:\n%s", prompt)
 	}
@@ -243,13 +249,87 @@ func TestParseVerdict_TaintMismatchParsed(t *testing.T) {
 	}
 }
 
-func TestScan_TaintMismatchDropsSurface(t *testing.T) {
+func TestSurfaceDeadline(t *testing.T) {
+	cases := []struct {
+		mode string
+		want time.Duration
+	}{
+		{"small", 45 * time.Second},
+		{"mid", 120 * time.Second},
+		{"frontier", 300 * time.Second},
+		{"", 120 * time.Second},
+	}
+	for _, c := range cases {
+		got := surfaceDeadline(c.mode)
+		if got != c.want {
+			t.Errorf("surfaceDeadline(%q) = %v, want %v", c.mode, got, c.want)
+		}
+	}
+}
+
+func TestScan_ConcurrencySmoke(t *testing.T) {
+	// Mid mode uses SetLimit(2). 4 surfaces must complete without deadlock.
+	var callCount int
+	p := &mockProvider{
+		generateFunc: func(_ context.Context, _ string, _ *llm.Options) (string, error) {
+			callCount++
+			return `{"exploitable":true,"cwe":"CWE-89","severity":"HIGH","confidence":0.85,"explanation":"test"}`, nil
+		},
+	}
+	s := New(p, "mid")
+	surfaces := []enrichment.EnrichedSurface{
+		makeSurface("s1", targeting.SurfaceExternalInput),
+		makeSurface("s2", targeting.SurfaceExternalInput),
+		makeSurface("s3", targeting.SurfaceExternalInput),
+		makeSurface("s4", targeting.SurfaceExternalInput),
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	findings, err := s.Scan(ctx, surfaces)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 4 {
+		t.Errorf("want 4 findings, got %d", len(findings))
+	}
+}
+
+func TestScanOne_EmptyResponseRetry(t *testing.T) {
+	var callCount int
+	p := &mockProvider{
+		generateFunc: func(_ context.Context, _ string, opts *llm.Options) (string, error) {
+			callCount++
+			if callCount == 1 {
+				// First call returns empty — triggers retry
+				return "", nil
+			}
+			// Second call returns valid verdict
+			return `{"exploitable":true,"cwe":"CWE-89","severity":"HIGH","confidence":0.85,"explanation":"test"}`, nil
+		},
+	}
+	s := New(p, "mid")
+	surface := makeSurface("s1", targeting.SurfaceExternalInput)
+	finding, err := s.scanOne(context.Background(), surface)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finding == nil {
+		t.Fatal("want non-nil finding after retry, got nil")
+	}
+	if callCount != 2 {
+		t.Errorf("expected 2 Generate calls (1 empty + 1 retry), got %d", callCount)
+	}
+}
+
+func TestScan_TaintMismatch_SetsFieldOnFinding(t *testing.T) {
 	p := &mockProvider{
 		generateFunc: func(_ context.Context, _ string, _ *llm.Options) (string, error) {
 			return `{"exploitable":false,"cwe":"CWE-89","severity":"LOW","confidence":0.2,"explanation":"no DB calls","taint_mismatch":true}`, nil
 		},
 	}
-	s := New(p)
+	s := New(p, "mid")
 	surfaces := []enrichment.EnrichedSurface{
 		{Surface: targeting.Surface{ID: "s1", File: "x.go", Kind: targeting.SurfaceExternalInput}},
 	}
@@ -257,7 +337,13 @@ func TestScan_TaintMismatchDropsSurface(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(findings) != 0 {
-		t.Fatalf("want 0 findings (taint_mismatch dropped), got %d", len(findings))
+	if len(findings) != 1 {
+		t.Fatalf("want 1 finding, got %d", len(findings))
+	}
+	if !findings[0].TaintMismatch {
+		t.Error("want TaintMismatch=true")
+	}
+	if findings[0].Exploitable {
+		t.Error("want Exploitable=false")
 	}
 }

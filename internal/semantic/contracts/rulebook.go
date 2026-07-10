@@ -46,21 +46,21 @@ var Rulebook = map[string]Invariant{
 	"CWE-22": {
 		CWE:         "CWE-22",
 		Name:        "Path Traversal",
-		SinkAnchors: []string{"FileWriter", "FileOutputStream", "FileInputStream", "FileReader", "new File", "Paths.get", "Files.copy", "Files.write", "Files.readAllBytes", "Files.newInputStream", "ZipEntry", "ZipInputStream", "getCanonicalPath", "getAbsolutePath"},
+		SinkAnchors: []string{"FileWriter", "FileOutputStream", "FileInputStream", "FileReader", "new File", "Paths.get", "Files.copy", "Files.write", "Files.readAllBytes", "Files.newInputStream", "ZipEntry", "ZipInputStream", "getCanonicalPath", "getAbsolutePath", "transferTo", "file.transferTo", "OutputStream.write", "Files.newOutputStream", "Files.newBufferedWriter", "Files.createFile", "Files.createTempFile", "Files.move"},
 		SafeNodes:   []string{"pathClean", "canonicalizePath", "pathValidate", "baseNameOnly", "normalize", "toAbsolutePath", "startsWith"},
 		Reference:   "OWASP Top 10 2021: A01 Broken Access Control; CWE-22 specification",
 	},
 	"CWE-79": {
 		CWE:         "CWE-79",
 		Name:        "XSS",
-		SinkAnchors: []string{"response.write", "response.Send", "innerHTML", "document.write", "echo", "print", "template.HTML", "Render"},
+		SinkAnchors: []string{"response.write", "response.Send", "innerHTML", "document.write", "echo", "PrintWriter.print", "HttpServletResponse.print", "out.println", "template.HTML"},
 		SafeNodes:   []string{"htmlEscape", "outputEncode", "contextEncode", "autoEscape"},
 		Reference:   "OWASP Top 10 2021: A03 Injection; CWE-79 specification",
 	},
 	"CWE-94": {
 		CWE:         "CWE-94",
 		Name:        "Code Injection",
-		SinkAnchors: []string{"eval", "reflect", "execScript", "Function", "code.eval", "compile", "runtime.exec"},
+		SinkAnchors: []string{"eval", "execScript", "code.eval", "runtime.exec", "ScriptEngine.eval", "Nashorn.eval", "JavaCompiler.compile", "Compiler.compile", "GroovyShell.evaluate", "Method.invoke", "Constructor.newInstance"},
 		SafeNodes:   nil, // no safe path for code injection — always a violation when sink is reached
 		Reference:   "OWASP Top 10 2021: A03 Injection; CWE-94 specification",
 	},
@@ -74,7 +74,7 @@ var Rulebook = map[string]Invariant{
 	"CWE-862": {
 		CWE:         "CWE-862",
 		Name:        "Missing Authorization",
-		SinkAnchors: []string{"api.handler", "route.Handle", "endpoint", "http.HandlerFunc", "resourceAccess"},
+		SinkAnchors: []string{"doFilter", "hasRole", "isAuthenticated", "checkPermission", "getAuthentication", "getPrincipal", "getSession", "getAttribute", "getUserPrincipal", "isUserInRole", "isGranted", "hasAuthority"},
 		SafeNodes:   []string{"authCheck", "authMiddleware", "authorize", "requireAuth", "permissionCheck"},
 		Reference:   "OWASP Top 10 2021: A01 Broken Access Control; CWE-862 specification",
 	},
@@ -88,7 +88,7 @@ var Rulebook = map[string]Invariant{
 	"CWE-502": {
 		CWE:         "CWE-502",
 		Name:        "Unsafe Deserialization",
-		SinkAnchors: []string{"ObjectInputStream.readObject", "pickle.load", "yaml.load", "unmarshal", "deserialize", "json.Unmarshal", "readObject"},
+		SinkAnchors: []string{"ObjectInputStream.readObject", "ObjectInputStream.deserialize", "Deserializer.deserialize", "Unmarshaller.unmarshal", "XmlUnmarshaller.unmarshal", "pickle.load", "yaml.load", "json.Unmarshal"},
 		SafeNodes:   []string{"typeFilter", "objectFilter", "deserializeSecure", "validateDeserialize"},
 		Reference:   "OWASP Top 10 2021: A08 Software and Data Integrity Failures; CWE-502 specification",
 	},

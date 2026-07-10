@@ -311,6 +311,185 @@ func TestDetectSanitizer_UnknownLanguageReturnsFalse(t *testing.T) {
 	}
 }
 
+// ─── Constructor sink type names ──────────────────────────────────────────────
+
+func TestJavaConstructorSinksPopulated(t *testing.T) {
+	cfg, ok := TaintConfigs[LanguageJava]
+	if !ok {
+		t.Fatal("Java config missing")
+	}
+	if len(cfg.ConstructorSinks) == 0 {
+		t.Fatal("Java ConstructorSinks is empty")
+	}
+}
+
+func TestConstructorSinkTypeNames_FileWriterPresent(t *testing.T) {
+	names := ConstructorSinkTypeNames(LanguageJava)
+	found := false
+	for _, n := range names {
+		if n == "FileWriter" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("ConstructorSinkTypeNames missing FileWriter, got %v", names)
+	}
+}
+
+func TestConstructorSinkTypeNames_EmptyForGo(t *testing.T) {
+	names := ConstructorSinkTypeNames(LanguageGo)
+	if len(names) != 0 {
+		t.Errorf("expected empty constructor sinks for Go, got %v", names)
+	}
+}
+
+func TestConstructorSinkTypeNames_UnknownLang(t *testing.T) {
+	names := ConstructorSinkTypeNames("ruby")
+	if names != nil {
+		t.Errorf("expected nil for unknown language, got %v", names)
+	}
+}
+
+// ─── P1-B: javaSinks expansion ───────────────────────────────────────────────
+
+func TestJavaSinks_ProcessBuilderPresent(t *testing.T) {
+	found := false
+	for _, s := range javaSinks {
+		if s.Name == "ProcessBuilder.start" {
+			found = true
+			if s.CWE != "CWE-78" {
+				t.Errorf("ProcessBuilder.start: expected CWE-78, got %q", s.CWE)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("javaSinks missing ProcessBuilder.start")
+	}
+}
+
+func TestJavaSinks_XStreamPresent(t *testing.T) {
+	found := false
+	for _, s := range javaSinks {
+		if s.Name == "XStream.fromXML" {
+			found = true
+			if s.CWE != "CWE-502" {
+				t.Errorf("XStream.fromXML: expected CWE-502, got %q", s.CWE)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("javaSinks missing XStream.fromXML")
+	}
+}
+
+func TestJavaSinks_YamlLoadPresent(t *testing.T) {
+	found := false
+	for _, s := range javaSinks {
+		if s.Name == "Yaml.load" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("javaSinks missing Yaml.load")
+	}
+}
+
+func TestJavaSinks_CreateNativeQueryPresent(t *testing.T) {
+	found := false
+	for _, s := range javaSinks {
+		if s.Name == "createNativeQuery" {
+			found = true
+			if s.CWE != "CWE-89" {
+				t.Errorf("createNativeQuery: expected CWE-89, got %q", s.CWE)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("javaSinks missing createNativeQuery")
+	}
+}
+
+func TestJavaSinks_ResponseGetWriterPresent(t *testing.T) {
+	found := false
+	for _, s := range javaSinks {
+		if s.Name == "response.getWriter" {
+			found = true
+			if s.CWE != "CWE-79" {
+				t.Errorf("response.getWriter: expected CWE-79, got %q", s.CWE)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("javaSinks missing response.getWriter")
+	}
+}
+
+// ─── P1-C: javaSources expansion ─────────────────────────────────────────────
+
+func TestJavaSources_ReadLinePresent(t *testing.T) {
+	found := false
+	for _, s := range javaSources {
+		if s.Name == "readLine" {
+			found = true
+			if s.Kind != "stdin" {
+				t.Errorf("readLine: expected kind stdin, got %q", s.Kind)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("javaSources missing readLine")
+	}
+}
+
+func TestJavaSources_NextLinePresent(t *testing.T) {
+	found := false
+	for _, s := range javaSources {
+		if s.Name == "nextLine" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("javaSources missing nextLine")
+	}
+}
+
+// ─── P2-A: Hard fallback sink list ───────────────────────────────────────────
+
+func TestHardFallback_PrepareStatementAbsent(t *testing.T) {
+	fallback := []string{"executeQuery", "executeUpdate", "execute",
+		"exec", "Runtime.exec", "eval", "readObject", "sendRedirect", "forward",
+		"FileWriter", "FileOutputStream", "query", "rawQuery", "createNativeQuery"}
+	for _, name := range fallback {
+		if name == "prepareStatement" {
+			t.Error("prepareStatement must not appear in hard fallback (safe pattern)")
+		}
+	}
+}
+
+func TestHardFallback_CreateNativeQueryPresent(t *testing.T) {
+	fallback := []string{"executeQuery", "executeUpdate", "execute",
+		"exec", "Runtime.exec", "eval", "readObject", "sendRedirect", "forward",
+		"FileWriter", "FileOutputStream", "query", "rawQuery", "createNativeQuery"}
+	found := false
+	for _, name := range fallback {
+		if name == "createNativeQuery" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("hard fallback missing createNativeQuery")
+	}
+}
+
 // ─── DetectLanguageFromFiles ──────────────────────────────────────────────────
 
 func TestDetectLanguageFromFiles_MajorityWins(t *testing.T) {

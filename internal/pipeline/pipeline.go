@@ -266,8 +266,8 @@ func New(ctx context.Context, cfg Config) (*Pipeline, error) {
 	enr := enrichment.New(graph, "trivy", cfg.Offline)
 	cc := contracts.New()
 	cc2 := crypto.New()
-	tr := triage.New(llmProvider, cfg.TriageThreshold)
-	sc := analysis.New(llmProvider)
+	tr := triage.New(llmProvider, cfg.TriageThreshold, cfg.LLMMode)
+	sc := analysis.New(llmProvider, cfg.LLMMode)
 
 	dd := dedup.New(cfg.Target)
 	rg := report.New(cfg.ReportPath)

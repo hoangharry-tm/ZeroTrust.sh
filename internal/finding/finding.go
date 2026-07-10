@@ -76,7 +76,7 @@ func (s SeverityLabel) String() string {
 	}
 }
 
-// goString returns the qualified Go-style identifier for debugging.
+// GoString returns the qualified Go-style identifier for debugging.
 func (s SeverityLabel) GoString() string {
 	switch s {
 	case SeverityBlock:
@@ -91,7 +91,8 @@ func (s SeverityLabel) GoString() string {
 		return "finding.SeveritySuppressed"
 	default:
 		return "finding.SeverityLabel(" + strings.TrimPrefix(
-			fmt.Sprintf("%d", int(s)), "") + ")"
+			fmt.Sprintf("%d", int(s)), "",
+		) + ")"
 	}
 }
 
@@ -227,6 +228,10 @@ type PoEResult struct {
 type Finding struct {
 	// ID is the stable dedup hash: hex(SHA-256(CWE + ":" + Path + ":" + CodeFingerprint)).
 	ID string `json:"ID"`
+	// SurfaceID is the CPG node ID of the surface that produced this finding.
+	// Used to correlate B5 LLM findings back to their B3 violation origin.
+	// Empty for Path A findings.
+	SurfaceID string `json:"SurfaceID"`
 	// Path is the file path relative to the project root.
 	Path string `json:"Path"`
 	// LineRange is the inclusive line span of the vulnerable code.
@@ -265,6 +270,12 @@ type Finding struct {
 	PatchStatus string `json:"PatchStatus"`
 	// PatchScope is the diff scope label: "single_hunk" | "multi_hunk" | "multi_file" | "".
 	PatchScope string `json:"PatchScope"`
+	// TaintMismatch is true when the LLM found no taint path in code despite
+	// the static analysis claim. Used by the B5 violation confirmation loop
+	// to suppress false-positive B3 violations.
+	TaintMismatch bool `json:"TaintMismatch"`
+	// Exploitable is the LLM's binary verdict on exploitability.
+	Exploitable bool `json:"Exploitable"`
 }
 
 // Channel is a typed channel through which pipeline stages emit findings.

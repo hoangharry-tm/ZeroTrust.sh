@@ -1,0 +1,184 @@
+package triage
+
+import (
+	"context"
+	"strings"
+	"testing"
+
+	"github.com/hoangharry-tm/zerotrust/internal/semantic/enrichment"
+	"github.com/hoangharry-tm/zerotrust/internal/semantic/targeting"
+	"github.com/hoangharry-tm/zerotrust/pkg/llm"
+)
+
+// mockProvider returns a canned response for every Generate call.
+type mockProvider struct {
+	response string
+}
+
+func (m *mockProvider) Generate(_ context.Context, _ string, _ *llm.Options) (string, error) {
+	return m.response, nil
+}
+func (m *mockProvider) Chat(_ context.Context, _ []llm.Message, _ *llm.Options) (llm.Message, error) {
+	return llm.Message{}, nil
+}
+func (m *mockProvider) Ping(_ context.Context) error { return nil }
+func (m *mockProvider) ModelName() string            { return "mock" }
+
+func makeSurface(code string) enrichment.EnrichedSurface {
+	return enrichment.EnrichedSurface{
+		Surface: targeting.Surface{
+			ID:           "s1",
+			File:         "src/main/java/com/example/Controller.java",
+			FunctionName: "handleRequest",
+			Kind:         targeting.SurfaceExternalInput,
+		},
+		Code: code,
+	}
+}
+
+func TestTriagePrompt_MidMode(t *testing.T) {
+	surface := makeSurface("func() { return 1; }")
+	prompt := buildTriagePrompt(surface, "mid")
+
+	for _, label := range []string{"0.0", "0.3", "0.5", "0.7", "1.0"} {
+		if !strings.Contains(prompt, label) {
+			t.Errorf("mid-mode prompt should contain label %q", label)
+		}
+	}
+}
+
+func TestTriagePrompt_SmallMode(t *testing.T) {
+	code := "func() {\n  return input;\n}"
+	surface := makeSurface(code)
+	prompt := buildTriagePrompt(surface, "small")
+
+	if !strings.Contains(prompt, "SAFE or UNSAFE") {
+		t.Errorf("small-mode prompt should contain 'SAFE or UNSAFE', got:\n%s", prompt)
+	}
+
+	// Test code truncation to ≤300 chars
+	longCode := string(make([]byte, 500))
+	surface2 := makeSurface(longCode)
+	prompt2 := buildTriagePrompt(surface2, "small")
+	if len(prompt2) > 1000 {
+		t.Errorf("small-mode prompt should truncate code, got length %d", len(prompt2))
+	}
+}
+
+func TestParseConfidence_FallbackIs0_5(t *testing.T) {
+	v := parseConfidence("I cannot determine")
+	if v != 0.5 {
+		t.Errorf("parseConfidence('I cannot determine') = %f, want 0.5", v)
+	}
+
+	v2 := parseConfidence("")
+	if v2 != 0.5 {
+		t.Errorf("parseConfidence('') = %f, want 0.5", v2)
+	}
+
+	v3 := parseConfidence("gibberish no numbers")
+	if v3 != 0.5 {
+		t.Errorf("parseConfidence('gibberish') = %f, want 0.5", v3)
+	}
+}
+
+// ── Fix 1 regression: B4 triage still obfuscates string literals ─────────
+
+func TestBuildTriagePrompt_StillObfuscates(t *testing.T) {
+	code := `executeQuery("SELECT * FROM users WHERE id='" + id + "'")`
+	surface := makeSurface(code)
+	prompt := buildTriagePromptMid(surface)
+	if strings.Contains(prompt, "SELECT") {
+		t.Errorf("B4 triage prompt should obfuscate string literals (no 'SELECT'), got:\n%s", prompt)
+	}
+}
+
+// ── Stub gate: surfaces without a method body ────────────────────────────
+
+func TestStubGateDropsNoBodySurfaces(t *testing.T) {
+	mock := &mockProvider{response: "0.7"}
+	triager := New(mock, 0.5, "mid")
+
+	surfaces := []enrichment.EnrichedSurface{
+		{
+			Surface: targeting.Surface{
+				ID:           "s1",
+				FunctionName: "getPath",
+				File:         "src/main/java/PathUtil.java",
+				Kind:         targeting.SurfaceExternalInput,
+			},
+			Code: "public String getPath()",
+		},
+		{
+			Surface: targeting.Surface{
+				ID:           "s2",
+				FunctionName: "findByUser",
+				File:         "UserProgressRepository.java",
+				Kind:         targeting.SurfaceExternalInput,
+			},
+			Code: "UserProgress findByUser(String user);\n}",
+		},
+		{
+			Surface: targeting.Surface{
+				ID:           "s3",
+				FunctionName: "doExec",
+				File:         "Executor.java",
+				Kind:         targeting.SurfaceExternalInput,
+			},
+			Code: "public void doExec(String cmd) {\n  String result = exec(cmd);\n  log.info(\"executed: \" + result);\n  return result;\n}",
+		},
+	}
+
+	results, err := triager.Filter(context.Background(), surfaces)
+	if err != nil {
+		t.Fatalf("Filter() returned error: %v", err)
+	}
+	if len(results) != 3 {
+		t.Fatalf("expected 3 results, got %d", len(results))
+	}
+
+	for _, r := range results {
+		switch r.Surface.FunctionName {
+		case "getPath", "findByUser":
+			if r.Disposition != DispositionDrop {
+				t.Errorf("%s: expected DispositionDrop, got %v (confidence=%.1f)", r.Surface.FunctionName, r.Disposition, r.Confidence)
+			}
+			if r.Confidence != 0.0 {
+				t.Errorf("%s: expected Confidence=0.0, got %.1f", r.Surface.FunctionName, r.Confidence)
+			}
+			if r.Explanation != "stub: no method body" {
+				t.Errorf("%s: expected explanation 'stub: no method body', got %q", r.Surface.FunctionName, r.Explanation)
+			}
+		case "doExec":
+			if r.Disposition != DispositionEscalate {
+				t.Errorf("doExec: expected DispositionEscalate (passes through to LLM), got %v (confidence=%.1f)", r.Disposition, r.Confidence)
+			}
+			if r.Confidence != 0.7 {
+				t.Errorf("doExec: expected Confidence=0.7 from mock LLM, got %.1f", r.Confidence)
+			}
+		}
+	}
+}
+
+func TestParseConfidence_AnchoredLabels(t *testing.T) {
+	tests := []struct {
+		input string
+		want  float64
+	}{
+		{"0.7", 0.7},
+		{"1.0", 1.0},
+		{"0.5", 0.5},
+		{"0.3", 0.3},
+		{"0.0", 0.0},
+		{"UNSAFE", 1.0},
+		{"SAFE", 0.0},
+		{" 0.7 ", 0.7},
+		{"certainly vulnerable: 1.0", 1.0},
+	}
+	for _, tc := range tests {
+		got := parseConfidence(tc.input)
+		if got != tc.want {
+			t.Errorf("parseConfidence(%q) = %f, want %f", tc.input, got, tc.want)
+		}
+	}
+}

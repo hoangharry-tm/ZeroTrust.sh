@@ -23,6 +23,7 @@ package analysis
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"time"
 
 	"golang.org/x/sync/errgroup"
@@ -35,27 +36,63 @@ import (
 // Scanner runs the LLM semantic reasoning pass over enriched surfaces.
 type Scanner struct {
 	provider llm.Provider
+	llmMode  string
 }
 
 // New returns a Scanner backed by the provided LLM provider.
-func New(provider llm.Provider) *Scanner {
-	return &Scanner{provider: provider}
+// llmMode must be "small", "mid" (default), or "frontier".
+func New(provider llm.Provider, llmMode string) *Scanner {
+	if llmMode == "" {
+		llmMode = "mid"
+	}
+	return &Scanner{provider: provider, llmMode: llmMode}
 }
 
-var analysisOpts = &llm.Options{
-	Temperature: 0.1,
-	// ponytail: num_predict=8192 for output budget; num_ctx=16384 overrides Ollama's
-	// default 4096-token context window — thinking tokens + prompt + JSON all share one
-	// pool; without explicit num_ctx the model hits done_reason=length at ~3500 eval_count
-	// (prompt ~600tok + thinking ~3500tok > 4096 default ctx).
-	NumPredict: 8192,
-	NumCtx:     16384,
-	TopP:       0.95,
+// analysisOpts returns LLM options appropriate for the given analysis mode.
+func analysisOpts(mode string) *llm.Options {
+	switch mode {
+	case "small":
+		return &llm.Options{
+			Temperature: 0.1,
+			NumPredict:  128,
+			NumCtx:      4096,
+			Think:       boolPtr(false),
+		}
+	case "frontier":
+		return &llm.Options{
+			Temperature: 0.1,
+			NumPredict:  1024,
+			NumCtx:      8192,
+		}
+	default: // mid
+		return &llm.Options{
+			Temperature: 0.1,
+			NumPredict:  512,
+			NumCtx:      16384,
+			Think:       boolPtr(false),
+		}
+	}
 }
+
+// surfaceDeadline returns the per-surface LLM timeout for the given mode.
+func surfaceDeadline(mode string) time.Duration {
+	switch mode {
+	case "small":
+		return 45 * time.Second
+	case "frontier":
+		return 300 * time.Second
+	default: // mid
+		return 120 * time.Second
+	}
+}
+
+// boolPtr returns a pointer to b for use with llm.Options.Think.
+func boolPtr(b bool) *bool { return &b }
 
 // Scan runs Tier 3 analysis on escalated surfaces concurrently.
-// Returns one finding per surface that the LLM judges exploitable.
-// Surfaces judged safe are silently dropped — not returned.
+// Returns one finding per surface. The caller (pathb) filters for
+// exploitable vs. non-exploitable based on surface context (violation
+// confirmation loop, taint mismatch handling).
 func (s *Scanner) Scan(ctx context.Context, surfaces []enrichment.EnrichedSurface) ([]finding.Finding, error) {
 	if len(surfaces) == 0 {
 		return nil, nil
@@ -69,7 +106,12 @@ func (s *Scanner) Scan(ctx context.Context, surfaces []enrichment.EnrichedSurfac
 
 	results := make([]indexedFinding, len(surfaces))
 	g, gctx := errgroup.WithContext(ctx)
-	g.SetLimit(1)
+	switch s.llmMode {
+	case "frontier":
+		g.SetLimit(1)
+	default: // mid, small
+		g.SetLimit(2)
+	}
 
 	for i, surface := range surfaces {
 		i, surface := i, surface
@@ -111,23 +153,62 @@ func (s *Scanner) scanOne(ctx context.Context, surface enrichment.EnrichedSurfac
 		"code_len", len(surface.Code),
 	)
 
-	prompt := buildPrompt(surface)
+	// Per-surface deadline prevents a single hung Ollama call from blocking the entire batch.
+	surfaceTimeout := surfaceDeadline(s.llmMode)
+	sctx, cancel := context.WithTimeout(ctx, surfaceTimeout)
+	defer cancel()
+
+	opts := analysisOpts(s.llmMode)
+	prompt := buildPrompt(surface, s.llmMode)
 
 	slog.Debug(
 		"analysis: prompt",
 		"prompt", prompt,
+		"llm_mode", s.llmMode,
+		"timeout", surfaceTimeout,
 	)
 
 	genStart := time.Now()
-	raw, err := s.provider.Generate(ctx, prompt, analysisOpts)
+	raw, err := s.provider.Generate(sctx, prompt, opts)
 	genElapsed := time.Since(genStart)
 	if err != nil {
-		slog.Debug(
-			"analysis: response",
-			"err", err.Error(),
-			"elapsed_ms", genElapsed.Milliseconds(),
-		)
+		if sctx.Err() != nil {
+			slog.Warn("analysis: surface timeout",
+				"surface_id", surface.ID,
+				"function", surface.FunctionName,
+				"mode", s.llmMode,
+				"timeout", surfaceTimeout,
+			)
+		} else {
+			slog.Debug(
+				"analysis: response",
+				"err", err.Error(),
+				"elapsed_ms", genElapsed.Milliseconds(),
+			)
+		}
 		return nil, err
+	}
+
+	// Empty response retry: context overflow or output truncation.
+	// Retry once with halved NumPredict and CoT forced off.
+	if raw == "" {
+		slog.Warn("analysis: empty response, retrying with reduced num_predict",
+			"surface_id", surface.ID,
+			"mode", s.llmMode,
+		)
+		retryOpts := *opts
+		retryOpts.NumPredict = opts.NumPredict / 2
+		if retryOpts.NumPredict < 64 {
+			retryOpts.NumPredict = 64
+		}
+		retryOpts.Think = boolPtr(false)
+		raw, err = s.provider.Generate(sctx, prompt, &retryOpts)
+		if err != nil || raw == "" {
+			slog.Warn("analysis: retry also returned empty, dropping surface",
+				"surface_id", surface.ID,
+			)
+			return nil, nil
+		}
 	}
 
 	slog.Debug(
@@ -147,29 +228,42 @@ func (s *Scanner) scanOne(ctx context.Context, surface enrichment.EnrichedSurfac
 		"taint_mismatch", verdict.TaintMismatch,
 	)
 
-	if verdict.TaintMismatch && !verdict.Exploitable {
-		slog.Info("analysis: taint_mismatch dropped",
-			"surface_id", surface.ID,
-			"function", surface.FunctionName,
-		)
-		return nil, nil
-	}
-
-	passedGate := verdict.Exploitable || verdict.Confidence >= 0.6
-	slog.Debug(
-		"analysis: gate",
-		"passed", passedGate,
-		"exploitable", verdict.Exploitable,
-		"confidence", verdict.Confidence,
-		"reason", map[bool]string{true: "passed gate", false: "!exploitable && confidence < 0.6"}[passedGate],
-	)
-
-	if !verdict.Exploitable && verdict.Confidence < 0.6 {
-		// confidence ≥ 0.6 with !exploitable: surface into finding for human review.
-		return nil, nil
+	// Self-consistency check for frontier mode: second evidence-only call
+	// for high-confidence exploitable findings.
+	if s.llmMode == "frontier" && verdict.Exploitable && verdict.Confidence >= 0.85 {
+		verdict = s.selfConsistencyCheck(sctx, surface, verdict)
 	}
 
 	f := verdictToFinding(surface, verdict)
 	return &f, nil
 }
+
+// selfConsistencyCheck runs a second code-only LLM call to verify a high-confidence
+// exploitable verdict. If the second call disagrees, confidence is downgraded.
+func (s *Scanner) selfConsistencyCheck(ctx context.Context, surface enrichment.EnrichedSurface, v Verdict) Verdict {
+	code := stripIndent(surface.Code)
+	if len(code) > 800 {
+		code = code[:800] + "\n...[truncated]"
+	}
+	probe := "Does this code contain a security vulnerability? Answer only: YES or NO\n\n```\n" + code + "\n```"
+	raw, err := s.provider.Generate(ctx, probe, &llm.Options{Temperature: 0.0, NumPredict: 8})
+	if err != nil {
+		return v
+	}
+	upper := strings.ToUpper(raw)
+	if strings.Contains(upper, "NO") && !strings.Contains(upper, "YES") {
+		slog.Info("analysis: self_consistency downgrade",
+			"surface_id", surface.ID, "original_confidence", v.Confidence)
+		v.Confidence -= 0.3
+		if v.Confidence < 0 {
+			v.Confidence = 0
+		}
+		if v.Confidence < 0.6 {
+			v.Exploitable = false
+		}
+	}
+	return v
+}
+
+
 

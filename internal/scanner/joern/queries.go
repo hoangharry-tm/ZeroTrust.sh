@@ -193,10 +193,12 @@ func queryCalleesByID(functionID string) string {
 // inter-procedural flows that cross multiple method frames.
 //
 // Parameters:
-//   - sinkNames: call names to match as sinks (e.g. "executeQuery", "exec").
+//   - sinkNames: call names to match as regular sinks (e.g. "executeQuery", "exec").
+//   - constructorTypeNames: type names for constructor-based sinks matched against
+//     c.typeFullName when c.name == "<init>". Empty slice is valid.
 //   - surfaceMethodIDs: Joern node IDs (as decimal strings) of surface methods
 //     whose parameters are treated as sources.
-func queryProjectWideTaintFlows(sinkNames []string, surfaceMethodIDs []string) string {
+func queryProjectWideTaintFlows(sinkNames, constructorTypeNames []string, surfaceMethodIDs []string) string {
 	sinkSet := `Set("` + strings.Join(sinkNames, `","`) + `")`
 	longIDs := make([]string, len(surfaceMethodIDs))
 	for i, id := range surfaceMethodIDs {
@@ -207,9 +209,15 @@ func queryProjectWideTaintFlows(sinkNames []string, surfaceMethodIDs []string) s
 	// method of the sink call (first path element) via cpg.call.id().method.
 	// Filtering to surface methods is done in Go after unmarshal.
 	_ = longIDs // surfaceMethodIDs used only for Go-side filtering
+
+	ctorSet := `Set("` + strings.Join(constructorTypeNames, `","`) + `")`
 	const tmpl = `{
   val sinkSet = $SINKSET
-  val sinks = cpg.call.filter(c => sinkSet.contains(c.name))
+  val callSinks = cpg.call.filter(c => sinkSet.contains(c.name))
+  val ctorSinkSet = $CTORSINKSET
+  val ctorCallSinks = if (ctorSinkSet.nonEmpty) cpg.call.filter(c => c.name == "<init>" && ctorSinkSet.exists(t => c.methodFullName.contains(t))).l else List.empty
+  val ctorSinks = ctorCallSinks.flatMap(_.argument.l)
+  val sinks = (callSinks ++ ctorSinks.iterator)
   cpg.method.parameter.reachableByFlows(sinks)
     .map { p =>
       val elems = p.elements.toList
@@ -223,10 +231,11 @@ func queryProjectWideTaintFlows(sinkNames []string, surfaceMethodIDs []string) s
         .filterNot(n => n.id < 0)
         .map(n => s"""{"id":"${n.id.toString}","name":"${n match{case c:Call=>c.name;case mp:MethodParameterIn=>mp.name;case i:Identifier=>i.name;case _=>""}}","file":"${try{n.property("FILENAME").asInstanceOf[String]}catch{case _=>""}}","line":${try{n.property("LINE_NUMBER").asInstanceOf[Int]}catch{case _=>0}},"type":"${n.label}"}""")
         .mkString(",")
-      s"""{"method_id":"${methodID}","method_name":"${methodName}","method_file":"${methodFile}","source":{"id":"${first.id.toString}","name":"${first match{case mp:MethodParameterIn=>mp.name;case m:Method=>m.name;case c:Call=>c.name;case _=>""}}","file":"${try{first.property("FILENAME").asInstanceOf[String]}catch{case _=>""}}","line":${try{first.property("LINE_NUMBER").asInstanceOf[Int]}catch{case _=>0}},"type":"${first.label}"},"sink":{"id":"${last.id.toString}","name":"${last match{case c:Call=>c.name;case m:Method=>m.name;case _=>""}}","file":"${try{last.property("FILENAME").asInstanceOf[String]}catch{case _=>""}}","line":${try{last.property("LINE_NUMBER").asInstanceOf[Int]}catch{case _=>0}},"type":"${last.label}"},"intermediate":[${intermediateJson}]}"""
+      s"""{"method_id":"${methodID}","method_name":"${methodName}","method_file":"${methodFile}","source":{"id":"${first.id.toString}","name":"${first match{case mp:MethodParameterIn=>mp.name;case m:Method=>m.name;case c:Call=>c.name;case _=>""}}","file":"${try{first.property("FILENAME").asInstanceOf[String]}catch{case _=>""}}","line":${try{first.property("LINE_NUMBER").asInstanceOf[Int]}catch{case _=>0}},"type":"${first.label}"},"sink":{"id":"${last.id.toString}","name":"${last match{case mp:MethodParameterIn=>mp.name;case c:Call=>c.name;case m:Method=>m.name;case _=>""}}","file":"${try{last.property("FILENAME").asInstanceOf[String]}catch{case _=>""}}","line":${try{last.property("LINE_NUMBER").asInstanceOf[Int]}catch{case _=>0}},"type":"${last.label}"},"intermediate":[${intermediateJson}]}"""
     }
     .toList.mkString("[", ",", "]")}`
-	return strings.ReplaceAll(tmpl, "$SINKSET", sinkSet)
+	s := strings.ReplaceAll(tmpl, "$SINKSET", sinkSet)
+	return strings.ReplaceAll(s, "$CTORSINKSET", ctorSet)
 }
 
 // queryTaintFlows returns a DSL expression for taint flows within a method.
@@ -254,7 +263,7 @@ func queryTaintFlows(methodID string, sinkNames []string) string {
        .slice(1, elems.size - 1)
        .map(n => s"""{"id":"${n.id.toString}","name":"${n match{case c:Call=>c.name;case mp:MethodParameterIn=>mp.name;case i:Identifier=>i.name;case _=>""}}","file":"${try{n.property("FILENAME").asInstanceOf[String]}catch{case _=>""}}","line":${try{n.property("LINE_NUMBER").asInstanceOf[Int]}catch{case _=>0}},"type":"${n.label}"}""")
        .mkString(",")
-     s"""{"source":{"id":"${first.id.toString}","name":"${first match{case mp:MethodParameterIn=>mp.name;case m:Method=>m.name;case c:Call=>c.name;case _=>""}}","file":"${try{first.property("FILENAME").asInstanceOf[String]}catch{case _=>""}}","line":${try{first.property("LINE_NUMBER").asInstanceOf[Int]}catch{case _=>0}},"type":"${first.label}"},"sink":{"id":"${last.id.toString}","name":"${last match{case c:Call=>c.name;case m:Method=>m.name;case _=>""}}","file":"${try{last.property("FILENAME").asInstanceOf[String]}catch{case _=>""}}","line":${try{last.property("LINE_NUMBER").asInstanceOf[Int]}catch{case _=>0}},"type":"${last.label}"},"intermediate":[${intermediateJson}]}"""
+     s"""{"source":{"id":"${first.id.toString}","name":"${first match{case mp:MethodParameterIn=>mp.name;case m:Method=>m.name;case c:Call=>c.name;case _=>""}}","file":"${try{first.property("FILENAME").asInstanceOf[String]}catch{case _=>""}}","line":${try{first.property("LINE_NUMBER").asInstanceOf[Int]}catch{case _=>0}},"type":"${first.label}"},"sink":{"id":"${last.id.toString}","name":"${last match{case mp:MethodParameterIn=>mp.name;case c:Call=>c.name;case m:Method=>m.name;case _=>""}}","file":"${try{last.property("FILENAME").asInstanceOf[String]}catch{case _=>""}}","line":${try{last.property("LINE_NUMBER").asInstanceOf[Int]}catch{case _=>0}},"type":"${last.label}"},"intermediate":[${intermediateJson}]}"""
    })
    .toList
    .mkString("[", ",", "]")}`

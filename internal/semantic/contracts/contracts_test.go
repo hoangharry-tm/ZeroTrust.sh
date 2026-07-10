@@ -104,11 +104,11 @@ func TestVerdictSafe(t *testing.T) {
 		},
 		{
 			name:    "Missing auth with auth check",
-			surface: surfaceWith(targeting.SurfaceAuthBoundary, []string{"api.handler"}, []string{"authCheck"}),
+			surface: surfaceWith(targeting.SurfaceAuthBoundary, []string{"doFilter"}, []string{"authCheck"}),
 		},
 		{
 			name:    "Missing auth IDOR with auth middleware",
-			surface: surfaceWith(targeting.SurfaceIDORCandidate, []string{"route.Handle"}, []string{"authMiddleware"}),
+			surface: surfaceWith(targeting.SurfaceIDORCandidate, []string{"hasRole"}, []string{"authMiddleware"}),
 		},
 		{
 			name:    "Broken crypto with SHA256",
@@ -173,12 +173,12 @@ func TestVerdictViolation(t *testing.T) {
 		},
 		{
 			name:    "Missing auth violation",
-			surface: surfaceWith(targeting.SurfaceAuthBoundary, []string{"api.handler"}, []string{"externalInput"}),
+			surface: surfaceWith(targeting.SurfaceAuthBoundary, []string{"doFilter"}, []string{"externalInput"}),
 			wantCWE: "CWE-862",
 		},
 		{
 			name:    "IDOR violation",
-			surface: surfaceWith(targeting.SurfaceIDORCandidate, []string{"endpoint"}, []string{"userParam"}),
+			surface: surfaceWith(targeting.SurfaceIDORCandidate, []string{"isAuthenticated"}, []string{"userParam"}),
 			wantCWE: "CWE-862",
 		},
 		{
@@ -225,7 +225,7 @@ func TestVerdictInconclusive(t *testing.T) {
 		},
 		{
 			name:    "Missing auth sink matched but empty call path",
-			surface: surfaceWith(targeting.SurfaceIDORCandidate, []string{"route.Handle"}, nil),
+			surface: surfaceWith(targeting.SurfaceIDORCandidate, []string{"isUserInRole"}, nil),
 		},
 	}
 
@@ -260,8 +260,8 @@ func TestDefaultInconclusive(t *testing.T) {
 	if result.Verdict != VerdictInconclusive {
 		t.Errorf("expected VerdictInconclusive for no-matching-anchor, got %s", result.Verdict)
 	}
-	if result.CWE != "" {
-		t.Errorf("expected empty CWE for default inconclusive, got %q", result.CWE)
+	if result.CWE != "CWE-22" {
+		t.Errorf("expected CWE-22 (first applicable for ExternalInput), got %q", result.CWE)
 	}
 }
 
@@ -369,5 +369,342 @@ func TestEmptySurfacesCheckAll(t *testing.T) {
 	results = c.CheckAll(context.Background(), []enrichment.EnrichedSurface{})
 	if results != nil {
 		t.Errorf("expected nil for empty slice, got %v", results)
+	}
+}
+
+// ── Fix 1 tests: best==nil branch returns primary CWE ──────────────────────
+
+func TestBestIsNil_ExternalInput_ReturnsCWEMinus22(t *testing.T) {
+	surface := enrichment.EnrichedSurface{
+		Surface: targeting.Surface{
+			ID:   "no-sink-surface",
+			Kind: targeting.SurfaceExternalInput,
+		},
+	}
+	c := New()
+	result := c.Check(context.Background(), surface)
+	if result.Verdict != VerdictInconclusive {
+		t.Errorf("expected VerdictInconclusive, got %s", result.Verdict)
+	}
+	if result.CWE != "CWE-22" {
+		t.Errorf("expected CWE-22 (first applicable for ExternalInput), got %q", result.CWE)
+	}
+	if result.Evidence != "no sink anchor matched for any applicable CWE" {
+		t.Errorf("expected 'no sink anchor matched' evidence, got %q", result.Evidence)
+	}
+}
+
+func TestBestIsNil_AuthBoundary_ReturnsCWEMinus862(t *testing.T) {
+	surface := enrichment.EnrichedSurface{
+		Surface: targeting.Surface{
+			ID:   "no-sink-auth",
+			Kind: targeting.SurfaceAuthBoundary,
+		},
+	}
+	c := New()
+	result := c.Check(context.Background(), surface)
+	if result.Verdict != VerdictInconclusive {
+		t.Errorf("expected VerdictInconclusive, got %s", result.Verdict)
+	}
+	if result.CWE != "CWE-862" {
+		t.Errorf("expected CWE-862 (first applicable for AuthBoundary), got %q", result.CWE)
+	}
+}
+
+func TestBestIsNil_UnknownKind_ReturnsEmptyCWE(t *testing.T) {
+	surface := enrichment.EnrichedSurface{
+		Surface: targeting.Surface{
+			ID:   "unknown-kind-surface",
+			Kind: targeting.SurfaceKind("unknown"),
+		},
+	}
+	c := New()
+	result := c.Check(context.Background(), surface)
+	if result.Verdict != VerdictInconclusive {
+		t.Errorf("expected VerdictInconclusive, got %s", result.Verdict)
+	}
+	if result.CWE != "" {
+		t.Errorf("expected empty CWE for unknown kind, got %q", result.CWE)
+	}
+}
+
+func TestBestIsNil_WithMatchingAnchor_ExistingBehaviorUnchanged(t *testing.T) {
+	surface := surfaceWith(targeting.SurfaceExternalInput, []string{"db.Query"}, []string{"userInput", "concat"})
+	c := New()
+	result := c.Check(context.Background(), surface)
+	if result.Verdict != VerdictViolation {
+		t.Errorf("expected VerdictViolation when anchor matches, got %s", result.Verdict)
+	}
+	if result.CWE != "CWE-89" {
+		t.Errorf("expected CWE-89 for SQLi, got %q", result.CWE)
+	}
+}
+
+// ── H3: CWE-22 sink anchor completeness (Spring/Servlet file sinks) ─────────
+
+func TestCWE22SinkAnchors_ContainsSpringFileSinks(t *testing.T) {
+	inv, ok := Rulebook["CWE-22"]
+	if !ok {
+		t.Fatal("CWE-22 missing from Rulebook")
+	}
+	required := []string{
+		"FileWriter", "FileOutputStream", "Files.copy", "Files.write",
+		"transferTo", "file.transferTo", "ZipEntry", "ZipInputStream",
+		"OutputStream.write", "Files.createFile", "Files.createTempFile", "Files.move",
+	}
+	anchors := make(map[string]bool, len(inv.SinkAnchors))
+	for _, a := range inv.SinkAnchors {
+		anchors[a] = true
+	}
+	for _, want := range required {
+		if !anchors[want] {
+			t.Errorf("CWE-22 SinkAnchors missing %q (needed for Spring/Servlet file upload sinks)", want)
+		}
+	}
+}
+
+func TestCWE22_TransferToSinkTriggersViolation(t *testing.T) {
+	// Spring MultipartFile.transferTo is a real file write sink — must fire the DCC.
+	surface := surfaceWith(targeting.SurfaceExternalInput, []string{"transferTo"}, []string{"file", "transferTo"})
+	surface.ContractCWE = "CWE-22"
+	c := New()
+	result := c.Check(context.Background(), surface)
+	if result.Verdict != VerdictViolation {
+		t.Errorf("transferTo should trigger CWE-22 violation, got verdict=%s cwe=%s evidence=%s",
+			result.Verdict, result.CWE, result.Evidence)
+	}
+}
+
+func TestCWE22_FileTransferToSinkTriggersViolation(t *testing.T) {
+	surface := surfaceWith(targeting.SurfaceExternalInput, []string{"file.transferTo"}, []string{"file", "file.transferTo"})
+	surface.ContractCWE = "CWE-22"
+	c := New()
+	result := c.Check(context.Background(), surface)
+	if result.Verdict != VerdictViolation {
+		t.Errorf("file.transferTo should trigger CWE-22 violation, got verdict=%s", result.Verdict)
+	}
+}
+
+// ── P1-A: CWE-862 real Java anchors ───────────────────────────────────────
+
+func TestCWE862_doFilterMatchesAnchor(t *testing.T) {
+	inv, ok := Rulebook["CWE-862"]
+	if !ok {
+		t.Fatal("CWE-862 missing from Rulebook")
+	}
+	anchors := make(map[string]bool, len(inv.SinkAnchors))
+	for _, a := range inv.SinkAnchors {
+		anchors[a] = true
+	}
+	if !anchors["doFilter"] {
+		t.Error("CWE-862 SinkAnchors missing doFilter")
+	}
+}
+
+func TestCWE862_hasRoleMatchesAnchor(t *testing.T) {
+	inv, ok := Rulebook["CWE-862"]
+	if !ok {
+		t.Fatal("CWE-862 missing from Rulebook")
+	}
+	anchors := make(map[string]bool, len(inv.SinkAnchors))
+	for _, a := range inv.SinkAnchors {
+		anchors[a] = true
+	}
+	if !anchors["hasRole"] {
+		t.Error("CWE-862 SinkAnchors missing hasRole")
+	}
+}
+
+func TestCWE862_GetAuthenticationMatchesAnchor(t *testing.T) {
+	inv, ok := Rulebook["CWE-862"]
+	if !ok {
+		t.Fatal("CWE-862 missing from Rulebook")
+	}
+	anchors := make(map[string]bool, len(inv.SinkAnchors))
+	for _, a := range inv.SinkAnchors {
+		anchors[a] = true
+	}
+	if !anchors["getAuthentication"] {
+		t.Error("CWE-862 SinkAnchors missing getAuthentication")
+	}
+}
+
+func TestCWE862_FictitiousAnchorsRemoved(t *testing.T) {
+	inv, ok := Rulebook["CWE-862"]
+	if !ok {
+		t.Fatal("CWE-862 missing from Rulebook")
+	}
+	fictitious := []string{"api.handler", "route.Handle", "endpoint", "http.HandlerFunc", "resourceAccess"}
+	anchors := make(map[string]bool, len(inv.SinkAnchors))
+	for _, a := range inv.SinkAnchors {
+		anchors[a] = true
+	}
+	for _, f := range fictitious {
+		if anchors[f] {
+			t.Errorf("CWE-862 should no longer contain fictitious anchor %q", f)
+		}
+	}
+}
+
+// ── P2-B: CWE-22 method call aliases ──────────────────────────────────────
+
+func TestCWE22_WriteMethodMatchesAnchor(t *testing.T) {
+	inv, ok := Rulebook["CWE-22"]
+	if !ok {
+		t.Fatal("CWE-22 missing from Rulebook")
+	}
+	anchors := make(map[string]bool, len(inv.SinkAnchors))
+	for _, a := range inv.SinkAnchors {
+		anchors[a] = true
+	}
+	if !anchors["OutputStream.write"] {
+		t.Error("CWE-22 SinkAnchors missing OutputStream.write (method-call form)")
+	}
+}
+
+func TestCWE22_CreateFileMatchesAnchor(t *testing.T) {
+	inv, ok := Rulebook["CWE-22"]
+	if !ok {
+		t.Fatal("CWE-22 missing from Rulebook")
+	}
+	anchors := make(map[string]bool, len(inv.SinkAnchors))
+	for _, a := range inv.SinkAnchors {
+		anchors[a] = true
+	}
+	if !anchors["Files.createFile"] {
+		t.Error("CWE-22 SinkAnchors missing Files.createFile")
+	}
+}
+
+func TestCWE22_LegacyFileWriterSinkStillWorks(t *testing.T) {
+	// Regression: existing FileWriter anchor must not be broken by new additions.
+	surface := surfaceWith(targeting.SurfaceExternalInput, []string{"FileWriter"}, []string{"userPath", "FileWriter"})
+	c := New()
+	result := c.Check(context.Background(), surface)
+	if result.Verdict != VerdictViolation {
+		t.Errorf("FileWriter should still trigger CWE-22 violation, got verdict=%s", result.Verdict)
+	}
+}
+
+// ── Root Cause 2a: overly-broad anchors ────────────────────────────────────
+
+func TestFalsePositiveAnchors_PrintStackTraceDoesNotFireCWE79(t *testing.T) {
+	// "print" as a 5-char anchor matched printStackTrace. Now qualified.
+	c := New()
+	surface := enrichment.EnrichedSurface{
+		Surface: targeting.Surface{
+			ID:   "test-printstacktrace",
+			Kind: targeting.SurfaceExternalInput,
+		},
+		SinkNodes: []string{"executeQuery"},
+		CallPath:  []string{"userInput", "executeQuery"},
+		Code:      `e.printStackTrace();`,
+	}
+	result := c.Check(context.Background(), surface)
+	if result.CWE == "CWE-79" {
+		t.Errorf("printStackTrace must NOT fire CWE-79 (no qualified anchor matches): verdict=%s cwe=%s", result.Verdict, result.CWE)
+	}
+	if result.CWE == "CWE-89" && result.Verdict != VerdictViolation {
+		t.Errorf("SQLi should still fire as VIOLATION, got verdict=%s", result.Verdict)
+	}
+}
+
+func TestFalsePositiveAnchors_PatternCompileDoesNotFireCWE94(t *testing.T) {
+	// "compile" is now qualified — Pattern.compile must NOT match CWE-94.
+	c := New()
+	surface := enrichment.EnrichedSurface{
+		Surface: targeting.Surface{
+			ID:   "test-pattern-compile",
+			Kind: targeting.SurfaceExternalInput,
+		},
+		SinkNodes: []string{"executeQuery"},
+		CallPath:  []string{"userInput", "executeQuery"},
+		Code:      `Pattern.compile("[0-9]+");`,
+	}
+	result := c.Check(context.Background(), surface)
+	if result.CWE == "CWE-94" {
+		t.Errorf("Pattern.compile must NOT fire CWE-94: verdict=%s cwe=%s", result.Verdict, result.CWE)
+	}
+}
+
+func TestFalsePositiveAnchors_FunctionInterfaceDoesNotFireCWE94(t *testing.T) {
+	// "Function" anchor removed — java.util.function.Function must not match.
+	c := New()
+	surface := enrichment.EnrichedSurface{
+		Surface: targeting.Surface{
+			ID:   "test-function-interface",
+			Kind: targeting.SurfaceExternalInput,
+		},
+		SinkNodes: []string{"executeQuery"},
+		CallPath:  []string{"userInput", "executeQuery"},
+		Code:      `Function<String, Response> handler = (s) -> service.call(s);`,
+	}
+	result := c.Check(context.Background(), surface)
+	if result.CWE == "CWE-94" {
+		t.Errorf("Function<String,Response> must NOT fire CWE-94: verdict=%s cwe=%s", result.Verdict, result.CWE)
+	}
+}
+
+// ── Root Cause 2c: CWE-502 false positives ─────────────────────────────────
+
+func TestFalsePositiveAnchors_ReadObjectJDBCDoesNotFireCWE502(t *testing.T) {
+	// "readObject" (unqualified) removed — ResultSet.readObject must NOT match.
+	// CWE-89 should still fire via executeQuery sink node.
+	c := New()
+	surface := enrichment.EnrichedSurface{
+		Surface: targeting.Surface{
+			ID:   "test-readobject-jdbc",
+			Kind: targeting.SurfaceExternalInput,
+		},
+		SinkNodes: []string{"readObject", "executeQuery"},
+		CallPath:  []string{"userInput", "executeQuery"},
+	}
+	result := c.Check(context.Background(), surface)
+	if result.CWE == "CWE-502" {
+		t.Errorf("ResultSet.readObject must NOT fire CWE-502 after removal of unqualified anchor: verdict=%s cwe=%s", result.Verdict, result.CWE)
+	}
+}
+
+// ── Root Cause 2d: comment/string stripping ────────────────────────────────
+
+func TestFalsePositiveAnchors_DeserializeInComment(t *testing.T) {
+	// "deserialize" in a comment must not fire CWE-502 after comment stripping.
+	c := New()
+	surface := enrichment.EnrichedSurface{
+		Surface: targeting.Surface{
+			ID:   "test-deserialize-comment",
+			Kind: targeting.SurfaceExternalInput,
+		},
+		SinkNodes: []string{},
+		CallPath:  []string{},
+		Code:      `// 3 deserializes via the all-args constructor`,
+	}
+	result := c.Check(context.Background(), surface)
+	if result.CWE == "CWE-502" {
+		t.Errorf("deserialize in comment must NOT fire CWE-502 after stripCode: verdict=%s cwe=%s", result.Verdict, result.CWE)
+	}
+}
+
+// ── Root Cause 3: sinkMatched priority ─────────────────────────────────────
+
+func TestSinkMatchedPrecedenceOverCodeMatch(t *testing.T) {
+	// Surface has both a code-only XSS match and a sink-node SQLi match.
+	// CWE-89 (sinkMatched=true) must win over CWE-79 (code-only, lower number).
+	c := New()
+	surface := enrichment.EnrichedSurface{
+		Surface: targeting.Surface{
+			ID:   "test-sink-priority",
+			Kind: targeting.SurfaceExternalInput,
+		},
+		SinkNodes: []string{"executeQuery"},
+		CallPath:  []string{"userInput", "executeQuery"},
+		Code:      `response.getWriter().println("hello");`,
+	}
+	result := c.Check(context.Background(), surface)
+	if result.CWE != "CWE-89" {
+		t.Errorf("CWE-89 (sinkMatched) should beat CWE-79 (code-only, lower number): got cwe=%s verdict=%s", result.CWE, result.Verdict)
+	}
+	if result.Verdict != VerdictViolation {
+		t.Errorf("expected VIOLATION for sink-matched SQLi, got %s", result.Verdict)
 	}
 }

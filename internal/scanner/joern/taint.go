@@ -51,10 +51,11 @@ type SanitizerDef struct {
 
 // TaintConfig holds the complete taint configuration for one language.
 type TaintConfig struct {
-	Language   Language
-	Sources    []SourceDef
-	Sinks      []SinkDef
-	Sanitizers []SanitizerDef
+	Language         Language
+	Sources          []SourceDef
+	Sinks            []SinkDef
+	ConstructorSinks []SinkDef // constructor-based sinks (<init> + typeFullName match)
+	Sanitizers       []SanitizerDef
 }
 
 // DetectLanguage returns the Language for a file path based on its extension.
@@ -77,7 +78,7 @@ func DetectLanguage(filePath string) (Language, bool) {
 
 // TaintConfigs maps each supported language to its taint configuration.
 var TaintConfigs = map[Language]TaintConfig{
-	LanguageJava:   {Language: LanguageJava, Sources: javaSources, Sinks: javaSinks, Sanitizers: javaSanitizers},
+	LanguageJava:   {Language: LanguageJava, Sources: javaSources, Sinks: javaSinks, ConstructorSinks: javaConstructorSinks, Sanitizers: javaSanitizers},
 	LanguagePython: {Language: LanguagePython, Sources: pythonSources, Sinks: pythonSinks, Sanitizers: pythonSanitizers},
 	LanguageJS:     {Language: LanguageJS, Sources: jsSources, Sinks: jsSinks, Sanitizers: jsSanitizers},
 	LanguageGo:     {Language: LanguageGo, Sources: goSources, Sinks: goSinks, Sanitizers: goSanitizers},
@@ -97,6 +98,14 @@ var javaSources = []SourceDef{
 	{Name: "getParts", Kind: "http_body"},
 	{Name: "getParameterMap", Kind: "http_param"},
 	{Name: "getAttribute", Kind: "http_param"},
+	{Name: "getPathVariable", Kind: "http_param"},
+	{Name: "getRequestBody", Kind: "http_body"},
+	{Name: "readLine", Kind: "stdin"},
+	{Name: "nextLine", Kind: "stdin"},
+	{Name: "getPathInfo", Kind: "http_param"},
+	{Name: "getServletPath", Kind: "http_param"},
+	{Name: "Part.getInputStream", Kind: "http_body"},
+	{Name: "Part.getSubmittedFileName", Kind: "http_param"},
 	{Name: "System.getenv", Kind: "env_var"},
 	{Name: "System.getProperty", Kind: "env_var"},
 	{Name: "System.getProperties", Kind: "env_var"},
@@ -106,16 +115,48 @@ var javaSinks = []SinkDef{
 	{Name: "executeQuery", Kind: cpg.SinkSQL, CWE: "CWE-89"},
 	{Name: "executeUpdate", Kind: cpg.SinkSQL, CWE: "CWE-89"},
 	{Name: "execute", Kind: cpg.SinkSQL, CWE: "CWE-89"},
+	{Name: "createNativeQuery", Kind: cpg.SinkSQL, CWE: "CWE-89"},
+	{Name: "createQuery", Kind: cpg.SinkSQL, CWE: "CWE-89"},
+	{Name: "createSQLQuery", Kind: cpg.SinkSQL, CWE: "CWE-89"},
+	{Name: "nativeQuery", Kind: cpg.SinkSQL, CWE: "CWE-89"},
+	{Name: "queryForObject", Kind: cpg.SinkSQL, CWE: "CWE-89"},
+	{Name: "queryForList", Kind: cpg.SinkSQL, CWE: "CWE-89"},
 	{Name: "exec", Kind: cpg.SinkCommand, CWE: "CWE-78"},
 	{Name: "Runtime.exec", Kind: cpg.SinkCommand, CWE: "CWE-78"},
+	{Name: "ProcessBuilder.start", Kind: cpg.SinkCommand, CWE: "CWE-78"},
+	{Name: "ProcessBuilder.command", Kind: cpg.SinkCommand, CWE: "CWE-78"},
 	{Name: "readObject", Kind: cpg.SinkDeserialization, CWE: "CWE-502"},
 	{Name: "ObjectInputStream", Kind: cpg.SinkDeserialization, CWE: "CWE-502"},
+	{Name: "XStream.fromXML", Kind: cpg.SinkDeserialization, CWE: "CWE-502"},
+	{Name: "Yaml.load", Kind: cpg.SinkDeserialization, CWE: "CWE-502"},
+	{Name: "JSON.parseObject", Kind: cpg.SinkDeserialization, CWE: "CWE-502"},
+	{Name: "readValue", Kind: cpg.SinkDeserialization, CWE: "CWE-502"},
+	{Name: "XMLDecoder.readObject", Kind: cpg.SinkDeserialization, CWE: "CWE-502"},
+	{Name: "SerializationUtils.deserialize", Kind: cpg.SinkDeserialization, CWE: "CWE-502"},
+	{Name: "Hessian2Input.readObject", Kind: cpg.SinkDeserialization, CWE: "CWE-502"},
 	{Name: "sendRedirect", Kind: cpg.SinkRedirect, CWE: "CWE-601"},
 	{Name: "forward", Kind: cpg.SinkRedirect, CWE: "CWE-601"},
 	{Name: "eval", Kind: cpg.SinkEval, CWE: "CWE-94"},
 	{Name: "ScriptEngine.eval", Kind: cpg.SinkEval, CWE: "CWE-94"},
+	{Name: "response.getWriter", Kind: cpg.SinkTemplate, CWE: "CWE-79"},
+	{Name: "out.print", Kind: cpg.SinkTemplate, CWE: "CWE-79"},
+	{Name: "out.println", Kind: cpg.SinkTemplate, CWE: "CWE-79"},
+	{Name: "out.write", Kind: cpg.SinkTemplate, CWE: "CWE-79"},
+	{Name: "ModelAndView", Kind: cpg.SinkTemplate, CWE: "CWE-79"},
+	{Name: "Velocity.evaluate", Kind: cpg.SinkTemplate, CWE: "CWE-79"},
 	{Name: "FileWriter", Kind: cpg.SinkFileWrite, CWE: "CWE-22"},
 	{Name: "FileOutputStream", Kind: cpg.SinkFileWrite, CWE: "CWE-22"},
+}
+
+var javaConstructorSinks = []SinkDef{
+	{Name: "FileWriter", Kind: cpg.SinkFileWrite, CWE: "CWE-22"},
+	{Name: "FileOutputStream", Kind: cpg.SinkFileWrite, CWE: "CWE-22"},
+	{Name: "FileInputStream", Kind: cpg.SinkFileWrite, CWE: "CWE-22"},
+	{Name: "FileReader", Kind: cpg.SinkFileWrite, CWE: "CWE-22"},
+	{Name: "ZipOutputStream", Kind: cpg.SinkFileWrite, CWE: "CWE-22"},
+	{Name: "ObjectInputStream", Kind: cpg.SinkDeserialization, CWE: "CWE-502"},
+	{Name: "XMLDecoder", Kind: cpg.SinkDeserialization, CWE: "CWE-502"},
+	{Name: "ProcessBuilder", Kind: cpg.SinkCommand, CWE: "CWE-78"},
 }
 
 var javaSanitizers = []SanitizerDef{
@@ -370,6 +411,20 @@ func DetectLanguageFromFiles(files []string) (Language, bool) {
 		}
 	}
 	return best, true
+}
+
+// ConstructorSinkTypeNames returns the type names for constructor-based sinks
+// for the given language. These match against c.call.typeFullName when c.name == "<init>".
+func ConstructorSinkTypeNames(lang Language) []string {
+	cfg, ok := TaintConfigs[lang]
+	if !ok {
+		return nil
+	}
+	names := make([]string, len(cfg.ConstructorSinks))
+	for i, s := range cfg.ConstructorSinks {
+		names[i] = s.Name
+	}
+	return names
 }
 
 // SinkDefForCall matches a CALL node name against the language's sink definitions.

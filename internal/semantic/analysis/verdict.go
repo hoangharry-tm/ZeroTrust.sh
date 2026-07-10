@@ -73,12 +73,15 @@ func verdictToFinding(surface enrichment.EnrichedSurface, v Verdict) finding.Fin
 
 	return finding.Finding{
 		ID:            newRunID(),
+		SurfaceID:     surface.ID,
 		CWE:           cwe,
 		SeverityLabel: severity,
 		Confidence:    confidence,
 		Path:          surface.File,
 		Justification: v.Explanation,
 		SourcePath:    finding.SourceSemantic,
+		TaintMismatch: v.TaintMismatch,
+		Exploitable:   v.Exploitable,
 	}
 }
 

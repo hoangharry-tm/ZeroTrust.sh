@@ -708,9 +708,9 @@ func (g *joernGraph) TaintPaths(sources []cpg.TaintSource, sinks []cpg.TaintSink
 	}
 	if len(sinkNames) == 0 {
 		// Hard fallback: common dangerous call names across languages
-		sinkNames = []string{"executeQuery", "executeUpdate", "execute", "prepareStatement",
+		sinkNames = []string{"executeQuery", "executeUpdate", "execute",
 			"exec", "Runtime.exec", "eval", "readObject", "sendRedirect", "forward",
-			"FileWriter", "FileOutputStream", "query", "rawQuery"}
+			"FileWriter", "FileOutputStream", "query", "rawQuery", "createNativeQuery"}
 	}
 
 	q := queryTaintFlows(methodID, sinkNames)
@@ -789,20 +789,22 @@ func (g *joernGraph) ProjectWideTaintPaths(surfaceIDs []string, lang string) ([]
 
 	// Build sink names from language taint config.
 	sinkNames := make([]string, 0)
+	var constructorTypeNames []string
 	if lang != "" {
 		if cfg, ok := TaintConfigs[Language(lang)]; ok {
 			for _, sd := range cfg.Sinks {
 				sinkNames = append(sinkNames, sd.Name)
 			}
+			constructorTypeNames = ConstructorSinkTypeNames(Language(lang))
 		}
 	}
 	if len(sinkNames) == 0 {
-		sinkNames = []string{"executeQuery", "executeUpdate", "execute", "prepareStatement",
+		sinkNames = []string{"executeQuery", "executeUpdate", "execute",
 			"exec", "Runtime.exec", "eval", "readObject", "sendRedirect", "forward",
-			"FileWriter", "FileOutputStream", "query", "rawQuery"}
+			"FileWriter", "FileOutputStream", "query", "rawQuery", "createNativeQuery"}
 	}
 
-	q := queryProjectWideTaintFlows(sinkNames, surfaceIDs)
+	q := queryProjectWideTaintFlows(sinkNames, constructorTypeNames, surfaceIDs)
 	slog.Debug("joern: ProjectWideTaintPaths query", "query", q, "surfaces", len(surfaceIDs))
 	raw, err := g.client.doQuery(g.ctx, q)
 	if err != nil {
@@ -830,6 +832,13 @@ func (g *joernGraph) ProjectWideTaintPaths(surfaceIDs []string, lang string) ([]
 	for _, f := range flows {
 		if len(paths) >= config.C.CPGMaxTaintPaths {
 			break
+		}
+		// Drop phantom paths: Joern traces internal I/O and JDBC chains
+		// (ResultSet, InputStream, ObjectInputStream) that are not user-controlled.
+		// Signature: source parameter name is a known internal-type alias AND
+		// the first few intermediate nodes are all single-word IO primitives.
+		if isPhantomTaintPath(f) {
+			continue
 		}
 
 		// Joern path order is SINK→SOURCE: elems.head = CALL (sink), elems.last = MethodParameterIn (source).
@@ -978,6 +987,86 @@ func paginatedNodeQuery(nt cpg.NodeType, offset, take int) string {
 	default:
 		return nodeTypeQuery(nt)
 	}
+}
+
+// internalSourceNames are parameter names that are JDBC/IO types, not user input.
+// Taint paths whose source parameter matches these produce phantom flows.
+var internalSourceNames = map[string]bool{
+	"is": true, "in": true, "out": true, "rs": true, "results": true,
+	"ois": true, "buf": true, "buffer": true, "inputStream": true,
+	"outputStream": true, "reader": true, "writer": true, "conn": true,
+	"connection": true, "stmt": true, "ps": true, "pstmt": true,
+}
+
+// internalIntermediateNames are node names that appear in internal IO/JDBC chains.
+var internalIntermediateNames = map[string]bool{
+	"is": true, "in": true, "read": true, "results": true, "rs": true,
+	"buf": true, "buffer": true, "ois": true, "out": true, "len": true,
+	"n": true, "b": true, "inputStream": true, "outputStream": true,
+	"FileCopyUtils": true, "copyToByteArray": true, "getEncoder": true,
+	"encode": true, "encodeToString": true, "toByteArray": true,
+	"getMetaData": true, "resultsMetaData": true, "getColumnCount": true,
+	"getColumnName": true, "getColumnType": true, "findFirst": true,
+	"cols": true, "col": true, "i": true, "canWrite": true,
+}
+
+// isPhantomTaintPath returns true when a Joern flow is an internal I/O or JDBC
+// chain rather than a real user-input taint path. These arise because
+// reachableByFlows uses ALL method parameters as sources, including ResultSet,
+// InputStream, and ObjectInputStream parameters that are not user-controlled.
+//
+// Detection uses three independent conditions (OR):
+//
+//  1. Source param name is a known internal alias AND ≥3 of first 5
+//     intermediate nodes are internal IO/JDBC primitives (the DAO-param case).
+//
+//  2. The intermediate chain is dominated by internal names regardless of the
+//     source param name — ≥4 of first 8 intermediates are internal (catches
+//     paths that start from a real user param but cross into JDBC/IO internals).
+//
+//  3. Very long paths (>500 hops) whose first intermediate is internal — a
+//     fast-path for unbounded internal IO chains (e.g. ResultSet metadata
+//     enumeration that produces thousands of nodes).
+func isPhantomTaintPath(f joernFlow) bool {
+	// ── condition 1: internal source param corroborated by intermediates ──
+	srcName := f.Sink.Name
+	if internalSourceNames[srcName] {
+		check := f.Intermediate
+		if len(check) > 5 {
+			check = check[:5]
+		}
+		internalCount := 0
+		for _, n := range check {
+			if internalIntermediateNames[n.Name] {
+				internalCount++
+			}
+		}
+		if internalCount >= 3 {
+			return true
+		}
+	}
+
+	// ── condition 2: intermediate-chain domination heuristic ──
+	check := f.Intermediate
+	if len(check) > 8 {
+		check = check[:8]
+	}
+	internalCount := 0
+	for _, n := range check {
+		if internalIntermediateNames[n.Name] {
+			internalCount++
+		}
+	}
+	if internalCount >= 4 {
+		return true
+	}
+
+	// ── condition 3: very long internal IO chains ──
+	if len(f.Intermediate) > 500 && internalIntermediateNames[f.Intermediate[0].Name] {
+		return true
+	}
+
+	return false
 }
 
 // escapeScalaString escapes a string for safe embedding in a Joern DSL query.

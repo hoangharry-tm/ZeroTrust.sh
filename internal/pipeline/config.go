@@ -90,6 +90,10 @@ type Config struct {
 
 	// Verbose enables debug-level logging to stderr for both Go and the Python worker.
 	Verbose bool
+
+	// LLMMode controls the prompting strategy for LLM stages (B4 triage, B5 analysis).
+	// Values: "small" | "mid" | "frontier". Default: "mid".
+	LLMMode string
 }
 
 // defaults fills zero-value fields with safe production defaults.
@@ -114,5 +118,8 @@ func (c *Config) defaults() {
 	}
 	if c.TriageThreshold <= 0 {
 		c.TriageThreshold = 0.50
+	}
+	if c.LLMMode == "" {
+		c.LLMMode = "mid"
 	}
 }

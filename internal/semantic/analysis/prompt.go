@@ -75,8 +75,10 @@ func buildSCL(surface enrichment.EnrichedSurface) string {
 }
 
 // buildCFP builds the Control Flow Predicate prompt section.
+// Sink nodes are filtered to only those relevant to the surface's contract CWE,
+// preventing cross-CWE contamination (e.g. executeQuery appearing in CWE-862 prompts).
 func buildCFP(surface enrichment.EnrichedSurface) string {
-	sinkNodes := surface.SinkNodes
+	sinkNodes := filterSinksByCWE(surface.SinkNodes, surface.ContractCWE)
 	if len(sinkNodes) > 3 {
 		sinkNodes = sinkNodes[:3]
 	}
@@ -95,11 +97,39 @@ func buildCFP(surface enrichment.EnrichedSurface) string {
 	sb.WriteString("=== CONTROL FLOW EVIDENCE ===\n")
 	sb.WriteString(fmt.Sprintf("Surface kind: %s\n", surface.Kind))
 	sb.WriteString(fmt.Sprintf("Source file: %s\n", shortPath(sourceFile)))
-	sb.WriteString(fmt.Sprintf("Sink nodes: %s\n", strings.Join(sinkNodes, ", ")))
+	if len(sinkNodes) > 0 {
+		sb.WriteString(fmt.Sprintf("Sink nodes: %s\n", strings.Join(sinkNodes, ", ")))
+	}
 	sb.WriteString(fmt.Sprintf("Taint path (%d nodes): %s\n", len(surface.CallPath), strings.Join(callPath, " → ")))
 	sb.WriteString(fmt.Sprintf("CVE matches: %d (%s)\n", len(surface.CVEMatches), firstOrNone(surface.CVEMatches)))
 	sb.WriteString(fmt.Sprintf("IDOR flows: %d detected\n", len(surface.ResourceIDFlows)))
 	return sb.String()
+}
+
+// filterSinksByCWE returns only the sink nodes that are relevant to the given
+// CWE contract. A sink node is relevant if it contains (case-insensitive substring
+// match) any of the CWE's registered SinkAnchors. If cwe is empty or unknown,
+// all sinks are returned unfiltered. If the intersection is empty, nil is returned
+// so the caller can omit the sink line entirely.
+func filterSinksByCWE(sinks []string, cwe string) []string {
+	if len(sinks) == 0 {
+		return nil
+	}
+	inv, ok := contracts.Rulebook[cwe]
+	if !ok || len(inv.SinkAnchors) == 0 {
+		return sinks
+	}
+	var filtered []string
+	for _, sink := range sinks {
+		sinkLower := strings.ToLower(sink)
+		for _, anchor := range inv.SinkAnchors {
+			if strings.Contains(sinkLower, strings.ToLower(anchor)) {
+				filtered = append(filtered, sink)
+				break
+			}
+		}
+	}
+	return filtered
 }
 
 // buildAIP builds the AI Failure Profile prompt section.
@@ -120,8 +150,43 @@ func buildAIP(surface enrichment.EnrichedSurface) string {
 	return sb.String()
 }
 
-// buildPrompt assembles SCL + CFP + AIP + source code into the final prompt.
-func buildPrompt(surface enrichment.EnrichedSurface) string {
+// buildPrompt assembles the mode-appropriate prompt for the given surface.
+func buildPrompt(surface enrichment.EnrichedSurface, mode string) string {
+	switch mode {
+	case "small":
+		return buildPromptSmall(surface)
+	case "frontier":
+		return buildPromptFrontier(surface)
+	default:
+		return buildPromptMid(surface)
+	}
+}
+
+// buildPromptSmall builds a minimal prompt for ≤7B models — no SCL/AIP overhead.
+func buildPromptSmall(surface enrichment.EnrichedSurface) string {
+	var sb strings.Builder
+	sb.WriteString("Does this function contain an exploitable security vulnerability?\n")
+	sb.WriteString("Do NOT use knowledge of the project name or framework.\n")
+	sb.WriteString("Base your answer ONLY on the code below.\n\n")
+	sb.WriteString("taint_mismatch: set true ONLY IF the specific sink method named in the\n")
+	sb.WriteString("  taint path (e.g. \"executeQuery\", \"exec\", \"Files.write\") is completely\n")
+	sb.WriteString("  absent from the provided source code. Do NOT set true for uncertainty\n")
+	sb.WriteString("  or insufficient evidence — use a low confidence score instead.\n\n")
+	if surface.Code != "" {
+		code := stripIndent(surface.Code)
+		if len(code) > 500 {
+			code = code[:500] + "\n...[truncated]"
+		}
+		sb.WriteString("```\n")
+		sb.WriteString(code)
+		sb.WriteString("\n```\n\n")
+	}
+	sb.WriteString(`Reply with exactly: {"exploitable": true|false, "cwe": "<CWE-ID>", "severity": "CRITICAL|HIGH|MEDIUM|LOW", "confidence": 0.0-1.0, "explanation": "<25 words max>", "taint_mismatch": true|false}`)
+	return sb.String()
+}
+
+// buildPromptMid builds a prompt with externalized step scaffold for 7B–30B models.
+func buildPromptMid(surface enrichment.EnrichedSurface) string {
 	scl := buildSCL(surface)
 	cfp := buildCFP(surface)
 	aip := buildAIP(surface)
@@ -148,10 +213,189 @@ func buildPrompt(surface enrichment.EnrichedSurface) string {
 	}
 	sb.WriteString(aip)
 	sb.WriteString("\n\n")
-	sb.WriteString("Based on the evidence above, is this surface exploitable?\n\n")
-	sb.WriteString("Respond with exactly:\n")
-	sb.WriteString(`{"exploitable": true|false, "cwe": "<CWE-ID>", "severity": "CRITICAL|HIGH|MEDIUM|LOW", "confidence": 0.0-1.0, "explanation": "<25 words max>", "taint_mismatch": true|false}`)
+	if surface.TaintConfidence == "weak" {
+		sb.WriteString("NOTE: No inter-procedural taint path was confirmed for this surface. ")
+		sb.WriteString("Reason from code structure and the CWE-")
+		sb.WriteString(surface.ContractCWE)
+		sb.WriteString(" contract only.\n\n")
+	}
+	sb.WriteString("Follow these steps in order — do NOT skip any:\n")
+	sb.WriteString("Step 1: Read the Security Contract. What is the CWE and invariant?\n")
+	sb.WriteString("Step 2: Check the Taint Path. Does it reach a sink anchor listed in the contract?\n")
+	sb.WriteString("Step 3: Read the Source Code. Does the code confirm OR contradict the taint path?\n")
+	sb.WriteString("  - taint_mismatch: set true ONLY IF the specific sink method named in the\n")
+	sb.WriteString("    taint path (e.g. \"executeQuery\", \"exec\", \"Files.write\") is completely\n")
+	sb.WriteString("    absent from the provided source code. Do NOT set true for uncertainty\n")
+	sb.WriteString("    or insufficient evidence — use a low confidence score instead.\n")
+	sb.WriteString("  - If code confirms taint path: continue to Step 4\n")
+	sb.WriteString("Step 4: Check for safe nodes. Is there a sanitizer/guard on the taint path in the code?\n")
+	sb.WriteString("Step 5: Emit your verdict as JSON.\n\n")
+	sb.WriteString("IMPORTANT: Base your answer ONLY on the evidence above. Do NOT use prior knowledge about the project name, framework, or codebase. If evidence is insufficient, return exploitable=false.\n\n")
+	sb.WriteString(`Respond with exactly: {"exploitable": true|false, "cwe": "<CWE-ID>", "severity": "CRITICAL|HIGH|MEDIUM|LOW", "confidence": 0.0-1.0, "explanation": "<25 words max>", "taint_mismatch": true|false}`)
 	return sb.String()
+}
+
+// buildPromptFrontier builds a full prompt for frontier models (>30B or API)
+// with CoT, few-shot examples, and Think & Verify instruction.
+func buildPromptFrontier(surface enrichment.EnrichedSurface) string {
+	scl := buildSCL(surface)
+	cfp := buildCFP(surface)
+	aip := buildAIP(surface)
+
+	var sb strings.Builder
+	sb.WriteString("You are a senior application security engineer performing a code review.\n")
+	sb.WriteString("Analyze the following surface for a real, exploitable vulnerability.\n")
+	sb.WriteString("Base your answer ONLY on the source code and static analysis evidence provided below.\n")
+	sb.WriteString("Do NOT use prior knowledge about the project name, framework reputation, or codebase.\n")
+	sb.WriteString("If the provided evidence is insufficient to confirm exploitability, return exploitable=false.\n")
+	sb.WriteString("Answer ONLY with a JSON object — no prose, no markdown.\n\n")
+	sb.WriteString(scl)
+	sb.WriteString("\n\n")
+	sb.WriteString(cfp)
+	sb.WriteString("\n\n")
+	if surface.Code != "" {
+		code := stripIndent(surface.Code)
+		if len(code) > 2000 {
+			code = code[:2000] + "\n... [truncated]"
+		}
+		sb.WriteString("=== FUNCTION SOURCE CODE ===\n")
+		sb.WriteString(code)
+		sb.WriteString("\n\n")
+	}
+	sb.WriteString(aip)
+	sb.WriteString("\n\n")
+	if surface.TaintConfidence == "weak" {
+		sb.WriteString("NOTE: No inter-procedural taint path was confirmed for this surface. ")
+		sb.WriteString("Reason from code structure and the CWE-")
+		sb.WriteString(surface.ContractCWE)
+		sb.WriteString(" contract only.\n\n")
+	}
+	sb.WriteString("taint_mismatch: set true ONLY IF the specific sink method named in the\n")
+	sb.WriteString("  taint path (e.g. \"executeQuery\", \"exec\", \"Files.write\") is completely\n")
+	sb.WriteString("  absent from the provided source code. Do NOT set true for uncertainty\n")
+	sb.WriteString("  or insufficient evidence — use a low confidence score instead.\n\n")
+	sb.WriteString("=== FEW-SHOT EXAMPLES ===\n")
+	sb.WriteString("Example 1 (TRUE POSITIVE):\n")
+	sb.WriteString("Code: stmt.executeQuery(\"SELECT * FROM users WHERE id='\" + userId + \"'\")\n")
+	sb.WriteString("Verdict: {\"exploitable\":true,\"cwe\":\"CWE-89\",\"severity\":\"HIGH\",\"confidence\":0.95,\"explanation\":\"User input directly concatenated into SQL query.\",\"taint_mismatch\":false}\n\n")
+	sb.WriteString("Example 2 (TAINT MISMATCH — sink absent from code):\n")
+	sb.WriteString("Code: return ResponseEntity.ok(user.getProfile());\n")
+	sb.WriteString("Taint path claims sink: executeQuery\n")
+	sb.WriteString("Verdict: {\"exploitable\":false,\"cwe\":\"\",\"severity\":\"LOW\",\"confidence\":0.95,\n")
+	sb.WriteString("\"explanation\":\"executeQuery not present in source; taint path mis-attributed.\",\n")
+	sb.WriteString("\"taint_mismatch\":true}\n\n")
+	sb.WriteString("Example 3 (NOT exploitable, but NOT a mismatch — use low confidence):\n")
+	sb.WriteString("Code: stmt = conn.prepareStatement(\"SELECT * FROM users WHERE id=?\");\n")
+	sb.WriteString("      stmt.setString(1, userId);\n")
+	sb.WriteString("Verdict: {\"exploitable\":false,\"cwe\":\"CWE-89\",\"severity\":\"LOW\",\"confidence\":0.95,\n")
+	sb.WriteString("\"explanation\":\"Parameterized query correctly prevents SQL injection.\",\n")
+	sb.WriteString("\"taint_mismatch\":false}\n\n")
+	sb.WriteString("IMPORTANT: Base your answer ONLY on the evidence above. Do NOT use prior knowledge about the project name, framework reputation, or codebase. Treat this as anonymous code.\n\n")
+	sb.WriteString(`Respond with exactly: {"exploitable": true|false, "cwe": "<CWE-ID>", "severity": "CRITICAL|HIGH|MEDIUM|LOW", "confidence": 0.0-1.0, "explanation": "<25 words max>", "taint_mismatch": true|false}`)
+	return sb.String()
+}
+
+// obfuscateCode strips structural identity signals from code before LLM injection.
+// It removes package declarations, import blocks, line/block comments, and blanks
+// string literal contents — eliminating project-name leakage without knowing the
+// project name. Language-agnostic: works on Java, Go, Python, JS, etc.
+func obfuscateCode(code string) string {
+	var out strings.Builder
+	lines := strings.Split(code, "\n")
+	inBlockComment := false
+	inImportBlock := false
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+
+		// Track block comment state (/* ... */)
+		if inBlockComment {
+			if strings.Contains(trimmed, "*/") {
+				inBlockComment = false
+			}
+			continue
+		}
+		if strings.Contains(trimmed, "/*") && !strings.Contains(trimmed, "*/") {
+			inBlockComment = true
+			continue
+		}
+
+		// Strip package declarations (Java: "package x.y.z;", Go: "package foo")
+		if strings.HasPrefix(trimmed, "package ") {
+			continue
+		}
+
+		// Strip import blocks (Java multi-line: "import (", Go single: "import x")
+		if strings.HasPrefix(trimmed, "import ") || trimmed == "import (" {
+			inImportBlock = trimmed == "import ("
+			continue
+		}
+		if inImportBlock {
+			if trimmed == ")" {
+				inImportBlock = false
+			}
+			continue
+		}
+
+		// Strip line comments: // and # (any language), -- only when followed by
+		// a space (SQL convention). "--identifier" is a decrement op, not a comment.
+		isComment := strings.HasPrefix(trimmed, "//") ||
+			strings.HasPrefix(trimmed, "#") ||
+			strings.HasPrefix(trimmed, "-- ")
+		if isComment {
+			continue
+		}
+		if trimmed == "" {
+			continue
+		}
+
+		// Blank string literal contents while preserving structure.
+		// "hello world" → ""   'x' → ''
+		// Keeps quotes so concatenation patterns remain visible.
+		line = blankStringLiterals(line)
+
+		out.WriteString(line)
+		out.WriteByte('\n')
+	}
+	return strings.TrimSpace(out.String())
+}
+
+// blankStringLiterals replaces the contents of double and single-quoted string
+// literals with empty strings, preserving the quote characters themselves.
+// This removes project-identifying string values (log messages, URLs, class names
+// embedded in strings) while keeping the structural shape of the code.
+func blankStringLiterals(line string) string {
+	var out strings.Builder
+	i := 0
+	for i < len(line) {
+		ch := line[i]
+		// Detect start of string literal
+		if ch == '"' || ch == '\'' {
+			quote := ch
+			out.WriteByte(quote) // opening quote
+			i++
+			// Skip content until closing (unescaped) quote
+			for i < len(line) {
+				c := line[i]
+				if c == '\\' {
+					i += 2 // skip escape sequence
+					continue
+				}
+				if c == quote {
+					break
+				}
+				i++
+			}
+			if i < len(line) {
+				out.WriteByte(quote) // closing quote
+				i++
+			}
+			continue
+		}
+		out.WriteByte(ch)
+		i++
+	}
+	return out.String()
 }
 
 // applicableCWE derives the applicable CWE from SurfaceKind using the same mapping as contracts/check.go.

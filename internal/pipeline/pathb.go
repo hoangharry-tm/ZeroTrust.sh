@@ -31,6 +31,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/hoangharry-tm/zerotrust/internal/finding"
 	"github.com/hoangharry-tm/zerotrust/internal/ingestion"
@@ -39,6 +40,92 @@ import (
 	"github.com/hoangharry-tm/zerotrust/internal/semantic/enrichment"
 	"github.com/hoangharry-tm/zerotrust/internal/semantic/triage"
 )
+
+// b5ElevationThreshold is the minimum B5 confidence to elevate a B3 violation
+// from MEDIUM to HIGH. Exported for testing.
+const b5ElevationThreshold = 0.7
+
+// b5SuppressionThreshold is the minimum B5 confidence required to suppress
+// a B3 violation. Below this, the model is too uncertain to trust a suppression.
+const b5SuppressionThreshold = 0.75
+
+// violationToFinding converts a B3 violation result into a direct finding
+// at SeverityMedium with a DCC confirmation note. Exported for testing.
+func violationToFinding(r contracts.Result) finding.Finding {
+	justification := r.Evidence
+	if !strings.Contains(justification, "DCC") {
+		justification += " — DCC structural match, pending LLM confirmation"
+	}
+	return finding.Finding{
+		ID:            newRunID(),
+		SurfaceID:     r.Surface.ID,
+		CWE:           r.CWE,
+		SeverityLabel: finding.SeverityMedium,
+		Path:          r.Surface.File,
+		Justification: justification,
+		SourcePath:    finding.SourceSemantic,
+	}
+}
+
+// taintGateClassify classifies an escalated surface into confirmed (strong taint),
+// weak (contract-flagged only), or dropped (no evidence). Exported for testing.
+func taintGateClassify(es enrichment.EnrichedSurface) (enrichment.EnrichedSurface, string) {
+	if len(es.SinkNodes) > 0 {
+		es.TaintConfidence = "confirmed"
+		return es, "confirmed"
+	}
+	if es.ContractCWE != "" {
+		es.TaintConfidence = "weak"
+		return es, "weak"
+	}
+	return es, "dropped"
+}
+
+// processB5Findings applies the B5 confirmation loop. For each B5 finding,
+// checks if it corresponds to a B3 violation and either suppresses (taint
+// mismatch), elevates (exploitable with high confidence), or passes through
+// unchanged. Exported for testing.
+func processB5Findings(
+	analysisFindings []finding.Finding,
+	violationBySurfaceID map[string]finding.Finding,
+) []finding.Finding {
+	out := make([]finding.Finding, 0, len(analysisFindings))
+	for _, f := range analysisFindings {
+		orig, isViolation := violationBySurfaceID[f.SurfaceID]
+		if !isViolation {
+			out = append(out, f)
+			continue
+		}
+		// Guard: if B5 identified a different CWE than B3 filed (Joern mislabeling),
+		// the taint_mismatch is a contract mismatch, not a false positive — don't suppress.
+		cweMismatch := f.CWE != "" && orig.CWE != "" && f.CWE != orig.CWE
+		if f.TaintMismatch && !f.Exploitable && f.Confidence >= b5SuppressionThreshold && !cweMismatch {
+			// B5 says false positive with high confidence — suppress the original B3 finding.
+			suppressed := orig
+			suppressed.SeverityLabel = finding.SeveritySuppressed
+			suppressed.SuppressReason = finding.SuppressReasonFalsePositive
+			suppressed.Justification += " — B5 LLM: taint mismatch, not exploitable"
+			out = append(out, suppressed)
+			slog.Info("analysis: violation suppressed by B5",
+				"surface_id", f.SurfaceID,
+				"function", orig.Path,
+			)
+		} else if f.Exploitable && f.Confidence >= b5ElevationThreshold {
+			// B5 confirms — elevate from MEDIUM to HIGH.
+			elevated := orig
+			elevated.SeverityLabel = finding.SeverityHigh
+			elevated.Justification += fmt.Sprintf(
+				" — B5 LLM confirmed (conf=%.2f): %s", f.Confidence, f.Justification)
+			out = append(out, elevated)
+			slog.Info("analysis: violation elevated by B5",
+				"surface_id", f.SurfaceID,
+				"confidence", f.Confidence,
+			)
+		}
+		// else: B5 inconclusive — B3 MEDIUM finding already emitted, no change.
+	}
+	return out
+}
 
 func (p *Pipeline) runPathB(ctx context.Context, _ *ingestion.Result, ch chan<- finding.Finding) error {
 	output.Emit(p.events, output.Event{Kind: output.EventStageStart, Stage: "path b"})
@@ -124,16 +211,14 @@ func (p *Pipeline) runPathB(ctx context.Context, _ *ingestion.Result, ch chan<- 
 		Log:  fmt.Sprintf("path b: contracts — %d safe dropped, %d violations, %d inconclusive", safeDropped, len(violations), len(inconclusives)),
 	})
 
-	// Violations go directly to findings (skip triage + analysis).
+	// Violations go directly to findings at Medium severity (DCC structural
+	// match only — no LLM confirmation yet). Index by SurfaceID so B5 results
+	// can suppress or elevate the original finding.
+	violationBySurfaceID := make(map[string]finding.Finding, len(violations))
 	for _, r := range violations {
-		ch <- finding.Finding{
-			ID:            newRunID(),
-			CWE:           r.CWE,
-			SeverityLabel: finding.SeverityHigh,
-			Path:          r.Surface.File,
-			Justification: r.Evidence,
-			SourcePath:    finding.SourceSemantic,
-		}
+		f := violationToFinding(r)
+		ch <- f
+		violationBySurfaceID[r.Surface.ID] = f
 	}
 	p.logger.Info("path b: contracts violations", "count", len(violations))
 
@@ -186,35 +271,66 @@ func (p *Pipeline) runPathB(ctx context.Context, _ *ingestion.Result, ch chan<- 
 	})
 	p.logger.Info("path b: triage complete", "dropped", droppedCount, "escalated", len(escalated))
 
-	// Gate: only pass taint-confirmed surfaces to B5 to prevent evidence-free LLM hallucination.
+	// Gate: tiered taint gate — surfaces with confirmed taint go to B5 as
+	// strong evidence; contract-flagged surfaces with no taint path go as weak.
 	taintConfirmed := make([]enrichment.EnrichedSurface, 0, len(escalated))
+	taintWeak := make([]enrichment.EnrichedSurface, 0, len(escalated))
+
 	for _, es := range escalated {
-		if len(es.SinkNodes) > 0 {
-			taintConfirmed = append(taintConfirmed, es)
-		} else {
-			slog.Debug("path b: taint gate dropped",
-				"function", es.FunctionName,
-				"file", es.File,
-			)
+		classified, bucket := taintGateClassify(es)
+		switch bucket {
+		case "confirmed":
+			taintConfirmed = append(taintConfirmed, classified)
+			slog.Debug("path b: taint gate passed (strong)", "function", es.FunctionName)
+		case "weak":
+			taintWeak = append(taintWeak, classified)
+			slog.Debug("path b: taint gate passed (weak)", "function", es.FunctionName, "contract_cwe", es.ContractCWE)
+		default:
+			slog.Debug("path b: taint gate dropped", "function", es.FunctionName, "file", es.File)
 		}
 	}
-	p.logger.Info("path b: taint gate", "escalated", len(escalated), "taint_confirmed", len(taintConfirmed))
 
-	b5names := make([]string, 0, len(taintConfirmed))
-	for _, es := range taintConfirmed {
+	// Route B3 violations through B5 for LLM confirmation (may elevate to HIGH).
+	for _, r := range violations {
+		es := r.Surface
+		es.ContractCWE = r.CWE
+		es.TaintConfidence = "confirmed"
+		taintConfirmed = append(taintConfirmed, es)
+		slog.Debug("path b: routing violation to B5", "function", es.FunctionName, "contract_cwe", es.ContractCWE, "cwe", r.CWE)
+	}
+
+	allB5 := append(taintConfirmed, taintWeak...)
+	p.logger.Info("path b: taint gate",
+		"escalated", len(escalated),
+		"taint_confirmed", len(taintConfirmed),
+		"taint_weak", len(taintWeak),
+		"b5_total", len(allB5),
+	)
+
+	b5names := make([]string, 0, len(allB5))
+	for _, es := range allB5 {
 		b5names = append(b5names, es.FunctionName)
 	}
 	slog.Debug("path b: B5 input",
-		"surfaces", len(taintConfirmed),
+		"surfaces", len(allB5),
 		"functions", b5names,
 	)
 
 	// B5: LLM Reasoner — full analysis on escalated surfaces.
-	analysisFindings, err := p.scan.Scan(ctx, taintConfirmed)
+	concurrency := 2
+	if p.cfg.LLMMode == "frontier" {
+		concurrency = 1
+	}
+	slog.Info("path b: B5 start",
+		"surfaces", len(allB5),
+		"llm_mode", p.cfg.LLMMode,
+		"concurrency", concurrency,
+	)
+	analysisFindings, err := p.scan.Scan(ctx, allB5)
 	if err != nil {
 		p.logger.Warn("path b analysis error", "err", err)
 	}
-	for _, f := range analysisFindings {
+	for _, f := range processB5Findings(analysisFindings, violationBySurfaceID) {
 		ch <- f
 	}
 

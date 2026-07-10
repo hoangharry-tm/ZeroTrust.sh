@@ -39,6 +39,10 @@ func DefineFlags(cmd *cobra.Command) {
 	flags.StringP("model", "m", "", "Ollama model name (e.g. llama3.2)")
 	flags.Int("token-cap", 50_000, "token budget cap for Path B Tier 3")
 	flags.Bool("patch", false, "generate patch suggestions for confirmed findings")
+	flags.StringP("llm-mode", "", "mid", `LLM prompting mode: small | mid | frontier.
+  small:    ≤7B models. Zero-shot, minimal context, 3-class confidence.
+  mid:      7B–30B local models (default). Externalized reasoning scaffold, 5-class anchored confidence.
+  frontier: Frontier API models (GPT-4o, Claude Opus). Full CoT, few-shot, self-consistency.`)
 }
 
 // FromCommand extracts a pipeline run configuration from a cobra command.
@@ -107,6 +111,18 @@ func FromCommand(cmd *cobra.Command) (NativeRunConfig, error) {
 	if err != nil {
 		return cfg, fmt.Errorf("patch: %w", err)
 	}
+	cfg.LLMMode, err = cmd.Flags().GetString("llm-mode")
+	if err != nil {
+		return cfg, fmt.Errorf("llm-mode: %w", err)
+	}
+	if cfg.LLMMode == "" {
+		cfg.LLMMode = "mid"
+	}
+	switch cfg.LLMMode {
+	case "small", "mid", "frontier":
+	default:
+		return cfg, fmt.Errorf("--llm-mode must be one of: small, mid, frontier (got %q)", cfg.LLMMode)
+	}
 	return cfg, nil
 }
 
@@ -129,4 +145,5 @@ type NativeRunConfig struct {
 	CalibrationPath string
 	TokenCap        int
 	GeneratePatches bool
+	LLMMode         string
 }

@@ -38,6 +38,7 @@ package enrichment
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -114,6 +115,10 @@ type EnrichedSurface struct {
 	CallPath []string
 	// ContractCWE is the CWE matched by the DCC stage, if any. Empty when no contract matched.
 	ContractCWE string
+	// TaintConfidence indicates the strength of taint evidence:
+	// "" = no taint evidence, "weak" = contract-flagged but no taint path,
+	// "confirmed" = inter-procedural taint path confirmed by CPG.
+	TaintConfidence string
 }
 
 // Enricher adds CVE, call graph, and IDOR data to a surface list.
@@ -183,6 +188,7 @@ func (e *Enricher) Enrich(ctx context.Context, surfaces []targeting.Surface, pro
 	}
 	lang := detectLangFromFile(surfaces)
 	pathsByMethodID := make(map[string][]cpg.TaintPath)
+	surfaceCallerChain := make(map[string][]string)
 	if e.graph != nil && len(surfaceIDs) > 0 {
 		allPaths, err := e.graph.ProjectWideTaintPaths(surfaceIDs, lang)
 		if err != nil {
@@ -212,15 +218,19 @@ func (e *Enricher) Enrich(ctx context.Context, surfaces []targeting.Surface, pro
 					continue // already attributed directly
 				}
 				// BFS upward through callers to find the closest surface ancestor.
+				// Uses surface-adjacency early-stop: if no caller at a given depth
+				// is a surface candidate, further expansion is unlikely to find one.
+				// depth=8 blanket cap caused over-attribution (SQL taint attributed to
+				// crypto utilities); depth=3 was too tight for deep call chains.
 				visited := map[string]bool{sourceID: true}
 				queue := []string{sourceID}
 				found := false
-				// ponytail: depth=3 keeps attribution tight; depth=8 caused false
-			// attribution of SQL taint to structurally unrelated functions
-			// (crypto utilities, config handlers), poisoning the DCC with
-			// uniform CWE-89 violations.
-			for depth := 0; depth < 3 && len(queue) > 0 && !found; depth++ {
+				pathKey := sourceID + ":" + p.Sink.NodeID
+
+				for depth := 0; depth < 6 && len(queue) > 0 && !found; depth++ {
 					var next []string
+					hasAnySurfaceNeighbour := false
+
 					for _, id := range queue {
 						callers, cerr := e.graph.GetCallers(id)
 						if cerr != nil {
@@ -233,19 +243,43 @@ func (e *Enricher) Enrich(ctx context.Context, surfaces []targeting.Surface, pro
 							visited[caller.ID] = true
 							if _, isSurface := surfaceIDSet[caller.ID]; isSurface {
 								pathsByMethodID[caller.ID] = append(pathsByMethodID[caller.ID], p)
+								surfaceCallerChain[caller.ID] = append(surfaceCallerChain[caller.ID], caller.Name)
 								found = true
+								hasAnySurfaceNeighbour = true
 							}
 							next = append(next, caller.ID)
 						}
 					}
+
 					slog.Debug("enrichment: bfs_depth",
 						"depth", depth,
 						"queue_size", len(queue),
 						"found", found,
+						"has_surface_neighbour", hasAnySurfaceNeighbour,
+						"path_key", pathKey,
 					)
+
+					// Stop early: if this frontier has no surface-adjacent callers at all
+					// and we are past depth 2, further expansion is unlikely to help and
+					// risks over-attribution.
+					if !hasAnySurfaceNeighbour && depth >= 2 {
+						break
+					}
 					queue = next
 				}
 			}
+
+			attributed := 0
+			for _, s := range surfaces {
+				if _, ok := pathsByMethodID[s.ID]; ok {
+					attributed++
+				}
+			}
+			slog.Info("enrichment: attribution summary",
+				"total_surfaces", len(surfaces),
+				"attributed", attributed,
+				"gap_pct", fmt.Sprintf("%.1f%%", 100*float64(len(surfaces)-attributed)/float64(len(surfaces))),
+			)
 			slog.Info("enrichment: walk-up complete", "mapped_surfaces", len(pathsByMethodID))
 		}
 	}
@@ -315,7 +349,7 @@ func (e *Enricher) Enrich(ctx context.Context, surfaces []targeting.Surface, pro
 							if !filepath.IsAbs(absPath) {
 								absPath = filepath.Join(projectRoot, absPath)
 							}
-							if body := readFunctionBody(absPath, n.Line); body != "" {
+							if body := readFunctionBody(absPath, n.Line, n.Name); body != "" {
 								slog.Debug("enrichment: read_function_body",
 									"surface_id", s.ID,
 									"success", true,
@@ -341,16 +375,68 @@ func (e *Enricher) Enrich(ctx context.Context, surfaces []targeting.Surface, pro
 			es = local[0]
 
 			if paths, ok := pathsByMethodID[s.ID]; ok {
+				seenSinks := make(map[string]bool)
 				for _, p := range paths {
 					sinkLabel := p.Sink.Name
 					if sinkLabel == "" {
 						sinkLabel = string(p.Sink.Kind)
 					}
-					es.SinkNodes = append(es.SinkNodes, sinkLabel)
+					if !seenSinks[sinkLabel] {
+						seenSinks[sinkLabel] = true
+						es.SinkNodes = append(es.SinkNodes, sinkLabel)
+					}
 					for _, n := range p.IntermediateNodes {
 						es.CallPath = append(es.CallPath, n.Name)
 					}
+					// For directly-attributed paths (source == surface), the sink is confirmed.
+					// Seed it into CallPath so filterSinksByCallPath always retains it.
+					if p.Source.NodeID == s.ID {
+						es.CallPath = append(es.CallPath, sinkLabel)
+					}
 				}
+			}
+
+			// Augment CallPath with BFS caller-chain names for better sink confirmation.
+			if chain, ok := surfaceCallerChain[s.ID]; ok {
+				es.CallPath = append(es.CallPath, chain...)
+			}
+
+			// Augment CallPath with callee method names when CallPath is short.
+			// This seeds the call path with real method names the surface directly
+			// invokes — precisely what filterSinksByCallPath needs to confirm sink relevance.
+			if e.graph != nil && len(es.CallPath) < 3 {
+				if callees, cerr := e.graph.GetCallees(s.ID); cerr == nil {
+					for _, c := range callees {
+						if c.Name != "" && !strings.HasPrefix(c.Name, "<operator>") {
+							es.CallPath = append(es.CallPath, c.Name)
+						}
+					}
+				}
+			}
+
+			// Call-path sink filter: retain only sink labels that also appear
+			// in the surface's call path. Falls back to original list if filtering
+			// would leave SinkNodes empty.
+			if len(es.SinkNodes) > 0 && len(es.CallPath) > 0 {
+				beforeFilter := len(es.SinkNodes)
+				callPathSet := make(map[string]bool, len(es.CallPath))
+				for _, node := range es.CallPath {
+					callPathSet[node] = true
+				}
+				filtered := es.SinkNodes[:0]
+				for _, sink := range es.SinkNodes {
+					if callPathSet[sink] {
+						filtered = append(filtered, sink)
+					}
+				}
+				if len(filtered) > 0 {
+					es.SinkNodes = filtered
+				}
+				slog.Debug("enrichment: sink_nodes_filtered",
+					"surface_id", s.ID,
+					"before", beforeFilter,
+					"after", len(es.SinkNodes),
+				)
 			}
 
 			if flows, ferr := e.DetectIDORFlows(gctx, s); ferr == nil {
@@ -448,25 +534,42 @@ func (e *Enricher) DetectIDORFlows(_ context.Context, surface targeting.Surface)
 	return flows, nil
 }
 
-// detectLangFromFile detects the source language from the first surface's file
-// extension. Returns "java", "python", "go", "javascript", or empty string.
+// detectLangFromFile detects the source language by majority vote across all
+// surface file extensions. Returns "java", "python", "go", "javascript", or empty string.
 func detectLangFromFile(surfaces []targeting.Surface) string {
 	if len(surfaces) == 0 {
 		return ""
 	}
-	ext := filepath.Ext(surfaces[0].File)
-	switch ext {
-	case ".java":
-		return "java"
-	case ".py":
-		return "python"
-	case ".go":
-		return "go"
-	case ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs":
-		return "javascript"
-	default:
+	counts := make(map[string]int)
+	for _, s := range surfaces {
+		ext := filepath.Ext(s.File)
+		var lang string
+		switch ext {
+		case ".java":
+			lang = "java"
+		case ".py":
+			lang = "python"
+		case ".go":
+			lang = "go"
+		case ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs":
+			lang = "javascript"
+		}
+		if lang != "" {
+			counts[lang]++
+		}
+	}
+	if len(counts) == 0 {
 		return ""
 	}
+	best := ""
+	maxN := 0
+	for lang, n := range counts {
+		if n > maxN {
+			best = lang
+			maxN = n
+		}
+	}
+	return best
 }
 
 func nodeIDs(nodes []cpg.Node) []string {
@@ -475,6 +578,47 @@ func nodeIDs(nodes []cpg.Node) []string {
 		ids[i] = n.ID
 	}
 	return ids
+}
+
+// dedupSinks extracts unique sink labels from a slice of taint paths.
+// The first occurrence of each sink label is kept; subsequent duplicates are dropped.
+func dedupSinks(paths []cpg.TaintPath) []string {
+	seen := make(map[string]bool)
+	var sinks []string
+	for _, p := range paths {
+		label := p.Sink.Name
+		if label == "" {
+			label = string(p.Sink.Kind)
+		}
+		if !seen[label] {
+			seen[label] = true
+			sinks = append(sinks, label)
+		}
+	}
+	return sinks
+}
+
+// filterSinksByCallPath retains only sink labels that also appear in the
+// surface's call path. If filtering would produce an empty result, the
+// original sinks are returned unchanged (safety fallback).
+func filterSinksByCallPath(sinks, callPath []string) []string {
+	if len(sinks) == 0 || len(callPath) == 0 {
+		return sinks
+	}
+	callPathSet := make(map[string]bool, len(callPath))
+	for _, node := range callPath {
+		callPathSet[node] = true
+	}
+	filtered := sinks[:0]
+	for _, sink := range sinks {
+		if callPathSet[sink] {
+			filtered = append(filtered, sink)
+		}
+	}
+	if len(filtered) > 0 {
+		return filtered
+	}
+	return sinks
 }
 
 // stripStringsAndComments removes line comments and double-quoted string contents
@@ -507,36 +651,235 @@ func stripStringsAndComments(line string) string {
 
 // readFunctionBody reads the source file at absPath and extracts the function
 // body starting at startLine (1-indexed). It tracks brace depth to find the
-// closing brace and returns up to 3000 chars. Returns "" on any read error.
-func readFunctionBody(absPath string, startLine int) string {
+// closing brace and returns up to 6000 chars. When brace-counting returns empty
+// (e.g. method signature spans a single line with no body), falls back to
+// returning the first 300 chars of the line at startLine so the caller at least
+// sees the function signature rather than dropping it as a stub.
+//
+// When methodName is non-empty and startLine exceeds the file length, a
+// name-based fallback search is attempted for bytecode-inflated lines
+// (Lombok-generated methods, etc.).
+func readFunctionBody(absPath string, startLine int, methodName string) string {
 	data, err := os.ReadFile(absPath)
 	if err != nil {
 		return ""
 	}
 	lines := strings.Split(string(data), "\n")
 	if startLine <= 0 || startLine > len(lines) {
-		return ""
-	}
-	// Walk from startLine-1 (0-indexed) collecting lines until brace depth returns to 0.
-	depth := 0
-	started := false
-	var out strings.Builder
-	for i := startLine - 1; i < len(lines) && out.Len() < 3000; i++ {
-		line := lines[i]
-		out.WriteString(line)
-		out.WriteByte('\n')
-		stripped := stripStringsAndComments(line)
-		for _, ch := range stripped {
-			if ch == '{' {
-				depth++
-				started = true
-			} else if ch == '}' {
-				depth--
+		// Bytecode-inflated line number (Lombok-generated method).
+		// Search source by method name to find the real body.
+		if startLine > len(lines) && methodName != "" {
+			for i, line := range lines {
+				trimmed := strings.TrimSpace(line)
+				if strings.Contains(trimmed, methodName+"(") && isMethodLikeDeclaration(trimmed) {
+					startLine = i + 1
+					break
+				}
 			}
 		}
-		if started && depth <= 0 {
+		if startLine <= 0 || startLine > len(lines) {
+			return ""
+		}
+	}
+	// Joern's lineNumber sometimes points to the closing brace of the previous
+	// method. Scan forward (up to 10 lines) to find the line that opens this one.
+	actualStart := startLine - 1 // 0-indexed
+	foundBrace := false
+	for i := actualStart; i < len(lines) && i < actualStart+10; i++ {
+		stripped := strings.TrimRight(stripStringsAndComments(lines[i]), " \t")
+		trimmedRaw := strings.TrimSpace(lines[i])
+		if strings.HasSuffix(stripped, "{") &&
+			(strings.Contains(stripped, ")") || trimmedRaw == "{" || isClassLikeDeclaration(trimmedRaw)) {
+			actualStart = i
+			foundBrace = true
 			break
 		}
 	}
-	return strings.TrimSpace(out.String())
+
+	// Where to start output in the brace-counting path. May be before
+	// actualStart when the method signature spans multiple lines (Class C).
+	signatureStart := actualStart
+	// If the forward scan moved to a line that looks like a new method/class
+	// declaration (e.g. private void nextMethod() {), it latched onto the wrong
+	// method's opening brace — treat as braceless UNLESS the original line was a
+	// closing } (that's the legitimate N2 off-by-one case — the target method is
+	// the next one and we should keep its brace).
+	if foundBrace && actualStart != startLine-1 &&
+		isMethodLikeDeclaration(strings.TrimSpace(lines[actualStart])) {
+		orig := strings.TrimSpace(lines[startLine-1])
+		if !strings.HasSuffix(orig, "}") {
+			foundBrace = false
+		}
+	}
+
+	// Class B: class-level { capture — the forward scan latched onto the class
+	// declaration's opening brace (e.g. "public class Salaries {"). Skip past
+	// it to find the first method-level { within 30 lines.
+	if foundBrace && isClassLikeDeclaration(strings.TrimSpace(lines[actualStart])) {
+		foundMethodBrace := false
+		for i := actualStart + 1; i < len(lines) && i < actualStart+30; i++ {
+			trimmed := strings.TrimSpace(lines[i])
+			if isMethodLikeDeclaration(trimmed) &&
+				strings.Contains(stripStringsAndComments(lines[i]), "{") {
+				actualStart = i
+				signatureStart = i
+				foundMethodBrace = true
+				break
+			}
+		}
+		if !foundMethodBrace {
+			foundBrace = false
+		}
+	}
+
+	// Class C: multi-line method signature — scan backward from actualStart
+	// to find the true start of the method signature (access modifier or @).
+	// Guards prevent walking past class/interface/enum boundaries or latching
+	// onto class-level { that are not method bodies.
+	if foundBrace {
+		for i := actualStart - 1; i >= 0 && i >= actualStart-8; i-- {
+			trimmed := strings.TrimSpace(lines[i])
+			if (isMethodLikeDeclaration(trimmed) && !isClassLikeDeclaration(trimmed)) ||
+				(strings.HasPrefix(trimmed, "@") && !isClassLikeDeclaration(trimmed)) {
+				signatureStart = i
+				break
+			}
+			strippedLine := strings.TrimRight(stripStringsAndComments(lines[i]), " \t")
+			trimmedStripped := strings.TrimSpace(strippedLine)
+			if trimmedStripped == "}" || trimmedStripped == "};" ||
+				strings.HasSuffix(strippedLine, "{") {
+				break
+			}
+		}
+	}
+
+	if !foundBrace {
+		// Name-based fallback: when methodName is known and the forward scan
+		// failed (e.g. Joern's line is in the import block), scan the entire
+		// file for the method declaration and re-run the forward scan.
+		if methodName != "" {
+			for i, line := range lines {
+				trimmed := strings.TrimSpace(line)
+				if strings.Contains(trimmed, methodName+"(") && isMethodLikeDeclaration(trimmed) {
+					actualStart = i
+					for j := actualStart; j < len(lines) && j < actualStart+10; j++ {
+						stripped := strings.TrimRight(stripStringsAndComments(lines[j]), " \t")
+						trimmedRaw := strings.TrimSpace(lines[j])
+						if strings.HasSuffix(stripped, "{") &&
+							(strings.Contains(stripped, ")") || trimmedRaw == "{") {
+							actualStart = j
+							foundBrace = true
+							break
+						}
+					}
+					if foundBrace {
+						signatureStart = actualStart
+						// Backward scan for multi-line sig.
+						for k := actualStart - 1; k >= 0 && k >= actualStart-8; k-- {
+							t := strings.TrimSpace(lines[k])
+							if (isMethodLikeDeclaration(t) && !isClassLikeDeclaration(t)) ||
+								(strings.HasPrefix(t, "@") && !isClassLikeDeclaration(t)) {
+								signatureStart = k
+								break
+							}
+							sl := strings.TrimRight(stripStringsAndComments(lines[k]), " \t")
+							ts := strings.TrimSpace(sl)
+							if ts == "}" || ts == "};" || strings.HasSuffix(sl, "{") {
+								break
+							}
+						}
+						break
+					}
+				}
+			}
+		}
+	}
+
+	if !foundBrace {
+		// Braceless body (e.g. expression-form lambda). Capture from the
+		// reported line with a fixed window, stopping early at the next
+		// method declaration to avoid bleeding into an unrelated method.
+		var out strings.Builder
+		limit := startLine - 1 + 20
+		if limit > len(lines) {
+			limit = len(lines)
+		}
+		for i := startLine - 1; i < limit && out.Len() < 6000; i++ {
+			line := lines[i]
+			trimmed := strings.TrimSpace(line)
+			if i > startLine-1 && isMethodLikeDeclaration(trimmed) {
+				break
+			}
+			out.WriteString(line)
+			out.WriteByte('\n')
+		}
+		if body := strings.TrimSpace(out.String()); body != "" {
+			return body
+		}
+		// Final fallback: return the line we started from.
+		line := lines[startLine-1]
+		if len(line) > 300 {
+			line = line[:300]
+		}
+		return line
+	}
+
+	depth := 0
+	started := false
+	var out strings.Builder
+	for i := signatureStart; i < len(lines) && out.Len() < 6000; i++ {
+		line := lines[i]
+		out.WriteString(line)
+		out.WriteByte('\n')
+		if i >= actualStart {
+			stripped := stripStringsAndComments(line)
+			for _, ch := range stripped {
+				if ch == '{' {
+					depth++
+					started = true
+				} else if ch == '}' {
+					depth--
+				}
+			}
+			if started && depth <= 0 {
+				break
+			}
+		}
+	}
+	if body := strings.TrimSpace(out.String()); body != "" {
+		return body
+	}
+	// Fallback: return the line we actually started from.
+	line := lines[signatureStart]
+	if len(line) > 300 {
+		line = line[:300]
+	}
+	return line
+}
+
+// isMethodLikeDeclaration reports whether a trimmed source line looks like
+// the start of a new method/class/interface declaration, used to prevent the
+// braceless-lambda fallback in readFunctionBody from bleeding into an
+// unrelated method body.
+func isMethodLikeDeclaration(line string) bool {
+	switch {
+	case strings.HasPrefix(line, "private "),
+		strings.HasPrefix(line, "public "),
+		strings.HasPrefix(line, "protected "),
+		strings.HasPrefix(line, "static "),
+		strings.HasPrefix(line, "@"):
+		return true
+	}
+	return false
+}
+
+// isClassLikeDeclaration reports whether a trimmed source line is a class,
+// interface, enum, or annotation declaration (rather than a method body).
+// Used in readFunctionBody to skip past class-level { and find the real
+// method body inside.
+func isClassLikeDeclaration(line string) bool {
+	return strings.Contains(line, " class ") ||
+		strings.Contains(line, " interface ") ||
+		strings.Contains(line, " enum ") ||
+		strings.Contains(line, " @interface ")
 }
