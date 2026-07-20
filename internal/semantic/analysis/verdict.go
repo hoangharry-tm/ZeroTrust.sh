@@ -66,9 +66,40 @@ func verdictToFinding(surface enrichment.EnrichedSurface, v Verdict) finding.Fin
 	}
 
 	severity := severityFromLabel(v.Severity)
+	severityPinned := false
+	if v.TaintMismatch && !v.Exploitable {
+		severity = finding.SeverityLow
+		severityPinned = true
+	}
 	confidence := v.Confidence
 	if confidence <= 0 {
 		confidence = 0.5
+	}
+
+	line := surface.Line
+
+	// Use sink line when populated (inter-procedural taint path).
+	startLine := line
+	endLine := line
+	if surface.SinkLine > 0 {
+		startLine = surface.SinkLine
+		endLine = surface.SinkLine
+	}
+
+	var cve string
+	var cvss float64
+	if len(surface.CVEMatches) > 0 {
+		cve = surface.CVEMatches[0].CVE
+		cvss = surface.CVEMatches[0].CVSS
+	}
+
+	codeSnippet := surface.Code
+	if codeSnippet != "" {
+		codeLines := strings.Split(codeSnippet, "\n")
+		if len(codeLines) > 30 {
+			codeLines = codeLines[:30]
+		}
+		codeSnippet = strings.Join(codeLines, "\n")
 	}
 
 	return finding.Finding{
@@ -76,9 +107,15 @@ func verdictToFinding(surface enrichment.EnrichedSurface, v Verdict) finding.Fin
 		SurfaceID:     surface.ID,
 		CWE:           cwe,
 		SeverityLabel: severity,
+		SeverityPinned: severityPinned,
 		Confidence:    confidence,
 		Path:          surface.File,
+		LineRange:     finding.LineRange{Start: startLine, End: endLine},
+		MatchedCode:   codeSnippet,
+		CVE:           cve,
+		CVSS:          cvss,
 		Justification: v.Explanation,
+		Summary:       v.Explanation,
 		SourcePath:    finding.SourceSemantic,
 		TaintMismatch: v.TaintMismatch,
 		Exploitable:   v.Exploitable,

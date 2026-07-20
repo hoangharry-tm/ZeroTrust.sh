@@ -154,6 +154,9 @@ func TestViolationToFinding_FieldsArePopulated(t *testing.T) {
 	if f.SourcePath != finding.SourceSemantic {
 		t.Errorf("expected SourceSemantic, got %s", f.SourcePath)
 	}
+	if f.DCCEvidence != "user input reaches SQL sink" {
+		t.Errorf("expected DCCEvidence='user input reaches SQL sink', got %q", f.DCCEvidence)
+	}
 }
 
 func TestViolationToFinding_HashesAreUnique(t *testing.T) {
@@ -165,6 +168,144 @@ func TestViolationToFinding_HashesAreUnique(t *testing.T) {
 
 	if f1.ID == f2.ID {
 		t.Error("expected unique IDs for different violations")
+	}
+}
+
+func TestViolationToFinding_ConfidenceIsAboveSuppressionThreshold(t *testing.T) {
+	r := makeTestViolationResult("CWE-89", "SQL injection")
+	f := violationToFinding(r)
+	if f.Confidence < 0.30 {
+		t.Errorf("want Confidence >= 0.30 to survive dedup, got %f", f.Confidence)
+	}
+	if f.SeverityLabel != finding.SeverityMedium {
+		t.Errorf("want SeverityMedium, got %v", f.SeverityLabel)
+	}
+}
+
+func TestViolationToFinding_LineRangeAndRuleIDPopulated(t *testing.T) {
+	r := contracts.Result{
+		Surface: enrichment.EnrichedSurface{
+			Surface:   targeting.Surface{Line: 42, File: "Foo.java"},
+			SinkNodes: []string{"executeQuery"},
+		},
+		CWE:     "CWE-89",
+		Evidence: "DCC: sink match",
+	}
+	f := violationToFinding(r)
+	if f.LineRange.Start != 42 {
+		t.Errorf("want LineRange.Start=42, got %d", f.LineRange.Start)
+	}
+	if f.RuleID != "dcc-CWE-89" {
+		t.Errorf("want RuleID=dcc-CWE-89, got %q", f.RuleID)
+	}
+	if f.MatchedCode != "executeQuery" {
+		t.Errorf("want MatchedCode=executeQuery, got %q", f.MatchedCode)
+	}
+}
+
+func TestViolationToFinding_CVEFromCVEMatches(t *testing.T) {
+	r := contracts.Result{
+		Surface: enrichment.EnrichedSurface{
+			Surface: targeting.Surface{File: "Foo.java"},
+			CVEMatches: []enrichment.CVEMatch{
+				{CVE: "CVE-2021-44228", CVSS: 10.0},
+			},
+		},
+		CWE: "CWE-89",
+	}
+	f := violationToFinding(r)
+	if f.CVE != "CVE-2021-44228" {
+		t.Errorf("want CVE-2021-44228, got %q", f.CVE)
+	}
+	if f.CVSS != 10.0 {
+		t.Errorf("want CVSS=10.0, got %f", f.CVSS)
+	}
+}
+
+func TestSinkContextLines_ReturnsWindowAroundSink(t *testing.T) {
+	body := "line1\nline2\nint result = stmt.executeQuery(query);\nline4\nline5"
+	snippet, start, sinkLine := sinkContextLines(body, 10, []string{"executeQuery"}, 1)
+	if start != 11 {
+		t.Errorf("want start=11, got %d", start)
+	}
+	if sinkLine != 12 {
+		t.Errorf("want sinkLine=12 (line 2 of body at funcStartLine 10), got %d", sinkLine)
+	}
+	if !strings.Contains(snippet, "executeQuery") {
+		t.Error("want snippet to contain sink line")
+	}
+	if strings.Contains(snippet, "line1") {
+		t.Error("want line1 excluded (outside context window)")
+	}
+}
+
+func TestSinkContextLines_10LineBody_Context5_CorrectSinkLine(t *testing.T) {
+	body := "line1\nline2\nline3\nline4\nline5\nstmt.executeQuery(input);\nline7\nline8\nline9\nline10"
+	snippet, start, sinkLine := sinkContextLines(body, 40, []string{"executeQuery"}, 5)
+	if start != 40 {
+		t.Errorf("want start=40 (sinkIdx=5, context=5, start=0), got %d", start)
+	}
+	if sinkLine != 45 {
+		t.Errorf("want sinkLine=45 (funcStartLine=40 + sinkIdx=5), got %d", sinkLine)
+	}
+	if !strings.Contains(snippet, "executeQuery") {
+		t.Error("want snippet to contain sink line")
+	}
+	if !strings.Contains(snippet, "line1") {
+		t.Error("want line1 included (within ±5 context)")
+	}
+}
+
+func TestSinkContextLines_FallsBackWhenNoBody(t *testing.T) {
+	snippet, start, sinkLine := sinkContextLines("", 42, []string{"exec"}, 2)
+	if snippet != "" {
+		t.Errorf("want empty snippet for empty body, got %q", snippet)
+	}
+	if start != 42 {
+		t.Errorf("want start=42, got %d", start)
+	}
+	if sinkLine != 42 {
+		t.Errorf("want sinkLine=42 for empty body fallback, got %d", sinkLine)
+	}
+}
+
+func TestViolationToFinding_MatchedCodeIsSourceNotLabels(t *testing.T) {
+	r := contracts.Result{
+		Surface: enrichment.EnrichedSurface{
+			Surface: targeting.Surface{File: "Foo.java", Line: 10, FunctionName: "query"},
+			Code:    "void query(String s) {\n  stmt.executeQuery(s);\n}",
+			SinkNodes: []string{"executeQuery"},
+		},
+		CWE:      "CWE-89",
+		Evidence: "sink matched",
+	}
+	f := violationToFinding(r)
+	if strings.Contains(f.MatchedCode, "executeQuery, exec") {
+		t.Error("MatchedCode must not be sink node labels")
+	}
+	if !strings.Contains(f.MatchedCode, "executeQuery(") {
+		t.Errorf("MatchedCode should contain actual source, got: %q", f.MatchedCode)
+	}
+}
+
+func TestViolationToFinding_JustificationIncludesFunctionName(t *testing.T) {
+	r := contracts.Result{
+		Surface: enrichment.EnrichedSurface{
+			Surface: targeting.Surface{
+				File:         "Foo.java",
+				FunctionName: "processInput",
+				Line:         55,
+			},
+		},
+		CWE:     "CWE-89",
+		Evidence: "user-controlled value reaches SQL sink",
+	}
+	f := violationToFinding(r)
+	if !strings.Contains(f.Justification, "processInput") {
+		t.Error("want function name in justification")
+	}
+	if !strings.Contains(f.Justification, "55") {
+		t.Error("want line number in justification")
 	}
 }
 
@@ -250,7 +391,7 @@ func makeViolationFinding(surfaceID, cwe string) finding.Finding {
 		CWE:           cwe,
 		SeverityLabel: finding.SeverityMedium,
 		Path:          "src/test.go",
-		Justification: "DCC structural match, pending LLM confirmation",
+		Justification: "DCC structural match, awaiting B5 review",
 		SourcePath:    finding.SourceSemantic,
 	}
 }
@@ -295,7 +436,7 @@ func TestB5ConfirmationElevatesViolationToHigh(t *testing.T) {
 		makeB5Finding("s1", true, false, 0.9),
 	}
 
-	out := processB5Findings(b5Findings, index)
+	out, handled := processB5Findings(b5Findings, index)
 	if len(out) != 1 {
 		t.Fatalf("want 1 output finding, got %d", len(out))
 	}
@@ -303,8 +444,14 @@ func TestB5ConfirmationElevatesViolationToHigh(t *testing.T) {
 	if f.SeverityLabel != finding.SeverityHigh {
 		t.Errorf("want SeverityHigh, got %v", f.SeverityLabel)
 	}
-	if !strings.Contains(f.Justification, "B5 LLM confirmed") {
+	if !strings.Contains(f.Justification, "B5 confirmed") {
 		t.Errorf("want justification to mention B5 confirmation, got %q", f.Justification)
+	}
+	if !handled["s1"] {
+		t.Error("want surface s1 marked as handled")
+	}
+	if f.Summary != "B5 analysis result" {
+		t.Errorf("want Summary='B5 analysis result', got %q", f.Summary)
 	}
 }
 
@@ -316,7 +463,7 @@ func TestB5TaintMismatchSuppressesViolation(t *testing.T) {
 		makeB5Finding("s1", false, true, 0.85),
 	}
 
-	out := processB5Findings(b5Findings, index)
+	out, handled := processB5Findings(b5Findings, index)
 	if len(out) != 1 {
 		t.Fatalf("want 1 output finding, got %d", len(out))
 	}
@@ -326,6 +473,12 @@ func TestB5TaintMismatchSuppressesViolation(t *testing.T) {
 	}
 	if f.SuppressReason != finding.SuppressReasonFalsePositive {
 		t.Errorf("want false_positive, got %v", f.SuppressReason)
+	}
+	if !handled["s1"] {
+		t.Error("want surface s1 marked as handled")
+	}
+	if !strings.Contains(f.Summary, "false positive") {
+		t.Errorf("want Summary to mention false positive, got %q", f.Summary)
 	}
 }
 
@@ -337,9 +490,12 @@ func TestB5InconclusiveKeepsViolationMedium(t *testing.T) {
 		makeB5Finding("s1", false, false, 0.4),
 	}
 
-	out := processB5Findings(b5Findings, index)
+	out, handled := processB5Findings(b5Findings, index)
 	if len(out) != 0 {
 		t.Fatalf("want 0 findings (B3 MEDIUM unchanged), got %d", len(out))
+	}
+	if handled["s1"] {
+		t.Error("want s1 NOT in handled set for inconclusive B5 result")
 	}
 }
 
@@ -348,12 +504,12 @@ func TestB5NilForViolationSurface(t *testing.T) {
 	index := map[string]finding.Finding{
 		"s1": makeViolationFinding("s1", "CWE-89"),
 	}
-	out := processB5Findings(nil, index)
+	out, _ := processB5Findings(nil, index)
 	if len(out) != 0 {
 		t.Errorf("want 0 findings for nil B5 input, got %d", len(out))
 	}
 
-	out = processB5Findings([]finding.Finding{}, index)
+	out, _ = processB5Findings([]finding.Finding{}, index)
 	if len(out) != 0 {
 		t.Errorf("want 0 findings for empty B5 input, got %d", len(out))
 	}
@@ -368,7 +524,7 @@ func TestNonViolationB5FindingPassesThrough(t *testing.T) {
 		makeB5Finding("s2", true, false, 0.85),
 	}
 
-	out := processB5Findings(b5Findings, index)
+	out, _ := processB5Findings(b5Findings, index)
 	if len(out) != 1 {
 		t.Fatalf("want 1 output finding, got %d", len(out))
 	}
@@ -394,7 +550,7 @@ func TestB5ElevationThresholdRespected(t *testing.T) {
 		makeB5Finding("s1", true, false, 0.65),
 	}
 
-	out := processB5Findings(b5Findings, index)
+	out, _ := processB5Findings(b5Findings, index)
 	if len(out) != 0 {
 		t.Fatalf("want 0 findings (confidence below threshold), got %d", len(out))
 	}
@@ -411,7 +567,7 @@ func TestB5SuppressionRequiresHighConfidence(t *testing.T) {
 		makeB5Finding("s1", false, true, 0.6),
 	}
 
-	out := processB5Findings(b5Findings, index)
+	out, _ := processB5Findings(b5Findings, index)
 	if len(out) != 0 {
 		t.Fatalf("want 0 findings (confidence 0.6 below threshold), got %d", len(out))
 	}
@@ -426,7 +582,7 @@ func TestB5SuppressionFiresAtThreshold(t *testing.T) {
 		makeB5Finding("s1", false, true, 0.75),
 	}
 
-	out := processB5Findings(b5Findings, index)
+	out, _ := processB5Findings(b5Findings, index)
 	if len(out) != 1 {
 		t.Fatalf("want 1 output finding (confidence 0.75 at threshold), got %d", len(out))
 	}
@@ -445,7 +601,7 @@ func TestB5SuppressionFiresAboveThreshold(t *testing.T) {
 		makeB5Finding("s1", false, true, 0.9),
 	}
 
-	out := processB5Findings(b5Findings, index)
+	out, _ := processB5Findings(b5Findings, index)
 	if len(out) != 1 {
 		t.Fatalf("want 1 output finding (confidence 0.9 above threshold), got %d", len(out))
 	}
@@ -464,7 +620,7 @@ func TestB5LowConfidenceZeroDoesNotSuppress(t *testing.T) {
 		makeB5Finding("s1", false, true, 0.0),
 	}
 
-	out := processB5Findings(b5Findings, index)
+	out, _ := processB5Findings(b5Findings, index)
 	if len(out) != 0 {
 		t.Fatalf("want 0 findings (confidence 0.0 far below threshold), got %d", len(out))
 	}
@@ -482,7 +638,7 @@ func TestB5MultipleViolationsMixed(t *testing.T) {
 		makeB5Finding("s3", false, false, 0.3),                       // inconclusive
 	}
 
-	out := processB5Findings(b5Findings, index)
+	out, _ := processB5Findings(b5Findings, index)
 	if len(out) != 2 {
 		t.Fatalf("want 2 findings (1 elevated + 1 suppressed), got %d", len(out))
 	}
@@ -497,6 +653,49 @@ func TestB5MultipleViolationsMixed(t *testing.T) {
 }
 
 
+
+// ── No-change path (inconclusive B5) ────────────────────────────────────────
+
+func TestB5NoChangePatch_UpdatesJustification(t *testing.T) {
+	// Use the real violationToFinding to get production-format Justification.
+	r := makeTestViolationResult("CWE-89", "user input reaches SQL sink")
+	vf := violationToFinding(r)
+	index := map[string]finding.Finding{
+		vf.SurfaceID: vf,
+	}
+	b5Findings := []finding.Finding{
+		makeB5Finding(vf.SurfaceID, false, false, 0.4), // inconclusive
+	}
+
+	_, handled := processB5Findings(b5Findings, index)
+	if handled[vf.SurfaceID] {
+		t.Fatal("expected surface not handled (inconclusive B5)")
+	}
+
+	// Simulate the no-change patch that runPathB applies.
+	orig := index[vf.SurfaceID]
+	if !strings.Contains(orig.Justification, "awaiting B5 review") {
+		t.Fatalf("expected 'awaiting B5 review' in original, got %q", orig.Justification)
+	}
+	patched := orig
+	patched.Justification = strings.Replace(
+		orig.Justification,
+		" — DCC structural match, awaiting B5 review",
+		" — DCC structural match, B5 reviewed (no change)",
+		1,
+	)
+	patched.Summary = "DCC contract matched; B5 found insufficient evidence for elevation"
+
+	if strings.Contains(patched.Justification, "awaiting B5 review") {
+		t.Error("patched justification must not contain 'awaiting B5 review'")
+	}
+	if !strings.Contains(patched.Justification, "B5 reviewed (no change)") {
+		t.Errorf("patched justification must contain 'B5 reviewed (no change)', got %q", patched.Justification)
+	}
+	if patched.Summary != "DCC contract matched; B5 found insufficient evidence for elevation" {
+		t.Errorf("unexpected Summary: %q", patched.Summary)
+	}
+}
 
 // ── H2: CWE contract mismatch suppression guard ──────────────────────────────
 
@@ -519,7 +718,7 @@ func TestB5CWEMismatch_DoesNotSuppressWhenB5IdentifiesDifferentCWE(t *testing.T)
 		makeB5FindingWithCWE("s1", "CWE-89", false, true, 0.9),
 	}
 
-	out := processB5Findings(b5Findings, index)
+	out, _ := processB5Findings(b5Findings, index)
 	// Must not suppress: the B5 CWE (CWE-89) differs from the B3 CWE (CWE-22).
 	// B3 MEDIUM stands → processB5Findings returns nothing (pass-through).
 	if len(out) != 0 {
@@ -541,7 +740,7 @@ func TestB5CWEMismatch_DoesNotSuppressCWE862FiledAsPathTraversal(t *testing.T) {
 		makeB5FindingWithCWE("s1", "CWE-862", false, true, 0.9),
 	}
 
-	out := processB5Findings(b5Findings, index)
+	out, _ := processB5Findings(b5Findings, index)
 	for _, f := range out {
 		if f.SeverityLabel == finding.SeveritySuppressed {
 			t.Errorf("should not suppress CWE-22 B3 finding when B5 verdicts CWE-862")
@@ -558,7 +757,7 @@ func TestB5CWEMismatch_SuppressesWhenCWEsMatch(t *testing.T) {
 		makeB5FindingWithCWE("s1", "CWE-89", false, true, 0.9),
 	}
 
-	out := processB5Findings(b5Findings, index)
+	out, _ := processB5Findings(b5Findings, index)
 	if len(out) != 1 {
 		t.Fatalf("want 1 suppressed finding, got %d", len(out))
 	}
@@ -577,7 +776,7 @@ func TestB5CWEMismatch_EmptyVerdictCWEDefaultsToSuppressPath(t *testing.T) {
 		makeB5FindingWithCWE("s1", "", false, true, 0.9),
 	}
 
-	out := processB5Findings(b5Findings, index)
+	out, _ := processB5Findings(b5Findings, index)
 	if len(out) != 1 {
 		t.Fatalf("want 1 finding when verdict CWE is empty, got %d", len(out))
 	}
@@ -638,11 +837,72 @@ func TestB5CWEMismatch_ElevationUnaffectedByGuard(t *testing.T) {
 		makeB5FindingWithCWE("s1", "CWE-89", true, false, 1.0),
 	}
 
-	out := processB5Findings(b5Findings, index)
+	out, _ := processB5Findings(b5Findings, index)
 	if len(out) != 1 {
 		t.Fatalf("want 1 elevated finding, got %d", len(out))
 	}
-	if out[0].SeverityLabel != finding.SeverityHigh {
-		t.Errorf("exploitable B5 should elevate regardless of CWE difference, got %v", out[0].SeverityLabel)
+	if out[0].SeverityLabel != finding.SeverityBlock {
+		t.Errorf("exploitable B5 with conf=1.0 should elevate to BLOCK, got %v", out[0].SeverityLabel)
+	}
+}
+
+func TestProcessB5Findings_ElevationInheritsB5Confidence(t *testing.T) {
+	b3 := finding.Finding{
+		ID:            "b3id",
+		SurfaceID:     "surf1",
+		CWE:           "CWE-89",
+		SeverityLabel: finding.SeverityMedium,
+		Confidence:    0.65,
+	}
+	b5 := finding.Finding{
+		SurfaceID:     "surf1",
+		CWE:           "CWE-89",
+		Exploitable:   true,
+		Confidence:    1.0,
+		TaintMismatch: false,
+	}
+	results, _ := processB5Findings([]finding.Finding{b5}, map[string]finding.Finding{"surf1": b3})
+	if len(results) != 1 {
+		t.Fatalf("want 1 result, got %d", len(results))
+	}
+	got := results[0]
+	if got.Confidence != 1.0 {
+		t.Errorf("want Confidence=1.0 (B5), got %f", got.Confidence)
+	}
+	if !got.Exploitable {
+		t.Error("want Exploitable=true (B5), got false")
+	}
+	if !got.SeverityPinned {
+		t.Error("want SeverityPinned=true on elevated finding")
+	}
+	if got.SeverityLabel != finding.SeverityBlock {
+		t.Errorf("want SeverityBlock (conf=1.0), got %v", got.SeverityLabel)
+	}
+}
+
+func TestProcessB5Findings_SuppressionSetsPinned(t *testing.T) {
+	b3 := finding.Finding{
+		ID:            "b3id",
+		SurfaceID:     "surf2",
+		CWE:           "CWE-89",
+		Confidence:    0.65,
+		SeverityLabel: finding.SeverityMedium,
+	}
+	b5 := finding.Finding{
+		SurfaceID:     "surf2",
+		CWE:           "CWE-89",
+		TaintMismatch: true,
+		Exploitable:   false,
+		Confidence:    0.80,
+	}
+	results, _ := processB5Findings([]finding.Finding{b5}, map[string]finding.Finding{"surf2": b3})
+	if len(results) != 1 {
+		t.Fatalf("want 1 result, got %d", len(results))
+	}
+	if results[0].SeverityLabel != finding.SeveritySuppressed {
+		t.Errorf("want SeveritySuppressed, got %v", results[0].SeverityLabel)
+	}
+	if !results[0].SeverityPinned {
+		t.Error("want SeverityPinned=true on suppressed finding")
 	}
 }

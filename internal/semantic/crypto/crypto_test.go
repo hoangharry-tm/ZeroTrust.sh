@@ -8,6 +8,21 @@ import (
 	"github.com/hoangharry-tm/zerotrust/internal/semantic/targeting"
 )
 
+func TestCryptoChecker_CWE327LineFromCodeOffset(t *testing.T) {
+	c := &Checker{}
+	es := enrichment.EnrichedSurface{
+		Surface: targeting.Surface{File: "Foo.java", Line: 10},
+		Code:    "void foo() {\n  // nothing\n  Cipher.getInstance(\"DES\");\n}",
+	}
+	findings := c.cwe327(es)
+	if len(findings) == 0 {
+		t.Fatal("want finding")
+	}
+	if findings[0].LineRange.Start != 12 {
+		t.Errorf("want line 12, got %d", findings[0].LineRange.Start)
+	}
+}
+
 func TestCheck(t *testing.T) {
 	tests := []struct {
 		name   string

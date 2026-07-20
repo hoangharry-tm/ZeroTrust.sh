@@ -267,7 +267,7 @@ func New(ctx context.Context, cfg Config) (*Pipeline, error) {
 	cc := contracts.New()
 	cc2 := crypto.New()
 	tr := triage.New(llmProvider, cfg.TriageThreshold, cfg.LLMMode)
-	sc := analysis.New(llmProvider, cfg.LLMMode)
+	sc := analysis.New(llmProvider, cfg.LLMMode).WithRoot(cfg.Target)
 
 	dd := dedup.New(cfg.Target)
 	rg := report.New(cfg.ReportPath)
@@ -297,7 +297,10 @@ func New(ctx context.Context, cfg Config) (*Pipeline, error) {
 // run executes the full pipeline to completion and writes the HTML report.
 // events receives stage notifications consumed by the active CLI renderer.
 // The caller is responsible for closing events after run returns.
-func (p *Pipeline) Run(ctx context.Context, events chan<- output.Event) ([]finding.Finding, error) {
+func (p *Pipeline) Run(
+    ctx context.Context,
+    events chan<- output.Event,
+) ([]finding.Finding, error) {
 	p.events = events
 	start := time.Now()
 
@@ -381,7 +384,10 @@ func (p *Pipeline) startJoern(ctx context.Context) {
 		} else {
 			output.Emit(p.events, output.Event{
 				Kind: output.EventLog,
-				Log:  fmt.Sprintf("warn: joern start: %v — taint analysis disabled for this scan", err),
+				Log:  fmt.Sprintf(
+                    "warn: joern start: %v — taint analysis disabled for this scan",
+                    err,
+                ),
 			})
 		}
 	}
@@ -525,11 +531,13 @@ func (p *Pipeline) GenerateReport(start time.Time, scored []finding.Finding) {
 	}
 	defer f.Close()
 
+	rootDir, _ := filepath.Abs(p.cfg.Target)
 	info := report.ScanInfo{
-		ProjectName:  filepath.Base(p.cfg.Target),
+		ProjectName:  filepath.Base(rootDir),
 		ScannedAt:    start.UTC().Format("2006-01-02 15:04 UTC"),
 		ScanMode:     p.cfg.ScanMode,
 		ScanDuration: time.Since(start).Round(time.Millisecond).String(),
+		RootDir:      rootDir,
 		Alerts:       p.alerts,
 	}
 	if err := p.rep.Render(f, info, scored); err != nil {
@@ -761,6 +769,6 @@ func stateDBPath(target string) (string, error) {
 // Files that cannot be read or opened are silently skipped.
 func newRunID() string {
 	var b [8]byte
-	_, _ = rand.Read(b[:]) //nolint:errcheck
-	return fmt.Sprintf("%x", b)
+	_, _ = rand.Read(b[:])
+    return fmt.Sprintf("%x", b)
 }

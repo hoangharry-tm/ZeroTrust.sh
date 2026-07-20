@@ -49,20 +49,99 @@ const b5ElevationThreshold = 0.7
 // a B3 violation. Below this, the model is too uncertain to trust a suppression.
 const b5SuppressionThreshold = 0.75
 
+// sinkContextLines extracts a ±context line window from a function body centred on
+// the first line containing any sinkNode label. Returns the extracted snippet,
+// the absolute line number of the window's first line, and the absolute line
+// number of the sink.
+func sinkContextLines(funcBody string, funcStartLine int, sinkNodes []string, context int) (string, int, int) {
+	if funcBody == "" || len(sinkNodes) == 0 || funcStartLine <= 0 {
+		return "", funcStartLine, funcStartLine
+	}
+	lines := strings.Split(funcBody, "\n")
+	sinkIdx := -1
+	for i, l := range lines {
+		for _, sn := range sinkNodes {
+			if sn == "" {
+				continue
+			}
+			name := sn
+			if dot := strings.LastIndexByte(sn, '.'); dot >= 0 {
+				name = sn[dot+1:]
+			}
+			if name != "" && strings.Contains(l, name) {
+				sinkIdx = i
+				break
+			}
+		}
+		if sinkIdx >= 0 {
+			break
+		}
+	}
+	if sinkIdx < 0 {
+		end := len(lines)
+		if end > 20 {
+			end = 20
+		}
+		return strings.Join(lines[:end], "\n"), funcStartLine, funcStartLine
+	}
+	start := sinkIdx - context
+	if start < 0 {
+		start = 0
+	}
+	end := sinkIdx + context + 1
+	if end > len(lines) {
+		end = len(lines)
+	}
+	snippet := strings.Join(lines[start:end], "\n")
+	absoluteStart := funcStartLine + start
+	sinkAbsLine := funcStartLine + sinkIdx
+	return snippet, absoluteStart, sinkAbsLine
+}
+
 // violationToFinding converts a B3 violation result into a direct finding
 // at SeverityMedium with a DCC confirmation note. Exported for testing.
 func violationToFinding(r contracts.Result) finding.Finding {
 	justification := r.Evidence
 	if !strings.Contains(justification, "DCC") {
-		justification += " — DCC structural match, pending LLM confirmation"
+		justification += " — DCC structural match, awaiting B5 review"
 	}
+	if r.Surface.FunctionName != "" {
+		justification += fmt.Sprintf(" [function: %s", r.Surface.FunctionName)
+		if r.Surface.Line > 0 {
+			justification += fmt.Sprintf(" @ line %d", r.Surface.Line)
+		}
+		justification += "]"
+	}
+
+	matchedCode, lineStart, sinkLine := sinkContextLines(r.Surface.Code, r.Surface.Line, r.Surface.SinkNodes, 5)
+	if matchedCode == "" {
+		matchedCode = strings.Join(r.Surface.SinkNodes, ", ")
+		lineStart = r.Surface.Line
+		sinkLine = r.Surface.Line
+	}
+
+	var cve string
+	var cvss float64
+	if len(r.Surface.CVEMatches) > 0 {
+		cve = r.Surface.CVEMatches[0].CVE
+		cvss = r.Surface.CVEMatches[0].CVSS
+	}
+
 	return finding.Finding{
 		ID:            newRunID(),
 		SurfaceID:     r.Surface.ID,
 		CWE:           r.CWE,
 		SeverityLabel: finding.SeverityMedium,
+		Confidence:    0.65,
 		Path:          r.Surface.File,
+		LineRange:     finding.LineRange{Start: lineStart, End: sinkLine},
+		RuleID:        "dcc-" + r.CWE,
+		MatchedCode:   matchedCode,
+		CVE:           cve,
+		CVSS:          cvss,
+		DCCEvidence:   r.Evidence,
 		Justification: justification,
+		Summary:       r.Evidence,
 		SourcePath:    finding.SourceSemantic,
 	}
 }
@@ -84,12 +163,15 @@ func taintGateClassify(es enrichment.EnrichedSurface) (enrichment.EnrichedSurfac
 // processB5Findings applies the B5 confirmation loop. For each B5 finding,
 // checks if it corresponds to a B3 violation and either suppresses (taint
 // mismatch), elevates (exploitable with high confidence), or passes through
-// unchanged. Exported for testing.
+// unchanged. Returns the processed findings plus a set of SurfaceIDs that
+// were handled (elevated or suppressed) so the caller can patch no-change
+// violations. Exported for testing.
 func processB5Findings(
 	analysisFindings []finding.Finding,
 	violationBySurfaceID map[string]finding.Finding,
-) []finding.Finding {
+) ([]finding.Finding, map[string]bool) {
 	out := make([]finding.Finding, 0, len(analysisFindings))
+	handled := make(map[string]bool, len(analysisFindings))
 	for _, f := range analysisFindings {
 		orig, isViolation := violationBySurfaceID[f.SurfaceID]
 		if !isViolation {
@@ -104,27 +186,45 @@ func processB5Findings(
 			suppressed := orig
 			suppressed.SeverityLabel = finding.SeveritySuppressed
 			suppressed.SuppressReason = finding.SuppressReasonFalsePositive
-			suppressed.Justification += " — B5 LLM: taint mismatch, not exploitable"
+			suppressed.SeverityPinned = true
+			suppressed.Justification = strings.Replace(
+				orig.Justification,
+				" — DCC structural match, awaiting B5 review",
+				" — DCC structural match",
+				1,
+			) + " — B5: taint mismatch, suppressed"
+			suppressed.Summary = "B5 found no taint path to sink — suppressed as false positive"
+			handled[f.SurfaceID] = true
 			out = append(out, suppressed)
 			slog.Info("analysis: violation suppressed by B5",
 				"surface_id", f.SurfaceID,
 				"function", orig.Path,
 			)
 		} else if f.Exploitable && f.Confidence >= b5ElevationThreshold {
-			// B5 confirms — elevate from MEDIUM to HIGH.
+			// B5 confirms — elevate using B5 confidence for severity, pin it.
 			elevated := orig
-			elevated.SeverityLabel = finding.SeverityHigh
-			elevated.Justification += fmt.Sprintf(
-				" — B5 LLM confirmed (conf=%.2f): %s", f.Confidence, f.Justification)
+			elevated.SeverityLabel = finding.SeverityFromConfidence(f.Confidence)
+			elevated.Confidence = f.Confidence
+			elevated.Exploitable = f.Exploitable
+			elevated.TaintMismatch = f.TaintMismatch
+			elevated.SeverityPinned = true
+			elevated.Justification = strings.Replace(
+				orig.Justification,
+				" — DCC structural match, awaiting B5 review",
+				" — DCC structural match",
+				1,
+			) + fmt.Sprintf(" — B5 confirmed (conf=%.2f): %s", f.Confidence, f.Justification)
+			elevated.Summary = f.Justification
+			handled[f.SurfaceID] = true
 			out = append(out, elevated)
 			slog.Info("analysis: violation elevated by B5",
 				"surface_id", f.SurfaceID,
 				"confidence", f.Confidence,
 			)
 		}
-		// else: B5 inconclusive — B3 MEDIUM finding already emitted, no change.
+		// else: B5 inconclusive — handled by runPathB no-change patch.
 	}
-	return out
+	return out, handled
 }
 
 func (p *Pipeline) runPathB(ctx context.Context, _ *ingestion.Result, ch chan<- finding.Finding) error {
@@ -217,7 +317,6 @@ func (p *Pipeline) runPathB(ctx context.Context, _ *ingestion.Result, ch chan<- 
 	violationBySurfaceID := make(map[string]finding.Finding, len(violations))
 	for _, r := range violations {
 		f := violationToFinding(r)
-		ch <- f
 		violationBySurfaceID[r.Surface.ID] = f
 	}
 	p.logger.Info("path b: contracts violations", "count", len(violations))
@@ -300,6 +399,17 @@ func (p *Pipeline) runPathB(ctx context.Context, _ *ingestion.Result, ch chan<- 
 	}
 
 	allB5 := append(taintConfirmed, taintWeak...)
+	// Deduplicate by SurfaceID — two B3 CWE rules can produce two violations for
+	// the same surface; send it to B5 only once.
+	b5Seen := make(map[string]struct{}, len(allB5))
+	deduped := allB5[:0]
+	for _, es := range allB5 {
+		if _, dup := b5Seen[es.ID]; !dup {
+			b5Seen[es.ID] = struct{}{}
+			deduped = append(deduped, es)
+		}
+	}
+	allB5 = deduped
 	p.logger.Info("path b: taint gate",
 		"escalated", len(escalated),
 		"taint_confirmed", len(taintConfirmed),
@@ -330,8 +440,26 @@ func (p *Pipeline) runPathB(ctx context.Context, _ *ingestion.Result, ch chan<- 
 	if err != nil {
 		p.logger.Warn("path b analysis error", "err", err)
 	}
-	for _, f := range processB5Findings(analysisFindings, violationBySurfaceID) {
+	b5Results, handled := processB5Findings(analysisFindings, violationBySurfaceID)
+	for _, f := range b5Results {
 		ch <- f
+	}
+
+	// No-change path: violations that B5 did not elevate or suppress.
+	// Update Justification to reflect B5 ran and emit the patched finding
+	// so dedup picks up the updated version over the original B3 emission.
+	for sid, v := range violationBySurfaceID {
+		if handled[sid] {
+			continue
+		}
+		v.Justification = strings.Replace(
+			v.Justification,
+			" — DCC structural match, awaiting B5 review",
+			" — DCC structural match, B5 reviewed (no change)",
+			1,
+		)
+		v.Summary = "DCC contract matched; B5 found insufficient evidence for elevation"
+		ch <- v
 	}
 
 	output.Emit(p.events, output.Event{
@@ -343,11 +471,14 @@ func (p *Pipeline) runPathB(ctx context.Context, _ *ingestion.Result, ch chan<- 
 		Kind:  output.EventStageEnd,
 		Stage: "path b",
 		Summary: &output.StageSummary{
-			Stage:    "path b",
-			Detail:   fmt.Sprintf("%d findings from %d surfaces (B3: %d violations, B5: %d findings)", len(violations)+len(analysisFindings), len(enriched), len(violations), len(analysisFindings)),
+			Stage: "path b",
+			Detail: fmt.Sprintf("%d findings from %d surfaces (B3: %d violations, B5: %d findings)",
+				len(violations)+len(analysisFindings),
+				len(enriched),
+				len(violations),
+				len(analysisFindings)),
 			Findings: len(violations) + len(analysisFindings),
 		},
 	})
 	return nil
 }
-

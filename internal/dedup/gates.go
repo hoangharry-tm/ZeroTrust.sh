@@ -84,6 +84,13 @@ func merge(a, b finding.Finding, strategy Strategy) (finding.Finding, MergeRecor
 		winner.SourcePath = finding.SourceBoth
 	}
 
+	// Preserve SeverityPinned: if either candidate has a pinned severity,
+	// the merged result must keep that SeverityLabel and remain pinned.
+	if loser.SeverityPinned {
+		winner.SeverityLabel = loser.SeverityLabel
+		winner.SeverityPinned = true
+	}
+
 	rec := MergeRecord{
 		KeptID:                winner.ID,
 		DroppedID:             loser.ID,

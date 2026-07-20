@@ -140,14 +140,6 @@ class FindingsManager {
     this.render();
   }
 
-  _updateCount() {
-    const total = document.querySelectorAll('.finding-card').length;
-    const countEl = document.getElementById('findingsCount');
-    if (countEl) {
-      countEl.innerHTML = '<strong>' + total + '</strong> finding' + (total !== 1 ? 's' : '');
-    }
-  }
-
   _updatePagination(current, total) {
     const showNav = total > 1;
     document.getElementById('prevPage').style.display = showNav ? '' : 'none';
@@ -214,12 +206,15 @@ class FindingsManager {
       if (this.currentPage > 1) { this.currentPage--; this.render(); }
     });
     document.getElementById('nextPage').addEventListener('click', () => {
-      const total = document.querySelectorAll('.finding-card').length;
-      if (this.currentPage < Math.ceil(total / this.perPage)) { this.currentPage++; this.render(); }
+      const visible = [...document.querySelectorAll('.finding-card')].filter(
+        (c) => c.style.display !== 'none'
+      );
+      const totalPages = Math.max(1, Math.ceil(visible.length / this.perPage));
+      if (this.currentPage < totalPages) { this.currentPage++; this.render(); }
     });
-    document.getElementById('perPageSelect').addEventListener('change', function () {
-      this.perPage = parseInt(this.value); this.currentPage = 1; this.render();
-    }.bind(this));
+    document.getElementById('perPageSelect').addEventListener('change', (e) => {
+      this.perPage = parseInt(e.target.value); this.currentPage = 1; this.render();
+    });
   }
 
   _wireSearchSort() {

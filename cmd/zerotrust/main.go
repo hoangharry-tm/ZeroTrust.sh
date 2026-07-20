@@ -68,8 +68,7 @@ func main() {
 	root.AddCommand(scan)
 
 	if err := root.Execute(); err != nil {
-		var exitErr *ExitError
-		if errors.As(err, &exitErr) {
+		if exitErr, ok := errors.AsType[*ExitError](err); ok {
 			os.Exit(exitErr.Code)
 		}
 		fmt.Fprintln(os.Stderr, err)
@@ -155,7 +154,7 @@ func runScan(cmd *cobra.Command, args []string, runCfg config.NativeRunConfig) e
 					Stage: "patch",
 					Summary: &output.StageSummary{
 						Stage:  "patch",
-						Detail: fmt.Sprintf("Patches generated for findings"),
+						Detail: "Patches generated for findings",
 					},
 				})
 			}
@@ -243,8 +242,7 @@ func runContainer(cmd *cobra.Command, args []string, runCfg config.NativeRunConf
 	slog.Info("launching container scan", "component", "main",
 		"target", targetAbs, "image", runCfg.EngineImage, "ollama_found", ollamaFound)
 	if err := dockerCmd.Run(); err != nil {
-		var dockerExitErr *exec.ExitError
-		if errors.As(err, &dockerExitErr) {
+		if dockerExitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 			return &ExitError{Code: dockerExitErr.ExitCode()}
 		}
 		return fmt.Errorf("container execution: %w", err)

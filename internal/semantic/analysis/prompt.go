@@ -17,6 +17,7 @@ package analysis
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -67,10 +68,10 @@ func buildSCL(surface enrichment.EnrichedSurface) string {
 
 	var sb strings.Builder
 	sb.WriteString("=== SECURITY CONTRACT ===\n")
-	sb.WriteString(fmt.Sprintf("CWE: %s — %s\n", inv.CWE, inv.Name))
-	sb.WriteString(fmt.Sprintf("Invariant: A %s surface is vulnerable when a user-controlled value reaches %s with no %s on the taint path.\n",
-		surface.Kind, sinkAnchors[0], strings.Join(safeNodes, ", ")))
-	sb.WriteString(fmt.Sprintf("Reference: %s\n", inv.Reference))
+	fmt.Fprintf(&sb, "CWE: %s — %s\n", inv.CWE, inv.Name)
+	fmt.Fprintf(&sb, "Invariant: A %s surface is vulnerable when a user-controlled value reaches %s with no %s on the taint path.\n",
+	surface.Kind, sinkAnchors[0], strings.Join(safeNodes, ", "))
+	fmt.Fprintf(&sb, "Reference: %s\n", inv.Reference)
 	return sb.String()
 }
 
@@ -95,14 +96,14 @@ func buildCFP(surface enrichment.EnrichedSurface) string {
 
 	var sb strings.Builder
 	sb.WriteString("=== CONTROL FLOW EVIDENCE ===\n")
-	sb.WriteString(fmt.Sprintf("Surface kind: %s\n", surface.Kind))
-	sb.WriteString(fmt.Sprintf("Source file: %s\n", shortPath(sourceFile)))
+	fmt.Fprintf(&sb, "Surface kind: %s\n", surface.Kind)
+	fmt.Fprintf(&sb, "Source file: %s\n", shortPath(sourceFile))
 	if len(sinkNodes) > 0 {
-		sb.WriteString(fmt.Sprintf("Sink nodes: %s\n", strings.Join(sinkNodes, ", ")))
+		fmt.Fprintf(&sb, "Sink nodes: %s\n", strings.Join(sinkNodes, ", "))
 	}
-	sb.WriteString(fmt.Sprintf("Taint path (%d nodes): %s\n", len(surface.CallPath), strings.Join(callPath, " → ")))
-	sb.WriteString(fmt.Sprintf("CVE matches: %d (%s)\n", len(surface.CVEMatches), firstOrNone(surface.CVEMatches)))
-	sb.WriteString(fmt.Sprintf("IDOR flows: %d detected\n", len(surface.ResourceIDFlows)))
+	fmt.Fprintf(&sb, "Taint path (%d nodes): %s\n", len(surface.CallPath), strings.Join(callPath, " → "))
+	fmt.Fprintf(&sb, "CVE matches: %d (%s)\n", len(surface.CVEMatches), firstOrNone(surface.CVEMatches))
+	fmt.Fprintf(&sb, "IDOR flows: %d detected\n", len(surface.ResourceIDFlows))
 	return sb.String()
 }
 
@@ -151,27 +152,27 @@ func buildAIP(surface enrichment.EnrichedSurface) string {
 }
 
 // buildPrompt assembles the mode-appropriate prompt for the given surface.
-func buildPrompt(surface enrichment.EnrichedSurface, mode string) string {
+func buildPrompt(surface enrichment.EnrichedSurface, mode, root string) string {
 	switch mode {
 	case "small":
-		return buildPromptSmall(surface)
+		return buildPromptSmall(surface, root)
 	case "frontier":
-		return buildPromptFrontier(surface)
+		return buildPromptFrontier(surface, root)
 	default:
-		return buildPromptMid(surface)
+		return buildPromptMid(surface, root)
 	}
 }
 
 // buildPromptSmall builds a minimal prompt for ≤7B models — no SCL/AIP overhead.
-func buildPromptSmall(surface enrichment.EnrichedSurface) string {
+func buildPromptSmall(surface enrichment.EnrichedSurface, root string) string {
 	var sb strings.Builder
 	sb.WriteString("Does this function contain an exploitable security vulnerability?\n")
 	sb.WriteString("Do NOT use knowledge of the project name or framework.\n")
 	sb.WriteString("Base your answer ONLY on the code below.\n\n")
-	sb.WriteString("taint_mismatch: set true ONLY IF the specific sink method named in the\n")
-	sb.WriteString("  taint path (e.g. \"executeQuery\", \"exec\", \"Files.write\") is completely\n")
-	sb.WriteString("  absent from the provided source code. Do NOT set true for uncertainty\n")
-	sb.WriteString("  or insufficient evidence — use a low confidence score instead.\n\n")
+	sb.WriteString("taint_mismatch: set true ONLY IF the sink method is absent from BOTH the\n")
+	sb.WriteString("  function source code AND the sink context block (if provided above).\n")
+	sb.WriteString("  If a 'SINK CONTEXT' block is shown, the taint reaches that code — do NOT\n")
+	sb.WriteString("  set taint_mismatch=true based on the function body alone.\n\n")
 	if surface.Code != "" {
 		code := stripIndent(surface.Code)
 		if len(code) > 500 {
@@ -181,12 +182,20 @@ func buildPromptSmall(surface enrichment.EnrichedSurface) string {
 		sb.WriteString(code)
 		sb.WriteString("\n```\n\n")
 	}
+	if surface.SinkFile != "" && surface.SinkLine > 0 {
+		sinkCode := readSinkContext(root, surface.SinkFile, surface.SinkLine, 5)
+		if sinkCode != "" {
+			sb.WriteString("=== SINK CONTEXT (where tainted data is consumed) ===\n")
+			sb.WriteString(sinkCode)
+			sb.WriteString("\n")
+		}
+	}
 	sb.WriteString(`Reply with exactly: {"exploitable": true|false, "cwe": "<CWE-ID>", "severity": "CRITICAL|HIGH|MEDIUM|LOW", "confidence": 0.0-1.0, "explanation": "<25 words max>", "taint_mismatch": true|false}`)
 	return sb.String()
 }
 
 // buildPromptMid builds a prompt with externalized step scaffold for 7B–30B models.
-func buildPromptMid(surface enrichment.EnrichedSurface) string {
+func buildPromptMid(surface enrichment.EnrichedSurface, root string) string {
 	scl := buildSCL(surface)
 	cfp := buildCFP(surface)
 	aip := buildAIP(surface)
@@ -210,6 +219,14 @@ func buildPromptMid(surface enrichment.EnrichedSurface) string {
 		sb.WriteString("=== FUNCTION SOURCE CODE ===\n")
 		sb.WriteString(code)
 		sb.WriteString("\n\n")
+	}
+	if surface.SinkFile != "" && surface.SinkLine > 0 {
+		sinkCode := readSinkContext(root, surface.SinkFile, surface.SinkLine, 5)
+		if sinkCode != "" {
+			sb.WriteString("=== SINK CONTEXT (where tainted data is consumed) ===\n")
+			sb.WriteString(sinkCode)
+			sb.WriteString("\n")
+		}
 	}
 	sb.WriteString(aip)
 	sb.WriteString("\n\n")
@@ -223,10 +240,10 @@ func buildPromptMid(surface enrichment.EnrichedSurface) string {
 	sb.WriteString("Step 1: Read the Security Contract. What is the CWE and invariant?\n")
 	sb.WriteString("Step 2: Check the Taint Path. Does it reach a sink anchor listed in the contract?\n")
 	sb.WriteString("Step 3: Read the Source Code. Does the code confirm OR contradict the taint path?\n")
-	sb.WriteString("  - taint_mismatch: set true ONLY IF the specific sink method named in the\n")
-	sb.WriteString("    taint path (e.g. \"executeQuery\", \"exec\", \"Files.write\") is completely\n")
-	sb.WriteString("    absent from the provided source code. Do NOT set true for uncertainty\n")
-	sb.WriteString("    or insufficient evidence — use a low confidence score instead.\n")
+	sb.WriteString("  - taint_mismatch: set true ONLY IF the sink method is absent from BOTH the\n")
+	sb.WriteString("    function source code AND the sink context block (if provided above).\n")
+	sb.WriteString("    If a 'SINK CONTEXT' block is shown, the taint reaches that code — do NOT\n")
+	sb.WriteString("    set taint_mismatch=true based on the function body alone.\n")
 	sb.WriteString("  - If code confirms taint path: continue to Step 4\n")
 	sb.WriteString("Step 4: Check for safe nodes. Is there a sanitizer/guard on the taint path in the code?\n")
 	sb.WriteString("Step 5: Emit your verdict as JSON.\n\n")
@@ -237,7 +254,7 @@ func buildPromptMid(surface enrichment.EnrichedSurface) string {
 
 // buildPromptFrontier builds a full prompt for frontier models (>30B or API)
 // with CoT, few-shot examples, and Think & Verify instruction.
-func buildPromptFrontier(surface enrichment.EnrichedSurface) string {
+func buildPromptFrontier(surface enrichment.EnrichedSurface, root string) string {
 	scl := buildSCL(surface)
 	cfp := buildCFP(surface)
 	aip := buildAIP(surface)
@@ -262,6 +279,14 @@ func buildPromptFrontier(surface enrichment.EnrichedSurface) string {
 		sb.WriteString(code)
 		sb.WriteString("\n\n")
 	}
+	if surface.SinkFile != "" && surface.SinkLine > 0 {
+		sinkCode := readSinkContext(root, surface.SinkFile, surface.SinkLine, 5)
+		if sinkCode != "" {
+			sb.WriteString("=== SINK CONTEXT (where tainted data is consumed) ===\n")
+			sb.WriteString(sinkCode)
+			sb.WriteString("\n")
+		}
+	}
 	sb.WriteString(aip)
 	sb.WriteString("\n\n")
 	if surface.TaintConfidence == "weak" {
@@ -270,10 +295,10 @@ func buildPromptFrontier(surface enrichment.EnrichedSurface) string {
 		sb.WriteString(surface.ContractCWE)
 		sb.WriteString(" contract only.\n\n")
 	}
-	sb.WriteString("taint_mismatch: set true ONLY IF the specific sink method named in the\n")
-	sb.WriteString("  taint path (e.g. \"executeQuery\", \"exec\", \"Files.write\") is completely\n")
-	sb.WriteString("  absent from the provided source code. Do NOT set true for uncertainty\n")
-	sb.WriteString("  or insufficient evidence — use a low confidence score instead.\n\n")
+	sb.WriteString("taint_mismatch: set true ONLY IF the sink method is absent from BOTH the\n")
+	sb.WriteString("  function source code AND the sink context block (if provided above).\n")
+	sb.WriteString("  If a 'SINK CONTEXT' block is shown, the taint reaches that code — do NOT\n")
+	sb.WriteString("  set taint_mismatch=true based on the function body alone.\n\n")
 	sb.WriteString("=== FEW-SHOT EXAMPLES ===\n")
 	sb.WriteString("Example 1 (TRUE POSITIVE):\n")
 	sb.WriteString("Code: stmt.executeQuery(\"SELECT * FROM users WHERE id='\" + userId + \"'\")\n")
@@ -394,6 +419,30 @@ func blankStringLiterals(line string) string {
 		}
 		out.WriteByte(ch)
 		i++
+	}
+	return out.String()
+}
+
+// readSinkContext returns ±contextLines lines around lineNum in filePath.
+// Returns "" on any read error (best-effort). The sink line is prefixed with →.
+func readSinkContext(root, filePath string, lineNum, contextLines int) string {
+	if root != "" && !filepath.IsAbs(filePath) {
+		filePath = filepath.Join(root, filePath)
+	}
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return ""
+	}
+	lines := strings.Split(string(data), "\n")
+	start := max(0, lineNum-1-contextLines)
+	end := min(len(lines), lineNum+contextLines)
+	var out strings.Builder
+	for i := start; i < end; i++ {
+		marker := "  "
+		if i == lineNum-1 {
+			marker = "→ "
+		}
+		fmt.Fprintf(&out, "%s%d: %s\n", marker, i+1, lines[i])
 	}
 	return out.String()
 }

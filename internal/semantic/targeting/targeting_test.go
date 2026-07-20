@@ -92,7 +92,7 @@ func (m *mockGraph) PreFlaggedSinks() ([]cpg.TaintSink, error) { return nil, nil
 // helpers
 
 func method(id, name, file string) cpg.Node {
-	return cpg.Node{ID: id, Type: cpg.NodeMethod, Name: name, File: file}
+	return cpg.Node{ID: id, Type: cpg.NodeMethod, Name: name, File: file, Line: 10}
 }
 
 // writeTempFile creates path (relative to dir) with content.
@@ -335,6 +335,21 @@ func TestRun_EmptyCPG(t *testing.T) {
 	surfaces, err := tk.Run(context.Background())
 	require.NoError(t, err)
 	assert.Empty(t, surfaces)
+}
+
+func TestRun_SurfaceLinePopulated(t *testing.T) {
+	root, g := buildRunFixture(t)
+	tk := New(g, root)
+	surfaces, err := tk.Run(context.Background())
+	require.NoError(t, err)
+	require.NotEmpty(t, surfaces)
+	for _, s := range surfaces {
+		if s.ID == "ctrl1" || s.ID == "svc1" {
+			if s.Line == 0 {
+				t.Errorf("%s: expected Line > 0, got 0", s.ID)
+			}
+		}
+	}
 }
 
 // ── T5: AutoFlagCVESurfaces ──────────────────────────────────────────────────

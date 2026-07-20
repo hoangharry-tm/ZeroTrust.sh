@@ -37,6 +37,13 @@ import (
 type Scanner struct {
 	provider llm.Provider
 	llmMode  string
+	root     string
+}
+
+// WithRoot sets the project root directory for resolving relative sink file paths.
+func (s *Scanner) WithRoot(root string) *Scanner {
+	s.root = root
+	return s
 }
 
 // New returns a Scanner backed by the provided LLM provider.
@@ -56,7 +63,7 @@ func analysisOpts(mode string) *llm.Options {
 			Temperature: 0.1,
 			NumPredict:  128,
 			NumCtx:      4096,
-			Think:       boolPtr(false),
+			Think:       new(false),
 		}
 	case "frontier":
 		return &llm.Options{
@@ -69,7 +76,7 @@ func analysisOpts(mode string) *llm.Options {
 			Temperature: 0.1,
 			NumPredict:  512,
 			NumCtx:      16384,
-			Think:       boolPtr(false),
+			Think:       new(false),
 		}
 	}
 }
@@ -85,9 +92,6 @@ func surfaceDeadline(mode string) time.Duration {
 		return 120 * time.Second
 	}
 }
-
-// boolPtr returns a pointer to b for use with llm.Options.Think.
-func boolPtr(b bool) *bool { return &b }
 
 // Scan runs Tier 3 analysis on escalated surfaces concurrently.
 // Returns one finding per surface. The caller (pathb) filters for
@@ -114,7 +118,6 @@ func (s *Scanner) Scan(ctx context.Context, surfaces []enrichment.EnrichedSurfac
 	}
 
 	for i, surface := range surfaces {
-		i, surface := i, surface
 		g.Go(func() error {
 			f, err := s.scanOne(gctx, surface)
 			if err != nil {
@@ -159,7 +162,7 @@ func (s *Scanner) scanOne(ctx context.Context, surface enrichment.EnrichedSurfac
 	defer cancel()
 
 	opts := analysisOpts(s.llmMode)
-	prompt := buildPrompt(surface, s.llmMode)
+	prompt := buildPrompt(surface, s.llmMode, s.root)
 
 	slog.Debug(
 		"analysis: prompt",
@@ -197,11 +200,8 @@ func (s *Scanner) scanOne(ctx context.Context, surface enrichment.EnrichedSurfac
 			"mode", s.llmMode,
 		)
 		retryOpts := *opts
-		retryOpts.NumPredict = opts.NumPredict / 2
-		if retryOpts.NumPredict < 64 {
-			retryOpts.NumPredict = 64
-		}
-		retryOpts.Think = boolPtr(false)
+		retryOpts.NumPredict = max(opts.NumPredict / 2, 64)
+		retryOpts.Think = new(false)
 		raw, err = s.provider.Generate(sctx, prompt, &retryOpts)
 		if err != nil || raw == "" {
 			slog.Warn("analysis: retry also returned empty, dropping surface",
@@ -264,6 +264,3 @@ func (s *Scanner) selfConsistencyCheck(ctx context.Context, surface enrichment.E
 	}
 	return v
 }
-
-
-

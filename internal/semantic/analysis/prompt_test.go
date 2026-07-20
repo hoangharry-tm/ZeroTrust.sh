@@ -1,8 +1,11 @@
 package analysis
 
 import (
+	"os"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/hoangharry-tm/zerotrust/internal/semantic/enrichment"
 	"github.com/hoangharry-tm/zerotrust/internal/semantic/targeting"
@@ -16,7 +19,7 @@ func TestBuildPrompt_MidModeHasScaffold(t *testing.T) {
 			Kind: targeting.SurfaceExternalInput,
 		},
 	}
-	prompt := buildPrompt(surface, "mid")
+	prompt := buildPrompt(surface, "mid", "")
 	for _, step := range []string{"Step 1", "Step 2", "Step 3", "Step 4", "Step 5"} {
 		if !strings.Contains(prompt, step) {
 			t.Errorf("mid-mode prompt should contain %q", step)
@@ -32,7 +35,7 @@ func TestBuildPrompt_FrontierModeHasFewShot(t *testing.T) {
 			Kind: targeting.SurfaceExternalInput,
 		},
 	}
-	prompt := buildPrompt(surface, "frontier")
+	prompt := buildPrompt(surface, "frontier", "")
 	if !strings.Contains(prompt, "FEW-SHOT EXAMPLES") {
 		t.Errorf("frontier-mode prompt should contain 'FEW-SHOT EXAMPLES', got:\n%s", prompt)
 	}
@@ -343,7 +346,7 @@ func TestBuildPromptMid_PreservesStringLiterals(t *testing.T) {
 		},
 		Code: `executeQuery("SELECT * FROM users WHERE id='" + id + "'")`,
 	}
-	prompt := buildPromptMid(surface)
+	prompt := buildPromptMid(surface, "")
 	if !strings.Contains(prompt, "SELECT") {
 		t.Errorf("buildPromptMid should preserve string literal contents, got:\n%s", prompt)
 	}
@@ -361,7 +364,7 @@ func TestBuildPromptFrontier_PreservesStringLiterals(t *testing.T) {
 		},
 		Code: `executeQuery("SELECT * FROM users WHERE id='" + id + "'")`,
 	}
-	prompt := buildPromptFrontier(surface)
+	prompt := buildPromptFrontier(surface, "")
 	if !strings.Contains(prompt, "SELECT") {
 		t.Errorf("buildPromptFrontier should preserve string literal contents, got:\n%s", prompt)
 	}
@@ -379,7 +382,7 @@ func TestBuildPromptSmall_PreservesStringLiterals(t *testing.T) {
 		},
 		Code: `executeQuery("SELECT * FROM users WHERE id='" + id + "'")`,
 	}
-	prompt := buildPromptSmall(surface)
+	prompt := buildPromptSmall(surface, "")
 	if !strings.Contains(prompt, "SELECT") {
 		t.Errorf("buildPromptSmall should preserve string literal contents, got:\n%s", prompt)
 	}
@@ -398,9 +401,12 @@ func TestBuildPromptMid_TaintMismatchInstructionIsNarrow(t *testing.T) {
 			Kind: targeting.SurfaceExternalInput,
 		},
 	}
-	prompt := buildPromptMid(surface)
-	if !strings.Contains(prompt, "completely") || !strings.Contains(prompt, "absent") {
-		t.Errorf("mid prompt should contain narrow taint_mismatch definition with 'completely absent', got:\n%s", prompt)
+	prompt := buildPromptMid(surface, "")
+	if !strings.Contains(prompt, "absent from BOTH") {
+		t.Errorf("mid prompt should contain narrow taint_mismatch definition with 'absent from BOTH', got:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "SINK CONTEXT' block is shown") {
+		t.Errorf("mid prompt should mention SINK CONTEXT block in taint_mismatch instruction, got:\n%s", prompt)
 	}
 }
 
@@ -412,7 +418,7 @@ func TestBuildPromptFrontier_HasMismatchExample(t *testing.T) {
 			Kind: targeting.SurfaceExternalInput,
 		},
 	}
-	prompt := buildPromptFrontier(surface)
+	prompt := buildPromptFrontier(surface, "")
 	if !strings.Contains(prompt, "TAINT MISMATCH") {
 		t.Errorf("frontier prompt should contain 'TAINT MISMATCH' example, got:\n%s", prompt)
 	}
@@ -429,7 +435,7 @@ func TestBuildPromptFrontier_HasNotMismatchExample(t *testing.T) {
 			Kind: targeting.SurfaceExternalInput,
 		},
 	}
-	prompt := buildPromptFrontier(surface)
+	prompt := buildPromptFrontier(surface, "")
 	if !strings.Contains(prompt, "prepareStatement") {
 		t.Errorf("frontier prompt should contain 'prepareStatement' in NOT a mismatch example, got:\n%s", prompt)
 	}
@@ -443,7 +449,7 @@ func TestBuildPrompt_NoWorldKnowledge(t *testing.T) {
 			Kind: targeting.SurfaceExternalInput,
 		},
 	}
-	prompt := buildPrompt(surface, "mid")
+	prompt := buildPrompt(surface, "mid", "")
 	if !strings.Contains(prompt, "Do NOT use prior knowledge") {
 		t.Errorf("buildPrompt should contain 'Do NOT use prior knowledge', got:\n%s", prompt)
 	}
@@ -461,7 +467,7 @@ func TestBuildPromptMid_WeakConfidenceContainsNOTE(t *testing.T) {
 		ContractCWE:     "CWE-89",
 		TaintConfidence: "weak",
 	}
-	prompt := buildPrompt(surface, "mid")
+	prompt := buildPrompt(surface, "mid", "")
 	if !strings.Contains(prompt, "No inter-procedural taint path was confirmed") {
 		t.Errorf("mid prompt with TaintConfidence=weak should contain the NOTE, got:\n%s", prompt)
 	}
@@ -476,7 +482,7 @@ func TestBuildPromptMid_EmptyConfidenceNoNOTE(t *testing.T) {
 		},
 		ContractCWE: "CWE-89",
 	}
-	prompt := buildPrompt(surface, "mid")
+	prompt := buildPrompt(surface, "mid", "")
 	if strings.Contains(prompt, "No inter-procedural taint path was confirmed") {
 		t.Errorf("mid prompt without TaintConfidence=weak should NOT contain the NOTE, got:\n%s", prompt)
 	}
@@ -492,7 +498,7 @@ func TestBuildPromptFrontier_WeakConfidenceContainsNOTE(t *testing.T) {
 		ContractCWE:     "CWE-89",
 		TaintConfidence: "weak",
 	}
-	prompt := buildPrompt(surface, "frontier")
+	prompt := buildPrompt(surface, "frontier", "")
 	if !strings.Contains(prompt, "No inter-procedural taint path was confirmed") {
 		t.Errorf("frontier prompt with TaintConfidence=weak should contain the NOTE, got:\n%s", prompt)
 	}
@@ -507,13 +513,61 @@ func TestBuildPromptFrontier_EmptyConfidenceNoNOTE(t *testing.T) {
 		},
 		ContractCWE: "CWE-89",
 	}
-	prompt := buildPrompt(surface, "frontier")
+	prompt := buildPrompt(surface, "frontier", "")
 	if strings.Contains(prompt, "No inter-procedural taint path was confirmed") {
 		t.Errorf("frontier prompt without TaintConfidence=weak should NOT contain the NOTE, got:\n%s", prompt)
 	}
 }
 
 // ── Fix 2 regression: B5 prompts do NOT obfuscateCode string literals ─────
+
+// ── Fix 5: Sink context in B5 prompts ──────────────────────────────────
+
+func TestBuildPromptMid_SinkContext(t *testing.T) {
+	tmpDir := t.TempDir()
+	sinkFile := tmpDir + "/UserDao.java"
+	sinkContent := "package dao;\n\npublic class UserDao {\n    public void findUser(String id) {\n        stmt.executeQuery(input);\n    }\n}"
+	require.NoError(t, os.WriteFile(sinkFile, []byte(sinkContent), 0o644))
+
+	surface := enrichment.EnrichedSurface{
+		Surface: targeting.Surface{
+			ID:           "s1",
+			File:         "src/controller/UserController.java",
+			FunctionName: "getUser",
+			Kind:         targeting.SurfaceExternalInput,
+		},
+		Code:     "public User getUser(String id) { return dao.findUser(id); }",
+		SinkFile: sinkFile,
+		SinkLine: 5,
+	}
+	prompt := buildPrompt(surface, "mid", "")
+	if !strings.Contains(prompt, "SINK CONTEXT") {
+		t.Errorf("mid prompt should contain 'SINK CONTEXT' section, got:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "→ 5:") {
+		t.Errorf("mid prompt should mark sink line 5 with →, got:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "executeQuery") {
+		t.Errorf("mid prompt sink context should contain executeQuery, got:\n%s", prompt)
+	}
+}
+
+func TestBuildPromptMid_SinkContextOmittedWhenSameFile(t *testing.T) {
+	surface := enrichment.EnrichedSurface{
+		Surface: targeting.Surface{
+			ID:   "s1",
+			File: "src/controller/UserController.java",
+			Kind: targeting.SurfaceExternalInput,
+		},
+		Code:     "public User getUser(String id) { return dao.findUser(id); }",
+		SinkFile: "src/controller/UserController.java",
+		SinkLine: 5,
+	}
+	prompt := buildPrompt(surface, "mid", "")
+	if strings.Contains(prompt, "=== SINK CONTEXT ") {
+		t.Errorf("mid prompt should NOT show SINK CONTEXT section when sink is in same file, got:\n%s", prompt)
+	}
+}
 
 func TestB5PromptPreservesStringLiterals(t *testing.T) {
 	surface := enrichment.EnrichedSurface{
@@ -534,7 +588,7 @@ func TestB5PromptPreservesStringLiterals(t *testing.T) {
 
 	for _, mode := range []string{"small", "mid", "frontier"} {
 		t.Run(mode, func(t *testing.T) {
-			got := buildPrompt(surface, mode)
+			got := buildPrompt(surface, mode, "")
 			if strings.Contains(got, `""`) && !strings.Contains(got, `"SELECT`) {
 				t.Errorf("mode=%s: obfuscateCode appears to have blanked string literals; got:\n%s", mode, got[:500])
 			}

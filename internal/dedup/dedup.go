@@ -264,16 +264,20 @@ func applyBoostAndScore(f finding.Finding) finding.Finding {
 			f.Confidence = floor
 		}
 	}
-	if f.SSVC.Exploitation == "Active" {
-		f.Confidence = min(f.Confidence+config.C.BoostSSVCActive, 1.0)
-	}
-	if f.SSVC.Automatable == "Yes" {
-		f.Confidence = min(f.Confidence+config.C.BoostSSVCAutomatable, 1.0)
+	if f.Exploitable || f.SourcePath == finding.SourceBoth {
+		if f.SSVC.Exploitation == "Active" {
+			f.Confidence = min(f.Confidence+config.C.BoostSSVCActive, 1.0)
+		}
+		if f.SSVC.Automatable == "Yes" {
+			f.Confidence = min(f.Confidence+config.C.BoostSSVCAutomatable, 1.0)
+		}
 	}
 	if f.SourcePath == finding.SourcePattern && f.Confidence < config.C.FloorPatternPath {
 		f.Confidence = config.C.FloorPatternPath
 	}
-	f.SeverityLabel = finding.SeverityFromConfidence(f.Confidence)
+	if !f.SeverityPinned {
+		f.SeverityLabel = finding.SeverityFromConfidence(f.Confidence)
+	}
 	return f
 }
 

@@ -60,6 +60,12 @@ func DetectSecondOrder(
 	reverseCG := buildReverseCG(cg)
 	storageReaders := bfsForward(reverseCG, storageSeeds)
 
+	// Build a lookup map from node ID to cpg.Node for O(1) access.
+	nodeByID := make(map[string]cpg.Node, len(methods))
+	for _, m := range methods {
+		nodeByID[m.ID] = m
+	}
+
 	// Second-order surfaces: readers that also reach sinks.
 	out := make([]Surface, 0, len(storageReaders))
 	seen := make(map[string]bool)
@@ -69,8 +75,13 @@ func DetectSecondOrder(
 			continue
 		}
 		seen[id] = true
+		n := nodeByID[id]
 		out = append(out, Surface{
 			ID:            id,
+			File:          n.File,
+			FunctionName:  n.Name,
+			Line:          n.Line,
+			NodeType:      cpg.NodeMethod,
 			Kind:          SurfaceExternalInput,
 			IsSecondOrder: true,
 		})

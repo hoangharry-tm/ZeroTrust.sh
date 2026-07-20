@@ -173,6 +173,66 @@ func TestApplyCVEMatches_SortsByDescendingCVSS(t *testing.T) {
 	assert.Equal(t, "CVE-high", surfaces[0].CVEMatches[0].CVE)
 }
 
+func TestParseTrivyOutput_IndexedByShortName(t *testing.T) {
+	raw := []byte(`{"Results":[{"Target":"pom.xml","Vulnerabilities":[{
+		"VulnerabilityID":"CVE-2021-21344",
+		"PkgName":"com.thoughtworks.xstream:xstream",
+		"InstalledVersion":"1.4.5","FixedVersion":"1.4.16",
+		"CVSS":{"nvd":{"V3Score":9.8},"ghsa":{"V3Score":5.3}}
+	}]}]}`)
+	result, err := parseTrivyOutput(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := result["xstream"]; !ok {
+		t.Error("want short-name key 'xstream' in result")
+	}
+	if _, ok := result["com.thoughtworks.xstream:xstream"]; !ok {
+		t.Error("want full-coord key in result")
+	}
+}
+
+func TestApplyCVEMatches_MatchesViaCodeReference(t *testing.T) {
+	surfaces := []EnrichedSurface{{
+		Surface: targeting.Surface{
+			File:         "src/main/java/org/owasp/webgoat/lessons/xxe/SimpleXXE.java",
+			FunctionName: "parseXML",
+			Line:         42,
+		},
+		Code: "XStream xstream = new XStream(); xstream.fromXML(input);",
+	}}
+	cvesByPkg := map[string][]CVEMatch{
+		"xstream": {{CVE: "CVE-2021-21344", CVSS: 9.8}},
+	}
+	ApplyCVEMatches(surfaces, cvesByPkg)
+	if len(surfaces[0].CVEMatches) == 0 {
+		t.Error("want CVEMatch populated via code reference to 'xstream'")
+	}
+}
+
+func TestApplyCVEMatches_FileReadFallback(t *testing.T) {
+	tmpDir := t.TempDir()
+	filePath := filepath.Join(tmpDir, "VulnerableComponentsLesson.java")
+	code := "XStream xStream = new XStream();\nxStream.fromXML(xml);"
+	require.NoError(t, os.WriteFile(filePath, []byte(code), 0o644))
+
+	surfaces := []EnrichedSurface{{
+		Surface: targeting.Surface{
+			File:         filePath,
+			FunctionName: "parseXML",
+			Line:         1,
+		},
+		Code: "", // intentionally empty — triggers file-read fallback
+	}}
+	cvesByPkg := map[string][]CVEMatch{
+		"xstream": {{CVE: "CVE-2021-39139", CVSS: 9.8, Package: "xstream"}},
+	}
+	ApplyCVEMatches(surfaces, cvesByPkg)
+	require.Len(t, surfaces[0].CVEMatches, 1, "should match xstream via file read fallback")
+	assert.Equal(t, "CVE-2021-39139", surfaces[0].CVEMatches[0].CVE)
+	assert.True(t, surfaces[0].AutoFlagged, "CVSS 9.8 should auto-flag")
+}
+
 func TestApplyCVEMatches_NoMatchLeavesUnchanged(t *testing.T) {
 	surfaces := []EnrichedSurface{surfaceWithFile("internal/auth/handler.go")}
 	cvesByPkg := map[string][]CVEMatch{

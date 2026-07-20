@@ -91,8 +91,8 @@ type Config struct {
 	TokenEstOverhead    int     `json:"token_est_overhead"     validate:"gte=0"`
 
 	// ── Batch sizes ──────────────────────────────────────────────────────────────
-	AssemblerBatchSize             int `json:"assembler_batch_size"              validate:"gte=1"`
-	SummarizerBatchSize            int `json:"summarizer_batch_size"             validate:"gte=1"`
+	AssemblerBatchSize             int `json:"assembler_batch_size"               validate:"gte=1"`
+	SummarizerBatchSize            int `json:"summarizer_batch_size"              validate:"gte=1"`
 	SummarizerMaxFunctionsPerBatch int `json:"summarizer_max_functions_per_batch" validate:"gte=1"`
 
 	// ── CPG / call-graph depth ───────────────────────────────────────────────────

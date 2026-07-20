@@ -62,6 +62,7 @@ type Surface struct {
 	ID              string
 	File            string
 	FunctionName    string
+	Line            int
 	NodeType        cpg.NodeType
 	Kind            SurfaceKind
 	CallGraphDepth  int
@@ -283,6 +284,7 @@ func (t *Targeter) Run(ctx context.Context) ([]Surface, error) {
 			ID:             m.ID,
 			File:           m.File,
 			FunctionName:   m.Name,
+			Line:           m.Line,
 			NodeType:       cpg.NodeMethod,
 			Kind:           kind,
 			CallGraphDepth: depths[id],

@@ -114,7 +114,7 @@ func (c *Config) defaults() {
 		c.OllamaURL = "http://localhost:11434"
 	}
 	if c.TokenCap <= 0 {
-		c.TokenCap = config.C.DefaultTokenCap
+		c.TokenCap = config.New().DefaultTokenCap
 	}
 	if c.TriageThreshold <= 0 {
 		c.TriageThreshold = 0.50

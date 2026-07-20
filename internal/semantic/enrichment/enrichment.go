@@ -119,6 +119,11 @@ type EnrichedSurface struct {
 	// "" = no taint evidence, "weak" = contract-flagged but no taint path,
 	// "confirmed" = inter-procedural taint path confirmed by CPG.
 	TaintConfidence string
+	// SinkFile is the source file containing the taint sink (from Joern CPG).
+	// Populated when a confirmed taint path exists to a sink in a different file.
+	SinkFile string
+	// SinkLine is the line number of the taint sink call in SinkFile.
+	SinkLine int
 }
 
 // Enricher adds CVE, call graph, and IDOR data to a surface list.
@@ -393,6 +398,11 @@ func (e *Enricher) Enrich(ctx context.Context, surfaces []targeting.Surface, pro
 					if p.Source.NodeID == s.ID {
 						es.CallPath = append(es.CallPath, sinkLabel)
 					}
+					// Capture sink file/line from first path with a file pointer.
+					if es.SinkFile == "" && p.Sink.File != "" {
+						es.SinkFile = p.Sink.File
+						es.SinkLine = p.Sink.Line
+					}
 				}
 			}
 
@@ -454,6 +464,8 @@ func (e *Enricher) Enrich(ctx context.Context, surfaces []targeting.Surface, pro
 				"code_len", len(es.Code),
 				"sink_node_count", len(es.SinkNodes),
 				"call_path_len", len(es.CallPath),
+				"sink_file", es.SinkFile,
+				"sink_line", es.SinkLine,
 			)
 
 			mu.Lock()

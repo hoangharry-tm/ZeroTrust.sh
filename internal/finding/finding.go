@@ -248,6 +248,15 @@ type Finding struct {
 	SuppressReason SuppressReason `json:"SuppressReason"`
 	// Justification is the human-readable explanation of the finding.
 	Justification string `json:"Justification"`
+	// DCCEvidence is the raw DCC structural contract match string (pipeline-internal).
+	// Stored separately from Justification so the report can display them independently.
+	// Empty for Path A findings.
+	DCCEvidence string `json:"DCCEvidence"`
+	// Summary is the short human-readable one-sentence description of the finding
+	// for use as the report card title. For Path B findings this is the B5 LLM
+	// explanation (≤25 words). For Path A findings this is the rule description.
+	// Falls back to the first sentence of Justification if empty.
+	Summary string `json:"Summary"`
 	// MatchedCode is the source snippet at the finding location.
 	MatchedCode string `json:"MatchedCode"`
 	// RuleID is the OpenGrep / ast-grep rule identifier that matched (Path A only).
@@ -276,6 +285,9 @@ type Finding struct {
 	TaintMismatch bool `json:"TaintMismatch"`
 	// Exploitable is the LLM's binary verdict on exploitability.
 	Exploitable bool `json:"Exploitable"`
+	// SeverityPinned is true when an upstream stage has explicitly set SeverityLabel
+	// and dedup must not recalculate it from confidence.
+	SeverityPinned bool `json:"-"`
 }
 
 // Channel is a typed channel through which pipeline stages emit findings.

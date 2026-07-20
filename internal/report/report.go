@@ -42,6 +42,10 @@ type ScanInfo struct {
 	ModulesScanned int    // number of modules in scope (0 = omit from display)
 	LOC            int    // lines of code scanned (0 = omit)
 	ScanDuration   string // e.g. "4.2s" (empty = omit)
+	// RootDir is the absolute path of the scanned project root.
+	// When set, all finding paths from Path B (Joern CPG) that start with
+	// this prefix are normalized to relative paths in the rendered report.
+	RootDir string
 	// Alerts are operator-facing degradation notices (e.g. MIV block, CPG build failure).
 	// Non-empty entries are rendered as warning banners in the report header.
 	Alerts []string
@@ -99,11 +103,14 @@ type diffLine struct {
 
 // templateFuncs are the custom functions available in the template.
 var templateFuncs = template.FuncMap{
-	// not inverts a boolean — used for {{ if not .Findings }}.
+	// not inverts a boolean or checks emptiness for strings and slices.
+	// Used in the template for {{ if not .Findings }} and {{ if and (not .MatchedCode) ... }}.
 	"not": func(v any) bool {
 		switch val := v.(type) {
 		case bool:
 			return !val
+		case string:
+			return val == ""
 		case []finding.Finding:
 			return len(val) == 0
 		}
@@ -134,22 +141,6 @@ var templateFuncs = template.FuncMap{
 			return 0
 		}
 		return pct
-	},
-
-	// sevColor returns the CSS variable string for a severity label.
-	"sevColor": func(sev finding.SeverityLabel) string {
-		switch sev {
-		case finding.SeverityBlock:
-			return "var(--sev-block)"
-		case finding.SeverityHigh:
-			return "var(--sev-high)"
-		case finding.SeverityMedium:
-			return "var(--sev-medium)"
-		case finding.SeverityLow:
-			return "var(--sev-low)"
-		default:
-			return "var(--sev-supp)"
-		}
 	},
 
 	// ssvcClass maps an SSVC dimension value to a CSS class for colouring.
@@ -197,21 +188,52 @@ var templateFuncs = template.FuncMap{
 
 	// codeLines splits MatchedCode into numbered codeLine values.
 	// startLine is the first line number (from LineRange.Start); 0 defaults to 1.
-	// The last line of the snippet is highlighted as the primary finding line.
-	"codeLines": func(code string, startLine int) []codeLine {
+	// sinkLine is the absolute line number to highlight (from LineRange.End).
+	// When sinkLine <= 0 or sinkLine < startLine, the last line is highlighted
+	// as fallback (preserves Path A behaviour where End == Start).
+	"codeLines": func(code string, startLine, sinkLine int) []codeLine {
 		if startLine <= 0 {
 			startLine = 1
 		}
 		raw := strings.Split(strings.TrimRight(code, "\n"), "\n")
 		lines := make([]codeLine, len(raw))
 		for i, l := range raw {
+			absLine := startLine + i
+			var highlight bool
+			if sinkLine > 0 && sinkLine >= startLine {
+				highlight = absLine == sinkLine
+			} else {
+				highlight = i == len(raw)-1
+			}
 			lines[i] = codeLine{
-				LineNum:   startLine + i,
+				LineNum:   absLine,
 				Content:   l,
-				Highlight: i == len(raw)-1,
+				Highlight: highlight,
 			}
 		}
 		return lines
+	},
+
+	// displayTitle returns the best human-readable title for a finding card.
+	// If Summary is set, it is returned verbatim. Otherwise falls back to
+	// extracting the B5 explanation from Justification, or truncating to 120 chars.
+	"displayTitle": func(summary, justification string) string {
+		if summary != "" {
+			return summary
+		}
+		j := justification
+		for _, marker := range []string{" — B5 confirmed (conf=", " — B5 LLM confirmed"} {
+			if i := strings.Index(j, marker); i > 0 {
+				after := j[i:]
+				if ci := strings.Index(after, "): "); ci >= 0 {
+					return after[ci+3:]
+				}
+			}
+		}
+		if len(j) > 120 {
+			return j[:117] + "..."
+		}
+		return j
 	},
 
 	// inlineCSS returns the embedded stylesheet as safe CSS.
@@ -255,12 +277,40 @@ func New(outputPath string) *Generator {
 
 // Render writes the self-contained HTML report to w.
 // Findings are sorted by severity (BLOCK first) before rendering.
+// normalizePaths converts absolute finding paths to relative by stripping the
+// RootDir prefix. Paths that are already relative or don't share the prefix are
+// left unchanged. This ensures Path A (OpenGrep, relative) and Path B (Joern
+// CPG, often absolute) use consistent path forms in the report.
+func normalizePaths(rootDir string, findings []finding.Finding) {
+	if rootDir == "" {
+		return
+	}
+	absRoot, err := filepath.Abs(rootDir)
+	if err != nil {
+		return
+	}
+	absRoot = filepath.ToSlash(absRoot)
+	for i := range findings {
+		p := findings[i].Path
+		if p == "" || !filepath.IsAbs(p) {
+			continue
+		}
+		cleaned := filepath.ToSlash(filepath.Clean(p))
+		if strings.HasPrefix(cleaned, absRoot+"/") {
+			findings[i].Path = cleaned[len(absRoot)+1:]
+		} else if cleaned == absRoot {
+			findings[i].Path = "."
+		}
+	}
+}
+
 func (g *Generator) Render(w io.Writer, info ScanInfo, findings []finding.Finding) error {
 	slog.Debug("rendering layout",
 		slog.String("project", info.ProjectName),
 		slog.Int("findings", len(findings)),
 	)
 	sorted := sortFindings(findings)
+	normalizePaths(info.RootDir, sorted)
 	data := templateData{
 		Info:       info,
 		Findings:   sorted,

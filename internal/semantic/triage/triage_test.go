@@ -40,10 +40,13 @@ func TestTriagePrompt_MidMode(t *testing.T) {
 	surface := makeSurface("func() { return 1; }")
 	prompt := buildTriagePrompt(surface, "mid")
 
-	for _, label := range []string{"0.0", "0.3", "0.5", "0.7", "1.0"} {
+	for _, label := range []string{"0.00", "0.25", "0.50", "0.75", "1.00"} {
 		if !strings.Contains(prompt, label) {
-			t.Errorf("mid-mode prompt should contain label %q", label)
+			t.Errorf("mid-mode prompt should contain calibration point %q", label)
 		}
+	}
+	if !strings.Contains(prompt, "decimal between 0.0 and 1.0") {
+		t.Errorf("mid-mode prompt should instruct continuous decimal output")
 	}
 }
 
@@ -79,6 +82,45 @@ func TestParseConfidence_FallbackIs0_5(t *testing.T) {
 	v3 := parseConfidence("gibberish no numbers")
 	if v3 != 0.5 {
 		t.Errorf("parseConfidence('gibberish') = %f, want 0.5", v3)
+	}
+}
+
+// ── Fix 2: applicable CWEs in triage prompts ───────────────────────────
+
+func TestBuildTriagePromptMid_ApplicableCWEs_ExternalInput(t *testing.T) {
+	surface := makeSurface("func() { return input; }")
+	prompt := buildTriagePromptMid(surface)
+	if !strings.Contains(prompt, "CWE-89") {
+		t.Errorf("ExternalInput prompt should contain CWE-89, got:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "CWE-918") {
+		t.Errorf("ExternalInput prompt should contain CWE-918, got:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "[]") {
+		t.Errorf("ExternalInput prompt should NOT contain '[]', got:\n%s", prompt)
+	}
+}
+
+func TestBuildTriagePromptMid_ApplicableCWEs_AuthBoundary(t *testing.T) {
+	surface := makeSurface("func() { return input; }")
+	surface.Kind = targeting.SurfaceAuthBoundary
+	prompt := buildTriagePromptMid(surface)
+	if !strings.Contains(prompt, "CWE-862") {
+		t.Errorf("AuthBoundary prompt should contain CWE-862, got:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "[]") {
+		t.Errorf("AuthBoundary prompt should NOT contain '[]', got:\n%s", prompt)
+	}
+}
+
+func TestBuildTriagePromptFrontier_ApplicableCWEs_ExternalInput(t *testing.T) {
+	surface := makeSurface("func() { return input; }")
+	prompt := buildTriagePromptFrontier(surface)
+	if !strings.Contains(prompt, "CWE-89") {
+		t.Errorf("Frontier ExternalInput prompt should contain CWE-89, got:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "CVEMatches") {
+		t.Errorf("Frontier prompt should not reference CVEMatches field, got:\n%s", prompt)
 	}
 }
 
@@ -160,6 +202,34 @@ func TestStubGateDropsNoBodySurfaces(t *testing.T) {
 	}
 }
 
+func TestStubGatePassesThroughLongCodeWithoutBrace(t *testing.T) {
+	mock := &mockProvider{response: "0.3"}
+	triager := New(mock, 0.5, "mid")
+
+	surfaces := []enrichment.EnrichedSurface{
+		{
+			Surface: targeting.Surface{
+				ID:           "s-nobrace",
+				FunctionName: "processRequest",
+				File:         "Controller.java",
+				Kind:         targeting.SurfaceExternalInput,
+			},
+			Code: "@PreAuthorize(\"hasRole('ADMIN')\") public ResponseEntity processRequest()",
+		},
+	}
+
+	results, err := triager.Filter(context.Background(), surfaces)
+	if err != nil {
+		t.Fatalf("Filter() error: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Disposition == DispositionDrop && results[0].Explanation == "stub: no method body" {
+		t.Error("long code without '{' must NOT be stub-dropped — remove the !strings.Contains check")
+	}
+}
+
 func TestParseConfidence_AnchoredLabels(t *testing.T) {
 	tests := []struct {
 		input string
@@ -174,6 +244,12 @@ func TestParseConfidence_AnchoredLabels(t *testing.T) {
 		{"SAFE", 0.0},
 		{" 0.7 ", 0.7},
 		{"certainly vulnerable: 1.0", 1.0},
+		// Continuous scale values (Problem 3)
+		{"0.75", 0.75},
+		{"0.25", 0.25},
+		{"0.50", 0.50},
+		{"0.00", 0.00},
+		{"0.85", 0.85},
 	}
 	for _, tc := range tests {
 		got := parseConfidence(tc.input)

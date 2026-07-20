@@ -146,6 +146,64 @@ func (r *Runner) Name() string { return "opengrep" }
 // packs for any detected language.
 func (r *Runner) Supports(_ detector.StackProfile) bool { return true }
 
+// ruleLanguagePrefix extracts the language prefix from a Semgrep rule ID.
+// e.g. "python.django.security.foo" → "python"
+//      "java.spring.security.bar"   → "java"
+//      "generic.secrets.foo"        → "generic" (always kept)
+func ruleLanguagePrefix(ruleID string) string {
+	if i := strings.IndexByte(ruleID, '.'); i > 0 {
+		return ruleID[:i]
+	}
+	return ""
+}
+
+// fileLanguage returns the broad language tag for a source file based on extension.
+func fileLanguage(path string) string {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".java", ".kt", ".scala":
+		return "java"
+	case ".py":
+		return "python"
+	case ".go":
+		return "go"
+	case ".js", ".jsx", ".mjs":
+		return "javascript"
+	case ".ts", ".tsx":
+		return "typescript"
+	case ".rb":
+		return "ruby"
+	case ".php":
+		return "php"
+	case ".rs":
+		return "rust"
+	case ".cs":
+		return "csharp"
+	case ".html", ".htm":
+		return "html"
+	}
+	return ""
+}
+
+// keepFinding returns false for findings that should be discarded:
+//  1. Rule language prefix doesn't match the target file's language.
+//  2. File is inside a CI/CD config path out of scope for application security.
+func keepFinding(f finding.Finding) bool {
+	lp := strings.ToLower(f.Path)
+	if strings.Contains(lp, "/.github/") || strings.HasPrefix(lp, ".github/") ||
+		strings.Contains(lp, "/.circleci/") || strings.Contains(lp, "/bitbucket-pipelines") {
+		return false
+	}
+	ruleLang := ruleLanguagePrefix(f.RuleID)
+	if ruleLang == "" || ruleLang == "generic" {
+		return true
+	}
+	fileLang := fileLanguage(f.Path)
+	if fileLang == "" {
+		return true
+	}
+	return ruleLang == fileLang
+}
+
 // Scan implements scanner.Scanner. It detects the stack from target,
 // dynamically selects rule packs, then runs opengrep against the whole target dir.
 func (r *Runner) Scan(ctx context.Context, target string) ([]finding.Finding, error) {
@@ -201,7 +259,13 @@ func (r *Runner) Scan(ctx context.Context, target string) ([]finding.Finding, er
 	for _, raw := range out.Results {
 		findings = append(findings, normalise(raw))
 	}
-	return findings, nil
+	filtered := findings[:0]
+	for _, f := range findings {
+		if keepFinding(f) {
+			filtered = append(filtered, f)
+		}
+	}
+	return filtered, nil
 }
 
 // ScanFiles runs OpenGrep against a specific file list and returns normalised findings.
@@ -236,7 +300,13 @@ func (r *Runner) ScanFiles(ctx context.Context, files []string) ([]finding.Findi
 	for _, raw := range out.Results {
 		findings = append(findings, normalise(raw))
 	}
-	return findings, nil
+	filtered := findings[:0]
+	for _, f := range findings {
+		if keepFinding(f) {
+			filtered = append(filtered, f)
+		}
+	}
+	return filtered, nil
 }
 
 // ponytail: reserved for the Path A high-confidence fast path. Not currently
@@ -320,7 +390,7 @@ func (r *Runner) run(ctx context.Context, files []string) (*ScanOutput, error) {
 // normalise converts a RawFinding into a finding.Finding.
 // The CWE, confidence, and OWASP category are extracted from Extra.Metadata.
 func normalise(raw RawFinding) finding.Finding {
-	return finding.New(
+	f := finding.New(
 		raw.Path,
 		finding.LineRange{Start: raw.Start.Line, End: raw.End.Line},
 		cweFromMetadata(raw.Extra.Metadata),
@@ -330,6 +400,14 @@ func normalise(raw RawFinding) finding.Finding {
 		finding.WithSourcePath(finding.SourcePattern),
 		finding.WithRuleID(raw.RuleID),
 	)
+	f.Summary = raw.Extra.Message
+	if f.Summary == "" {
+		f.Summary = f.RuleID
+	}
+	if len(f.Summary) > 120 {
+		f.Summary = f.Summary[:117] + "..."
+	}
+	return f
 }
 
 // confidenceFromMetadata maps the rule's metadata.confidence string and severity

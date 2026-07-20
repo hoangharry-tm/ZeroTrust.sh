@@ -242,7 +242,7 @@ func TestVerdictInconclusive(t *testing.T) {
 
 func TestApplicableCWEs_AuthBoundaryIncludesInjection(t *testing.T) {
 	cwes := applicableCWEs(targeting.SurfaceAuthBoundary)
-	expected := []string{"CWE-862", "CWE-89", "CWE-78", "CWE-22"}
+	expected := []string{"CWE-862", "CWE-89", "CWE-78"}
 	if len(cwes) != len(expected) {
 		t.Fatalf("applicableCWEs(SurfaceAuthBoundary) = %v, want %v", cwes, expected)
 	}
@@ -686,6 +686,24 @@ func TestFalsePositiveAnchors_DeserializeInComment(t *testing.T) {
 }
 
 // ── Root Cause 3: sinkMatched priority ─────────────────────────────────────
+
+func TestApplicableCWEs_AuthBoundaryDoesNotIncludeCWE22(t *testing.T) {
+	cwes := applicableCWEs(targeting.SurfaceAuthBoundary)
+	for _, c := range cwes {
+		if c == "CWE-22" {
+			t.Error("SurfaceAuthBoundary must not include CWE-22: path traversal is not an auth-boundary concern")
+		}
+	}
+}
+
+func TestApplicableCWEs_IDORCandidateDoesNotIncludeCWE22(t *testing.T) {
+	cwes := applicableCWEs(targeting.SurfaceIDORCandidate)
+	for _, c := range cwes {
+		if c == "CWE-22" {
+			t.Error("SurfaceIDORCandidate must not include CWE-22: path traversal is not an IDOR concern")
+		}
+	}
+}
 
 func TestSinkMatchedPrecedenceOverCodeMatch(t *testing.T) {
 	// Surface has both a code-only XSS match and a sink-node SQLi match.

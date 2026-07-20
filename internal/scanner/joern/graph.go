@@ -27,6 +27,16 @@ import (
 	"github.com/hoangharry-tm/zerotrust/pkg/sqlite"
 )
 
+// joernNullStr is the literal "null" string Joern emits when a CPG node
+// property (e.g. FILENAME on a CALL node) is absent. Guard against it
+// propagating into file paths.
+func joernNullStr(s string) string {
+	if s == "null" || s == "<empty>" {
+		return ""
+	}
+	return s
+}
+
 // pageSize is the number of elements per paginated Joern HTTP query.
 // Matches the value used in IngestCPGToSQLite.
 const pageSize = 500
@@ -702,7 +712,7 @@ func (g *joernGraph) TaintPaths(sources []cpg.TaintSource, sinks []cpg.TaintSink
 	if ok {
 		if cfg, ok2 := TaintConfigs[lang]; ok2 {
 			for _, sd := range cfg.Sinks {
-				sinkNames = append(sinkNames, sd.Name)
+				sinkNames = append(sinkNames, sd.JoernName())
 			}
 		}
 	}
@@ -792,10 +802,10 @@ func (g *joernGraph) ProjectWideTaintPaths(surfaceIDs []string, lang string) ([]
 	var constructorTypeNames []string
 	if lang != "" {
 		if cfg, ok := TaintConfigs[Language(lang)]; ok {
-			for _, sd := range cfg.Sinks {
-				sinkNames = append(sinkNames, sd.Name)
-			}
-			constructorTypeNames = ConstructorSinkTypeNames(Language(lang))
+				for _, sd := range cfg.Sinks {
+					sinkNames = append(sinkNames, sd.JoernName())
+				}
+				constructorTypeNames = ConstructorSinkTypeNames(Language(lang))
 		}
 	}
 	if len(sinkNames) == 0 {
@@ -852,20 +862,39 @@ func (g *joernGraph) ProjectWideTaintPaths(surfaceIDs []string, lang string) ([]
 			sourceKind = f.Sink.Type
 		}
 
+		// Prefer the CALL node's own file (f.Source.File after location.filename fix).
+		// Fall back to the surface method file for intra-procedural paths where they match.
+		sinkFile := joernNullStr(f.Source.File)
+		if sinkFile == "" {
+			sinkFile = joernNullStr(f.MethodFile)
+		}
+
+		// If the CALL node's lineNumber is 0, scan intermediate nodes for the first
+		// one that has a non-zero line in the same file — gives a fallback anchor.
+		sinkLine := f.Source.Line
+		if sinkLine == 0 && sinkFile != "" {
+			for _, iv := range f.Intermediate {
+				if iv.Line > 0 && joernNullStr(iv.File) == sinkFile {
+					sinkLine = iv.Line
+					break
+				}
+			}
+		}
+
 		path := cpg.TaintPath{
 			Source: cpg.TaintSource{
 				NodeID: f.MethodID,
 				Name:   f.MethodName,
 				Kind:   sourceKind,
-				File:   f.MethodFile,
+				File:   joernNullStr(f.MethodFile),
 				Line:   0,
 			},
 			Sink: cpg.TaintSink{
 				NodeID: f.Source.ID,
 				Name:   f.Source.Name,
 				Kind:   sinkKind,
-				File:   f.Source.File,
-				Line:   f.Source.Line,
+				File:   sinkFile,
+				Line:   sinkLine,
 			},
 		}
 		intermediate := make([]cpg.Node, len(f.Intermediate))

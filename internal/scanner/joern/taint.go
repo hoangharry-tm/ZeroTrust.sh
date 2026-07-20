@@ -44,6 +44,16 @@ type SinkDef struct {
 	CWE  string        // canonical CWE identifier
 }
 
+// JoernName returns the bare call name for Joern sinkSet matching.
+// Joern's c.name is always the unqualified method name, so "XStream.fromXML"
+// must be queried as "fromXML".
+func (s SinkDef) JoernName() string {
+	if i := strings.LastIndex(s.Name, "."); i >= 0 {
+		return s.Name[i+1:]
+	}
+	return s.Name
+}
+
 // SanitizerDef describes a validation / encoding function pattern.
 type SanitizerDef struct {
 	Name string
@@ -437,7 +447,11 @@ func SinkDefForCall(lang Language, callName string) (SinkDef, bool) {
 	for _, s := range cfg.Sinks {
 		// ponytail: substring match risks false positives (e.g. "exec" matches "execute").
 		// Upgrade path: structural PDG edge classification when PDG ingestion is added.
-		if strings.Contains(callName, s.Name) {
+		bareName := s.Name
+		if i := strings.LastIndex(s.Name, "."); i >= 0 {
+			bareName = s.Name[i+1:]
+		}
+		if strings.Contains(callName, bareName) {
 			return s, true
 		}
 	}

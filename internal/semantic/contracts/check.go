@@ -69,10 +69,10 @@ func applicableCWEs(kind targeting.SurfaceKind) []string {
 	case targeting.SurfaceExternalInput:
 		return []string{"CWE-22", "CWE-89", "CWE-78", "CWE-79", "CWE-94", "CWE-502", "CWE-918"}
 	case targeting.SurfaceAuthBoundary:
-		return []string{"CWE-862", "CWE-89", "CWE-78", "CWE-22"}
+		return []string{"CWE-862", "CWE-89", "CWE-78"}
 	case targeting.SurfaceIDORCandidate:
 		// IDOR surfaces may also reach SQL/OS sinks — check both auth and injection CWEs.
-		return []string{"CWE-862", "CWE-89", "CWE-78", "CWE-22"}
+		return []string{"CWE-862", "CWE-89", "CWE-78"}
 	case targeting.SurfaceDangerousSink:
 		return []string{"CWE-327"}
 	default:
@@ -185,7 +185,7 @@ func (c *Checker) Check(ctx context.Context, surface enrichment.EnrichedSurface)
 				callPathSample = callPathSample[:5]
 			}
 			slog.Debug("contracts: safe_node_check",
-				"cwe", cwe,
+                                "cwe", cwe,
 				"safe_nodes", inv.SafeNodes,
 				"call_path_sample", callPathSample,
 				"matched", safeMatched,
@@ -333,7 +333,6 @@ func (c *Checker) CheckAll(ctx context.Context, surfaces []enrichment.EnrichedSu
 	sem := make(chan struct{}, runtime.NumCPU())
 
 	for i, surface := range surfaces {
-		i, surface := i, surface
 		sem <- struct{}{}
 		g.Go(func() error {
 			defer func() { <-sem }()

@@ -245,8 +245,8 @@ func (p *Pipeline) buildOrLoadCPG(ctx context.Context, projectID, cpgPath string
 		err := p.joern.IncrementalPatch(ctx, joern.IncrementalPatchConfig{
 			ChangedFunctions:   changedFunctions,
 			RemovedFiles:       nil, // removed not tracked here
-			MaxDepth:           config.C.CPGDefaultMaxDepth,
-			HubCallerThreshold: config.C.CPGHubCallerThreshold,
+			MaxDepth:           config.New().CPGDefaultMaxDepth,
+			HubCallerThreshold: config.New().CPGHubCallerThreshold,
 			SerializedCPGPath:  cpgPath,
 		})
 		if err != nil {
@@ -294,9 +294,9 @@ func (p *Pipeline) buildFullCPG(ctx context.Context, projectID, cpgPath string, 
 	if err != nil {
 		return fmt.Errorf("count loc: %w", err)
 	}
-	if loc > config.C.CPGMaxScopeLOC {
+	if loc > config.New().CPGMaxScopeLOC {
 		return fmt.Errorf("scope exceeds %d LOC (%d) — CPG build skipped; taint analysis disabled",
-			config.C.CPGMaxScopeLOC, loc)
+			config.New().CPGMaxScopeLOC, loc)
 	}
 
 	p.logger.Info(
@@ -410,13 +410,14 @@ func cpgSnapshotPath(projectID string) string {
 // have not yet been processed, so prior_context is always 0.
 // Surfaces not present in neighbours keep their original relative order.
 func moduleDepthForMode(mode string) int {
+    var confDefault = config.New()
 	switch mode {
 	case "Thorough":
-		return config.C.ModuleDepthThorough
+		return confDefault.ModuleDepthThorough
 	case "Full":
 		return 0 // 0 means no expansion needed — entire codebase is in scope
 	default: // Default
-		return config.C.ModuleDepthDefault
+		return confDefault.ModuleDepthDefault
 	}
 }
 

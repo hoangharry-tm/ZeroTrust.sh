@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/hoangharry-tm/zerotrust/internal/semantic/enrichment"
+	"github.com/hoangharry-tm/zerotrust/internal/semantic/targeting"
 	"github.com/hoangharry-tm/zerotrust/pkg/llm"
 )
 
@@ -98,7 +99,7 @@ func (t *Triager) Filter(ctx context.Context, surfaces []enrichment.EnrichedSurf
 		)
 
 		code := strings.TrimSpace(surface.Code)
-		if len(code) < 50 || !strings.Contains(code, "{") {
+		if len(code) < 50 {
 			slog.Debug("triage: stub dropped (no method body)",
 				"function", surface.FunctionName,
 				"file", surface.File,
@@ -226,8 +227,25 @@ func buildTriagePromptSmall(surface enrichment.EnrichedSurface) string {
 	return sb.String()
 }
 
+// applicableCWEsForKind returns the applicable CWE IDs for a given surface kind,
+// matching the contracts package mapping. Duplicated inline to avoid circular import.
+func applicableCWEsForKind(kind targeting.SurfaceKind) []string {
+	switch kind {
+	case targeting.SurfaceExternalInput:
+		return []string{"CWE-22", "CWE-89", "CWE-78", "CWE-79", "CWE-94", "CWE-502", "CWE-918"}
+	case targeting.SurfaceAuthBoundary:
+		return []string{"CWE-862", "CWE-89", "CWE-78"}
+	case targeting.SurfaceIDORCandidate:
+		return []string{"CWE-862", "CWE-89", "CWE-78"}
+	case targeting.SurfaceDangerousSink:
+		return []string{"CWE-327"}
+	default:
+		return nil
+	}
+}
+
 // buildTriagePromptMid builds an externalized step scaffold for 7B–30B models.
-// Uses 5-class anchored confidence labels.
+// Uses continuous scale calibration.
 func buildTriagePromptMid(surface enrichment.EnrichedSurface) string {
 	code := obfuscateCode(stripIndent(surface.Code))
 	if len(code) > 1000 {
@@ -247,16 +265,23 @@ func buildTriagePromptMid(surface enrichment.EnrichedSurface) string {
 	sb.WriteString(surface.FunctionName)
 	sb.WriteString("\nTaint: ")
 	sb.WriteString(taintInfo)
-	sb.WriteString("\nCWE candidates: ")
-	sb.WriteString(fmt.Sprintf("%v", surface.CVEMatches))
+	sb.WriteString("\nApplicable CWEs: ")
+	cwes := applicableCWEsForKind(surface.Kind)
+	if len(cwes) == 0 {
+		sb.WriteString("[]")
+	} else {
+		sb.WriteString(strings.Join(cwes, ", "))
+	}
 	sb.WriteString("\n\nCode:\n```\n")
 	sb.WriteString(code)
-	sb.WriteString("\n```\n\nReply with ONLY one of these labels — nothing else:\n")
-	sb.WriteString("  0.0  — certainly safe (no vulnerability pattern)\n")
-	sb.WriteString("  0.3  — probably safe (minor concern, unlikely exploitable)\n")
-	sb.WriteString("  0.5  — uncertain (insufficient evidence)\n")
-	sb.WriteString("  0.7  — probably vulnerable (strong pattern, needs verification)\n")
-	sb.WriteString("  1.0  — certainly vulnerable (confirmed exploitable pattern)")
+	sb.WriteString("\n```\n\nReply with ONLY a decimal between 0.0 and 1.0 (two decimal places).\n")
+	sb.WriteString("Calibration guide:\n")
+	sb.WriteString("  0.00 — certainly safe: sanitizer present on every code path\n")
+	sb.WriteString("  0.25 — probably safe: pattern is benign, no sink reachable\n")
+	sb.WriteString("  0.50 — uncertain: some concern but evidence is insufficient\n")
+	sb.WriteString("  0.75 — probably vulnerable: sink reachable, no sanitizer found\n")
+	sb.WriteString("  1.00 — certainly exploitable: taint confirmed, no safe node\n")
+	sb.WriteString("Do NOT output anything other than a single decimal number.")
 	return sb.String()
 }
 
@@ -280,8 +305,13 @@ func buildTriagePromptFrontier(surface enrichment.EnrichedSurface) string {
 	sb.WriteString(surface.FunctionName)
 	sb.WriteString("\nTaint analysis: ")
 	sb.WriteString(taintInfo)
-	sb.WriteString("\nCWE candidates: ")
-	sb.WriteString(fmt.Sprintf("%v", surface.CVEMatches))
+	sb.WriteString("\nApplicable CWEs: ")
+	cwes := applicableCWEsForKind(surface.Kind)
+	if len(cwes) == 0 {
+		sb.WriteString("[]")
+	} else {
+		sb.WriteString(strings.Join(cwes, ", "))
+	}
 	sb.WriteString("\n\nSource code:\n```\n")
 	sb.WriteString(code)
 	sb.WriteString("\n```\n\n")
@@ -295,11 +325,11 @@ func buildTriagePromptFrontier(surface enrichment.EnrichedSurface) string {
 func triageOpts(mode string) *llm.Options {
 	switch mode {
 	case "small":
-		return &llm.Options{Temperature: 0.0, NumPredict: 16, Think: boolPtr(false)}
+		return &llm.Options{Temperature: 0.0, NumPredict: 16, Think: new(false)}
 	case "frontier":
 		return &llm.Options{Temperature: 0.1, NumPredict: 256}
 	default: // mid
-		return &llm.Options{Temperature: 0.0, NumPredict: 32, Think: boolPtr(false)}
+		return &llm.Options{Temperature: 0.0, NumPredict: 32, Think: new(false)}
 	}
 }
 
@@ -432,15 +462,16 @@ func blankStringLiterals(line string) string {
 }
 
 // parseConfidence parses a confidence score from a raw LLM response.
-// For mid mode: matches anchored labels first (1.0, 0.7, 0.5, 0.3, 0.0).
+// For mid mode: parses any decimal in [0.0, 1.0] (continuous scale).
 // For small mode: UNSAFE/SAFE.
-// Fallback: parse any float in response.
+// Anchored labels (1.0, 0.7, 0.5, 0.3, 0.0) supported as backward compatibility.
 // If nothing parseable: returns 0.5 (uncertain), NOT 0.0 (certainly safe).
 func parseConfidence(raw string) float64 {
-	// Anchored labels first (for mid mode)
-	for _, label := range []string{"1.0", "0.7", "0.5", "0.3", "0.0"} {
-		if strings.Contains(raw, label) {
-			v, _ := strconv.ParseFloat(label, 64)
+	// Try regex for any decimal in [0.0, 1.0] first — primary path for continuous scale.
+	re := regexp.MustCompile(`\b(0\.\d+|1\.0)\b`)
+	if m := re.FindString(raw); m != "" {
+		v, _ := strconv.ParseFloat(m, 64)
+		if v >= 0 && v <= 1 {
 			return v
 		}
 	}
@@ -452,11 +483,12 @@ func parseConfidence(raw string) float64 {
 	if upper == "SAFE" {
 		return 0.0
 	}
-	// Fallback: parse any float in response
-	re := regexp.MustCompile(`\b(0\.\d+|1\.0)\b`)
-	if m := re.FindString(raw); m != "" {
-		v, _ := strconv.ParseFloat(m, 64)
-		return v
+	// Backward compatibility: anchored labels
+	for _, label := range []string{"1.0", "0.7", "0.5", "0.3", "0.0"} {
+		if strings.Contains(raw, label) {
+			v, _ := strconv.ParseFloat(label, 64)
+			return v
+		}
 	}
 	// No parseable value: return 0.5 (uncertain), NOT 0.0 (certainly safe)
 	return 0.5

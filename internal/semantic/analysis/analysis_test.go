@@ -173,7 +173,7 @@ func (e assertAnError) Error() string { return string(e) }
 
 func TestBuildPrompt_ContainsCWE(t *testing.T) {
 	surface := makeSurface("s1", targeting.SurfaceExternalInput)
-	prompt := buildPrompt(surface, "mid")
+	prompt := buildPrompt(surface, "mid", "")
 	if !strings.Contains(prompt, "CWE-89") {
 		t.Errorf("prompt for ExternalInput surface should contain CWE-89, got:\n%s", prompt)
 	}

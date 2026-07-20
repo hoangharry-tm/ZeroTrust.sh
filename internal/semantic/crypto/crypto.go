@@ -31,10 +31,7 @@ func (c *Checker) Check(ctx context.Context, es enrichment.EnrichedSurface) []fi
 }
 
 func (c *Checker) CheckAll(ctx context.Context, surfaces []enrichment.EnrichedSurface) ([]finding.Finding, error) {
-	w := runtime.NumCPU()
-	if w > 4 {
-		w = 4
-	}
+	w := min(runtime.NumCPU(), 4)
 	ch := make(chan struct{}, w)
 	var mu sync.Mutex
 	var out []finding.Finding
@@ -51,10 +48,28 @@ func (c *Checker) CheckAll(ctx context.Context, surfaces []enrichment.EnrichedSu
 			mu.Unlock()
 		}(es)
 	}
-	for i := 0; i < w; i++ {
+	for range w {
 		ch <- struct{}{}
 	}
 	return out, nil
+}
+
+// codeOffsetToLine returns the 1-based source line number for a byte offset
+// within a function body, given the function's start line.
+func codeOffsetToLine(code string, offset int, funcLine int) int {
+	if offset < 0 || funcLine <= 0 {
+		return funcLine
+	}
+	if offset > len(code) {
+		offset = len(code)
+	}
+	line := funcLine
+	for _, c := range code[:offset] {
+		if c == '\n' {
+			line++
+		}
+	}
+	return line
 }
 
 func (c *Checker) cwe327(es enrichment.EnrichedSurface) []finding.Finding {
@@ -62,13 +77,14 @@ func (c *Checker) cwe327(es enrichment.EnrichedSurface) []finding.Finding {
 	for _, sink := range es.SinkNodes {
 		for _, a := range weak {
 			if strings.Contains(strings.ToLower(sink), strings.ToLower(a)) {
-				return []finding.Finding{c.mkf(es, "CWE-327", finding.SeverityHigh, "weak algorithm: "+a, a)}
+				return []finding.Finding{c.mkf(es, "CWE-327", finding.SeverityHigh, "weak algorithm: "+a, a, -1)}
 			}
 		}
 	}
 	for _, a := range []string{"MD5", "SHA-1", "DES", "RC4", "ECB"} {
 		if strings.Contains(es.Code, a) {
-			return []finding.Finding{c.mkf(es, "CWE-327", finding.SeverityHigh, "weak algorithm: "+a, a)}
+			offset := strings.Index(es.Code, a)
+			return []finding.Finding{c.mkf(es, "CWE-327", finding.SeverityHigh, "weak algorithm: "+a, a, offset)}
 		}
 	}
 	return nil
@@ -85,7 +101,7 @@ func (c *Checker) cwe321(es enrichment.EnrichedSurface) []finding.Finding {
 				if len(m) > 120 {
 					m = m[:120]
 				}
-				return []finding.Finding{c.mkf(es, "CWE-321", finding.SeverityHigh, "hardcoded key", m)}
+				return []finding.Finding{c.mkf(es, "CWE-321", finding.SeverityHigh, "hardcoded key", m, idx[0])}
 			}
 		}
 	}
@@ -108,11 +124,12 @@ func (c *Checker) cwe338(es enrichment.EnrichedSurface) []finding.Finding {
 	for _, p := range weak {
 		for _, sink := range es.SinkNodes {
 			if strings.Contains(strings.ToLower(sink), strings.ToLower(p)) {
-				return []finding.Finding{c.mkf(es, "CWE-338", finding.SeverityHigh, "weak PRNG", p)}
+				return []finding.Finding{c.mkf(es, "CWE-338", finding.SeverityHigh, "weak PRNG", p, -1)}
 			}
 		}
 		if strings.Contains(es.Code, p) {
-			return []finding.Finding{c.mkf(es, "CWE-338", finding.SeverityHigh, "weak PRNG", p)}
+			offset := strings.Index(es.Code, p)
+			return []finding.Finding{c.mkf(es, "CWE-338", finding.SeverityHigh, "weak PRNG", p, offset)}
 		}
 	}
 	return nil
@@ -124,7 +141,8 @@ func (c *Checker) cwe916(es enrichment.EnrichedSurface) []finding.Finding {
 		var n int
 		fmt.Sscanf(m[1], "%d", &n)
 		if n > 0 && n < 10000 {
-			return []finding.Finding{c.mkf(es, "CWE-916", finding.SeverityMedium, "low PBKDF2 iterations", m[0])}
+			idx := pbkdf2Re.FindStringIndex(es.Code)
+			return []finding.Finding{c.mkf(es, "CWE-916", finding.SeverityMedium, "low PBKDF2 iterations", m[0], idx[0])}
 		}
 	}
 	m = bcryptRe.FindStringSubmatch(es.Code)
@@ -132,13 +150,14 @@ func (c *Checker) cwe916(es enrichment.EnrichedSurface) []finding.Finding {
 		var n int
 		fmt.Sscanf(m[1], "%d", &n)
 		if n > 0 && n < 10 {
-			return []finding.Finding{c.mkf(es, "CWE-916", finding.SeverityMedium, "low bcrypt work factor", m[0])}
+			idx := bcryptRe.FindStringIndex(es.Code)
+			return []finding.Finding{c.mkf(es, "CWE-916", finding.SeverityMedium, "low bcrypt work factor", m[0], idx[0])}
 		}
 	}
 	return nil
 }
 
-func (c *Checker) mkf(es enrichment.EnrichedSurface, cwe string, sev finding.SeverityLabel, just, code string) finding.Finding {
+func (c *Checker) mkf(es enrichment.EnrichedSurface, cwe string, sev finding.SeverityLabel, just, code string, offset int) finding.Finding {
 	if len(code) > 120 {
 		code = code[:120]
 	}
@@ -146,7 +165,13 @@ func (c *Checker) mkf(es enrichment.EnrichedSurface, cwe string, sev finding.Sev
 	if sev == finding.SeverityMedium {
 		conf = 0.80
 	}
-	return finding.New(es.File, finding.LineRange{Start: 1, End: 1}, cwe, just,
+	line := codeOffsetToLine(es.Code, offset, es.Line)
+	if line <= 0 {
+		line = 1
+	}
+	f := finding.New(es.File, finding.LineRange{Start: line, End: line}, cwe, just,
 		finding.WithMatchedCode(code), finding.WithConfidence(conf), finding.WithSourcePath(finding.SourceSemantic),
 		finding.WithRuleID("crypto-"+strings.ToLower(strings.TrimPrefix(cwe, "CWE-"))))
+	f.Summary = just
+	return f
 }

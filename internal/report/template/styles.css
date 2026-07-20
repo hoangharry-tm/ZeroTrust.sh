@@ -757,6 +757,7 @@ details[open] > summary .folder-indicator {
 
 .finding-title {
   flex: 1;
+  min-width: 0;
   font-size: 13px;
   font-weight: 500;
   color: var(--color-primary);
@@ -765,6 +766,7 @@ details[open] > summary .folder-indicator {
   -webkit-box-orient: vertical;
   overflow: hidden;
   line-height: 1.5;
+  word-break: break-word;
 }
 .finding-card.expanded .finding-title {
   -webkit-line-clamp: unset;
@@ -773,13 +775,18 @@ details[open] > summary .folder-indicator {
   display: flex;
   align-items: center;
   gap: 8px;
-  flex-shrink: 0;
+  min-width: 0;
+  overflow: hidden;
 }
 .finding-file {
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--color-faint);
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 200px;
+  min-width: 0;
 }
 .cwe-tag {
   font-family: var(--font-mono);
@@ -865,6 +872,20 @@ details[open] > summary .folder-indicator {
 }
 .ftab-panel.active {
   display: block;
+}
+
+/* ── Audit Trail ──────────────────────────────────────────── */
+.audit-trail {
+  font-size: 0.72rem;
+  color: var(--color-faint);
+  margin-bottom: 8px;
+  padding: 6px 8px;
+  border-left: 2px solid var(--color-border);
+  word-break: break-word;
+}
+.audit-label {
+  font-weight: 600;
+  margin-right: 4px;
 }
 
 /* ── Evidence Grid ─────────────────────────────────────────── */
@@ -1254,6 +1275,15 @@ details[open] > summary .folder-indicator {
   }
   .evidence-grid {
     grid-template-columns: 1fr;
+  }
+  .finding-header {
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+  .finding-meta {
+    width: 100%;
+    justify-content: flex-end;
+    margin-top: 2px;
   }
 }
 @media (max-width: 640px) {

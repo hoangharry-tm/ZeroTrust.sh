@@ -19,6 +19,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/hoangharry-tm/zerotrust/internal/finding"
 )
 
@@ -250,6 +252,41 @@ func TestCountByPath(t *testing.T) {
 
 // ── template functions ─────────────────────────────────────────────────────────
 
+func TestDisplayTitle_ReturnsSummaryWhenNonEmpty(t *testing.T) {
+	fn := templateFuncs["displayTitle"].(func(string, string) string)
+	got := fn("Short summary", "long justification here")
+	if got != "Short summary" {
+		t.Errorf("want 'Short summary', got %q", got)
+	}
+}
+
+func TestDisplayTitle_FallsBackToB5ConfirmedExplanation(t *testing.T) {
+	fn := templateFuncs["displayTitle"].(func(string, string) string)
+	just := "some evidence [function: foo @ line 42] — DCC structural match — B5 confirmed (conf=1.00): User-controlled 'kid' directly reaches executeQuery with no sanitization"
+	got := fn("", just)
+	if !strings.Contains(got, "User-controlled") {
+		t.Errorf("want B5 explanation, got %q", got)
+	}
+	if strings.Contains(got, "B5 confirmed") {
+		t.Error("displayTitle must strip the B5 prefix")
+	}
+}
+
+func TestDisplayTitle_TruncatesLongJustification(t *testing.T) {
+	fn := templateFuncs["displayTitle"].(func(string, string) string)
+	long := ""
+	for i := 0; i < 30; i++ {
+		long += "word "
+	}
+	got := fn("", long)
+	if len(got) > 120 {
+		t.Errorf("displayTitle must truncate to ≤120 chars, got %d: %q", len(got), got)
+	}
+	if !strings.HasSuffix(got, "...") {
+		t.Errorf("truncated title should end with '...', got %q", got)
+	}
+}
+
 func TestConfPct(t *testing.T) {
 	fn := templateFuncs["confPct"].(func(float64) int)
 	cases := []struct {
@@ -303,28 +340,64 @@ func TestSsvcClass(t *testing.T) {
 }
 
 func TestCodeLinesNumberingAndHighlight(t *testing.T) {
-	fn := templateFuncs["codeLines"].(func(string, int) []codeLine)
-	lines := fn("line one\nline two\nline three", 10)
+	fn := templateFuncs["codeLines"].(func(string, int, int) []codeLine)
+	lines := fn("line one\nline two\nline three", 10, 12)
 	if len(lines) != 3 {
 		t.Fatalf("expected 3 lines, got %d", len(lines))
 	}
 	if lines[0].LineNum != 10 || lines[1].LineNum != 11 || lines[2].LineNum != 12 {
 		t.Errorf("unexpected line numbers: %v", lines)
 	}
-	// only the last line is highlighted
+	// sinkLine=12 → only line 3 (index 2) is highlighted
 	if lines[0].Highlight || lines[1].Highlight {
-		t.Error("only the last line should be highlighted")
+		t.Error("only sinkLine=12 should be highlighted")
 	}
 	if !lines[2].Highlight {
-		t.Error("last line should be highlighted")
+		t.Error("sinkLine=12 (line 3) should be highlighted")
 	}
 }
 
 func TestCodeLinesDefaultsStartToOne(t *testing.T) {
-	fn := templateFuncs["codeLines"].(func(string, int) []codeLine)
-	lines := fn("only one line", 0)
+	fn := templateFuncs["codeLines"].(func(string, int, int) []codeLine)
+	lines := fn("only one line", 0, 0)
 	if lines[0].LineNum != 1 {
 		t.Errorf("expected line 1 for zero startLine, got %d", lines[0].LineNum)
+	}
+}
+
+// ── Fix: codeLines sinkLine highlight ─────────────────────────────────────
+
+func TestCodeLines_SinkLineHighlight(t *testing.T) {
+	fn := templateFuncs["codeLines"].(func(string, int, int) []codeLine)
+	// sink is on line 51 (index 1) of the snippet
+	lines := fn("line1\nline2\nline3", 50, 51)
+	require.Len(t, lines, 3)
+	if lines[0].Highlight {
+		t.Error("line 50 should NOT be highlighted")
+	}
+	if !lines[1].Highlight {
+		t.Error("line 51 (sinkLine) should be highlighted")
+	}
+	if lines[2].Highlight {
+		t.Error("line 52 should NOT be highlighted")
+	}
+}
+
+func TestCodeLines_SinkLineZero_FallsBackToLastLine(t *testing.T) {
+	fn := templateFuncs["codeLines"].(func(string, int, int) []codeLine)
+	lines := fn("a\nb\nc", 10, 0)
+	require.Len(t, lines, 3)
+	if lines[2].Highlight != true {
+		t.Error("sinkLine=0 should fall back to highlighting last line")
+	}
+}
+
+func TestCodeLines_SinkLineBeforeStart_FallsBackToLastLine(t *testing.T) {
+	fn := templateFuncs["codeLines"].(func(string, int, int) []codeLine)
+	lines := fn("x\ny\nz", 10, 5)
+	require.Len(t, lines, 3)
+	if lines[2].Highlight != true {
+		t.Error("sinkLine < startLine should fall back to highlighting last line")
 	}
 }
 

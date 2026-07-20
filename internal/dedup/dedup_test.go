@@ -386,3 +386,28 @@ func TestSidecarIDMismatchNotSuppressed(t *testing.T) {
 		t.Errorf("non-matching ID must not suppress")
 	}
 }
+
+func TestApplyBoostAndScore_PinnedSeverityNotOverridden(t *testing.T) {
+	f := finding.Finding{
+		Confidence:     0.95,
+		SeverityLabel:  finding.SeverityLow,
+		SeverityPinned: true,
+		SourcePath:     finding.SourceSemantic,
+	}
+	got := applyBoostAndScore(f)
+	if got.SeverityLabel != finding.SeverityLow {
+		t.Errorf("pinned finding: want SeverityLow, got %v", got.SeverityLabel)
+	}
+}
+
+func TestApplyBoostAndScore_UnpinnedSeverityDerivedFromConfidence(t *testing.T) {
+	f := finding.Finding{
+		Confidence:    0.95,
+		SeverityLabel: finding.SeverityLow,
+		SourcePath:    finding.SourceSemantic,
+	}
+	got := applyBoostAndScore(f)
+	if got.SeverityLabel != finding.SeverityBlock {
+		t.Errorf("unpinned finding: want SeverityBlock, got %v", got.SeverityLabel)
+	}
+}

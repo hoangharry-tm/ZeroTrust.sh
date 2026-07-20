@@ -40,6 +40,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -152,9 +153,22 @@ func parseTrivyOutput(data []byte) (map[string][]CVEMatch, error) {
 				Version: vuln.InstalledVersion,
 				FixedIn: vuln.FixedVersion,
 			}
-			key := strings.ToLower(vuln.PkgName)
-			out[key] = append(out[key], match)
+			fullKey := strings.ToLower(vuln.PkgName)
+			out[fullKey] = append(out[fullKey], match)
+			shortKey := fullKey
+			if i := strings.LastIndexAny(fullKey, ":/"); i >= 0 {
+				shortKey = fullKey[i+1:]
+			}
+			if shortKey != fullKey {
+				out[shortKey] = append(out[shortKey], match)
+			}
 		}
+	}
+	for k, v := range out {
+		slog.Debug("enrichment: trivy_pkg_indexed",
+			"key", k,
+			"cve_count", len(v),
+		)
 	}
 	return out, nil
 }
@@ -203,21 +217,40 @@ func AutoFlagSeverity(cvss float64) finding.SeverityLabel {
 //   - surfaces: the EnrichedSurface slice to mutate in-place.
 //   - cvesByPkg: the map returned by RunTrivy.
 func ApplyCVEMatches(surfaces []EnrichedSurface, cvesByPkg map[string][]CVEMatch) {
+	slog.Debug("enrichment: cve_apply",
+		"pkg_count", len(cvesByPkg),
+		"surface_count", len(surfaces),
+	)
+
 	for i := range surfaces {
 		s := &surfaces[i]
-		// Extract directory components from the surface file path to match against
-		// package names. This is a heuristic until full module-to-package mapping
-		// is available from the CPG.
 		dir := strings.ToLower(filepath.Dir(s.File))
-		parts := strings.FieldsFunc(dir, func(r rune) bool {
+		base := strings.ToLower(strings.TrimSuffix(filepath.Base(s.File), filepath.Ext(s.File)))
+		fnLower := strings.ToLower(s.FunctionName)
+
+		var parts []string
+		for _, seg := range strings.FieldsFunc(dir, func(r rune) bool {
 			return r == '/' || r == '\\' || r == '.'
-		})
+		}) {
+			parts = append(parts, seg)
+		}
+		parts = append(parts, base)
+		if fnLower != "" {
+			parts = append(parts, fnLower)
+		}
 
 		var matches []CVEMatch
 		seen := make(map[string]struct{})
 		for pkg, cves := range cvesByPkg {
+			artifact := pkg
+			if i := strings.LastIndex(pkg, ":"); i >= 0 {
+				artifact = pkg[i+1:]
+			}
 			for _, part := range parts {
-				if strings.Contains(part, pkg) || strings.Contains(pkg, part) {
+				if len(part) < 4 {
+					continue
+				}
+				if strings.Contains(part, artifact) || strings.Contains(artifact, part) {
 					for _, cve := range cves {
 						if _, already := seen[cve.CVE]; !already {
 							matches = append(matches, cve)
@@ -228,6 +261,38 @@ func ApplyCVEMatches(surfaces []EnrichedSurface, cvesByPkg map[string][]CVEMatch
 				}
 			}
 		}
+
+		// Fallback: attempt to read file content when Code is empty.
+		codeForScan := s.Code
+		if codeForScan == "" && s.File != "" {
+			if content, err := os.ReadFile(s.File); err == nil {
+				codeForScan = string(content[:min(len(content), 4096)])
+			}
+		}
+
+		// Fallback: if surface code directly references the package short name, match it.
+		codeLower := strings.ToLower(codeForScan)
+		for pkg, cves := range cvesByPkg {
+			if len(pkg) >= 40 || strings.Contains(pkg, ":") {
+				continue
+			}
+			if strings.Contains(codeLower, pkg) {
+				for _, cve := range cves {
+					if _, already := seen[cve.CVE]; !already {
+						matches = append(matches, cve)
+						seen[cve.CVE] = struct{}{}
+					}
+				}
+			}
+		}
+
+		slog.Debug("enrichment: cve_surface_result",
+			"surface_id", s.ID,
+			"file", s.File,
+			"code_len", len(s.Code),
+			"code_for_scan_len", len(codeForScan),
+			"matches", len(matches),
+		)
 
 		if len(matches) == 0 {
 			continue
