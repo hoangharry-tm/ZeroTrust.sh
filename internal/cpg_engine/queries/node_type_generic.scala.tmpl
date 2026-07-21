@@ -1,0 +1,17 @@
+cpg.graph
+  .nodes
+  .filter(_._label == {{.QuotedLabel}})
+  .map(n => {
+    val sc     = try { n.property("CODE").asInstanceOf[String] } catch { case _ => "" }
+    val safesc = sc.map(c => if (c=='\\'||c=='"'||c<32||c>126) ' ' else c).mkString
+    s"""{
+      "id":   "${n.id.toString}",
+      "name": "${try { n.property("NAME").asInstanceOf[String] } catch { case _ => "" }}",
+      "file": "${try { n.property("FILENAME").asInstanceOf[String] } catch { case _ => "" }}",
+      "line": ${try { n.property("LINE_NUMBER").asInstanceOf[Int] } catch { case _ => 0 }},
+      "type": "${n.label}",
+      "code": "${safesc}"
+    }"""
+  })
+  .toList
+  .mkString("[", ",", "]")

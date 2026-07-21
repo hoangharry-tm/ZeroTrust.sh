@@ -51,7 +51,7 @@ import (
 
 	"github.com/hoangharry-tm/zerotrust/internal/finding"
 	"github.com/hoangharry-tm/zerotrust/internal/semantic/targeting"
-	"github.com/hoangharry-tm/zerotrust/pkg/cpg"
+	cpg "github.com/hoangharry-tm/zerotrust/internal/cpg_engine"
 )
 
 // CVEMatch holds a single CVE finding from Trivy for a dependency used by a surface.

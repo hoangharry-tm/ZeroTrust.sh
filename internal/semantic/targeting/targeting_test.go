@@ -24,7 +24,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/hoangharry-tm/zerotrust/internal/config"
-	"github.com/hoangharry-tm/zerotrust/pkg/cpg"
+	cpg "github.com/hoangharry-tm/zerotrust/internal/cpg_engine"
 )
 
 // ── mock graph ───────────────────────────────────────────────────────────────

@@ -1,0 +1,72 @@
+{
+  val sinkSet = {{.SinkSet}}
+  val callSinks = cpg.call.filter(c => sinkSet.contains(c.name))
+  val ctorSinkSet = {{.CtorSinkSet}}
+  val ctorCallSinks = if (ctorSinkSet.nonEmpty) cpg.call.filter(
+          c => c.name == "<init>"
+            && ctorSinkSet.exists(t => c.methodFullName.contains(t))
+      ).l else List.empty
+  val ctorSinks = ctorCallSinks.flatMap(_.argument.l)
+  val sinks = (callSinks ++ ctorSinks.iterator)
+  cpg.method.parameter.reachableByFlows(sinks)
+    .map { p =>
+      val elems = p.elements.toList
+      val first = elems.head
+      val last  = elems.last
+      val sourceMethod = last match {
+        case mp: MethodParameterIn => Some(mp.method)
+        case _                     => None
+      }
+      val methodID   = sourceMethod.map(_.id.toString).getOrElse("")
+      val methodName = sourceMethod.map(_.name).getOrElse("")
+      val methodFile = sourceMethod.map(_.filename).getOrElse("")
+
+      val intermediateJson = elems.slice(1, elems.size - 1)
+        .filterNot(n => n.id < 0)
+        .map(n => s"""{
+          "id":   "${n.id.toString}",
+          "name": "${n match {
+            case c: Call               => c.name
+            case mp: MethodParameterIn => mp.name
+            case i: Identifier         => i.name
+            case _                     => ""
+          }}",
+          "file": "${try { n.property("FILENAME").asInstanceOf[String] } catch { case _ => "" }}",
+          "line": ${try { n.property("LINE_NUMBER").asInstanceOf[Int] } catch { case _ => 0 }},
+          "type": "${n.label}"
+        }""")
+        .mkString(",")
+
+      s"""{
+        "method_id":   "${methodID}",
+        "method_name": "${methodName}",
+        "method_file": "${methodFile}",
+        "source": {
+          "id":   "${first.id.toString}",
+          "name": "${first match {
+            case mp: MethodParameterIn => mp.name
+            case m: Method             => m.name
+            case c: Call               => c.name
+            case _                     => ""
+          }}",
+          "file": "${first.location.filename}",
+          "line": ${first.lineNumber.getOrElse(0)},
+          "type": "${first.label}"
+        },
+        "sink": {
+          "id":   "${last.id.toString}",
+          "name": "${last match {
+            case mp: MethodParameterIn => mp.name
+            case c: Call               => c.name
+            case m: Method             => m.name
+            case _                     => ""
+          }}",
+          "file": "${last.location.filename}",
+          "line": ${last.lineNumber.getOrElse(0)},
+          "type": "${last.label}"
+        },
+        "intermediate": [${intermediateJson}]
+      }"""
+    }
+    .toList.mkString("[", ",", "]")
+}

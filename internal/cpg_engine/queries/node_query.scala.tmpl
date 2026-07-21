@@ -1,0 +1,13 @@
+{{.Traversal}}
+  .map({{.Alias}} => {
+    val sc = {{.Alias}}.code.map(_c => if (_c=='\\'||_c=='"'||_c<32||_c>126) ' ' else _c).mkString
+    s"""{
+      "id":   "${ {{.Alias}}.id.toString }",
+      "name": "${ {{.NameExpr}} }",
+      "file": "${ {{.FileExpr}} }",
+      "line": ${ {{.Alias}}.lineNumber.getOrElse(0) },
+      "code": "${sc}"
+    }"""
+  })
+  .toList
+  .mkString("[", ",", "]")

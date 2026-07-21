@@ -81,15 +81,6 @@ type Config struct {
 	EPSSPoC    float64 `json:"epss_poc"    validate:"gte=0,lte=1"`
 	EPSSActive float64 `json:"epss_active" validate:"gte=0,lte=1"`
 
-	// ── Token budget ─────────────────────────────────────────────────────────────
-	DefaultTokenCap     int     `json:"default_token_cap"      validate:"gte=1"`
-	BudgetWeightCVSS    float64 `json:"budget_weight_cvss"     validate:"gte=0,lte=1"`
-	BudgetWeightUncert  float64 `json:"budget_weight_uncert"   validate:"gte=0,lte=1"`
-	BudgetWeightDepth   float64 `json:"budget_weight_depth"    validate:"gte=0,lte=1"`
-	BudgetWeightKind    float64 `json:"budget_weight_kind"     validate:"gte=0,lte=1"`
-	TokenEstCharsPerTok float64 `json:"token_est_chars_per_tok" validate:"gte=0"`
-	TokenEstOverhead    int     `json:"token_est_overhead"     validate:"gte=0"`
-
 	// ── Batch sizes ──────────────────────────────────────────────────────────────
 	AssemblerBatchSize             int `json:"assembler_batch_size"               validate:"gte=1"`
 	SummarizerBatchSize            int `json:"summarizer_batch_size"              validate:"gte=1"`
@@ -213,14 +204,6 @@ func defaultConfig() Config {
 
 		EPSSPoC:    0.1,
 		EPSSActive: 0.5,
-
-		DefaultTokenCap:     50_000,
-		BudgetWeightCVSS:    0.4,
-		BudgetWeightUncert:  0.4,
-		BudgetWeightDepth:   0.2,
-		BudgetWeightKind:    0.3,
-		TokenEstCharsPerTok: 0.3,
-		TokenEstOverhead:    50,
 
 		AssemblerBatchSize:  5,
 		SummarizerBatchSize: 5,

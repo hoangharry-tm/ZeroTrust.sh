@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/hoangharry-tm/zerotrust/internal/semantic/targeting"
-	"github.com/hoangharry-tm/zerotrust/pkg/cpg"
+	cpg "github.com/hoangharry-tm/zerotrust/internal/cpg_engine"
 )
 
 // callPathMockGraph implements cpg.Graph for CallPath augmentation tests.

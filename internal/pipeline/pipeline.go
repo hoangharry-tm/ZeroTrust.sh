@@ -54,13 +54,13 @@ import (
 	"github.com/hoangharry-tm/zerotrust/internal/ingestion"
 	"github.com/hoangharry-tm/zerotrust/pkg/llm"
 
+	"github.com/hoangharry-tm/zerotrust/internal/cpg_engine"
 	"github.com/hoangharry-tm/zerotrust/internal/ingestion/diffindex"
 	"github.com/hoangharry-tm/zerotrust/internal/ingestion/miv"
 	"github.com/hoangharry-tm/zerotrust/internal/orchestrator"
 	"github.com/hoangharry-tm/zerotrust/internal/output"
 	"github.com/hoangharry-tm/zerotrust/internal/report"
 	"github.com/hoangharry-tm/zerotrust/internal/scanner"
-	"github.com/hoangharry-tm/zerotrust/internal/scanner/joern"
 	"github.com/hoangharry-tm/zerotrust/internal/scanner/opengrep"
 	analysis "github.com/hoangharry-tm/zerotrust/internal/semantic/analysis"
 	"github.com/hoangharry-tm/zerotrust/internal/semantic/contracts"
@@ -86,7 +86,7 @@ type Pipeline struct {
 
 	// Path A — legacy incremental flow
 	opengrep *opengrep.Runner
-	joern    *joern.Client
+	joern    *cpg_engine.Client
 	// orch runs the dynamic tool dispatcher concurrently with Joern CPG init.
 	orch *orchestrator.Engine
 
@@ -230,11 +230,12 @@ func New(ctx context.Context, cfg Config) (*Pipeline, error) {
 	mivVer := miv.New("", "", logger)
 	ingester := ingestion.New(indexer, mivVer)
 
-	// LLM provider — provider-agnostic; model name from config.
+	// LLM provider — provider-agnostic; backend selected via cfg.LLMProvider.
 	llmProvider, err := llm.New(llm.Config{
-		Provider: llm.ProviderOllama,
-		BaseURL:  cfg.OllamaURL,
+		Provider: llm.ProviderKind(cfg.LLMProvider),
+		BaseURL:  cfg.LLMBaseURL,
 		Model:    cfg.ModelName,
+		APIKey:   cfg.LLMAPIKey,
 		Timeout:  600 * time.Second, // ponytail: 8192 num_predict for B5 needs up to ~480s; 600s gives margin
 	})
 	if err != nil {
@@ -248,14 +249,14 @@ func New(ctx context.Context, cfg Config) (*Pipeline, error) {
 		scanner.NewGitleaks(scanner.BinarySpec{Name: "gitleaks"}),
 		scanner.NewOSV(scanner.BinarySpec{Name: "osv-scanner"}),
 	)
-	joernOpts := []joern.Option{joern.WithServerURL(cfg.JoernURL)}
+	joernOpts := []cpg_engine.Option{cpg_engine.WithServerURL(cfg.JoernURL)}
 	if cfg.JoernBin != "" {
-		joernOpts = append(joernOpts, joern.WithBinaryPath(cfg.JoernBin))
+		joernOpts = append(joernOpts, cpg_engine.WithBinaryPath(cfg.JoernBin))
 	}
 	if secs := ztCfg.JoernQueryTimeoutSeconds; secs > 0 {
-		joernOpts = append(joernOpts, joern.WithQueryTimeout(time.Duration(secs)*time.Second))
+		joernOpts = append(joernOpts, cpg_engine.WithQueryTimeout(time.Duration(secs)*time.Second))
 	}
-	jc, err := joern.New(joernOpts...)
+	jc, err := cpg_engine.New(joernOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("configure joern: %w", err)
 	}
@@ -263,11 +264,11 @@ func New(ctx context.Context, cfg Config) (*Pipeline, error) {
 	// Path B — graph shared from Joern after CPG build
 	graph := jc.GraphWithContext(ctx)
 	tgt := targeting.New(graph, cfg.Target)
-	enr := enrichment.New(graph, "trivy", cfg.Offline)
+	enr := enrichment.New(graph, "trivy", false) // CVE enrichment always attempts network lookup
 	cc := contracts.New()
 	cc2 := crypto.New()
-	tr := triage.New(llmProvider, cfg.TriageThreshold, cfg.LLMMode)
-	sc := analysis.New(llmProvider, cfg.LLMMode).WithRoot(cfg.Target)
+	tr := triage.New(llmProvider, cfg.TriageThreshold)
+	sc := analysis.New(llmProvider).WithRoot(cfg.Target)
 
 	dd := dedup.New(cfg.Target)
 	rg := report.New(cfg.ReportPath)
@@ -294,12 +295,12 @@ func New(ctx context.Context, cfg Config) (*Pipeline, error) {
 	}, nil
 }
 
-// run executes the full pipeline to completion and writes the HTML report.
-// events receives stage notifications consumed by the active CLI renderer.
-// The caller is responsible for closing events after run returns.
-func (p *Pipeline) Run(
-    ctx context.Context,
-    events chan<- output.Event,
+// StartScanProcess executes the full pipeline to completion and writes the
+// HTML report. events receives stage notifications consumed by the active
+// CLI renderer. The caller is responsible for closing events after it returns.
+func (p *Pipeline) StartScanProcess(
+	ctx context.Context,
+	events chan<- output.Event,
 ) ([]finding.Finding, error) {
 	p.events = events
 	start := time.Now()
@@ -379,15 +380,15 @@ func (p *Pipeline) startJoern(ctx context.Context) {
 		return
 	}
 	if err := p.joern.Start(ctx); err != nil {
-		if errors.Is(err, joern.ErrPortInUse) {
+		if errors.Is(err, cpg_engine.ErrPortInUse) {
 			p.resolvePortConflict(ctx)
 		} else {
 			output.Emit(p.events, output.Event{
 				Kind: output.EventLog,
-				Log:  fmt.Sprintf(
-                    "warn: joern start: %v — taint analysis disabled for this scan",
-                    err,
-                ),
+				Log: fmt.Sprintf(
+					"warn: joern start: %v — taint analysis disabled for this scan",
+					err,
+				),
 			})
 		}
 	}
@@ -770,5 +771,5 @@ func stateDBPath(target string) (string, error) {
 func newRunID() string {
 	var b [8]byte
 	_, _ = rand.Read(b[:])
-    return fmt.Sprintf("%x", b)
+	return fmt.Sprintf("%x", b)
 }

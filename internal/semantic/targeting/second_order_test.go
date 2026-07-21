@@ -3,7 +3,7 @@ package targeting
 import (
 	"testing"
 
-	"github.com/hoangharry-tm/zerotrust/pkg/cpg"
+	cpg "github.com/hoangharry-tm/zerotrust/internal/cpg_engine"
 )
 
 func TestDetectSecondOrder_SurfaceMetadataPopulated(t *testing.T) {

@@ -36,35 +36,26 @@ func makeSurface(code string) enrichment.EnrichedSurface {
 	}
 }
 
-func TestTriagePrompt_MidMode(t *testing.T) {
+func TestTriagePrompt_HasCalibrationGuide(t *testing.T) {
 	surface := makeSurface("func() { return 1; }")
-	prompt := buildTriagePrompt(surface, "mid")
+	prompt := buildTriagePrompt(surface)
 
 	for _, label := range []string{"0.00", "0.25", "0.50", "0.75", "1.00"} {
 		if !strings.Contains(prompt, label) {
-			t.Errorf("mid-mode prompt should contain calibration point %q", label)
+			t.Errorf("prompt should contain calibration point %q", label)
 		}
 	}
 	if !strings.Contains(prompt, "decimal between 0.0 and 1.0") {
-		t.Errorf("mid-mode prompt should instruct continuous decimal output")
+		t.Errorf("prompt should instruct continuous decimal output")
 	}
 }
 
-func TestTriagePrompt_SmallMode(t *testing.T) {
-	code := "func() {\n  return input;\n}"
-	surface := makeSurface(code)
-	prompt := buildTriagePrompt(surface, "small")
-
-	if !strings.Contains(prompt, "SAFE or UNSAFE") {
-		t.Errorf("small-mode prompt should contain 'SAFE or UNSAFE', got:\n%s", prompt)
-	}
-
-	// Test code truncation to ≤300 chars
-	longCode := string(make([]byte, 500))
-	surface2 := makeSurface(longCode)
-	prompt2 := buildTriagePrompt(surface2, "small")
-	if len(prompt2) > 1000 {
-		t.Errorf("small-mode prompt should truncate code, got length %d", len(prompt2))
+func TestTriagePrompt_TruncatesLongCode(t *testing.T) {
+	longCode := string(make([]byte, 5000))
+	surface := makeSurface(longCode)
+	prompt := buildTriagePrompt(surface)
+	if len(prompt) > 3000 {
+		t.Errorf("prompt should truncate code, got length %d", len(prompt))
 	}
 }
 
@@ -87,9 +78,9 @@ func TestParseConfidence_FallbackIs0_5(t *testing.T) {
 
 // ── Fix 2: applicable CWEs in triage prompts ───────────────────────────
 
-func TestBuildTriagePromptMid_ApplicableCWEs_ExternalInput(t *testing.T) {
+func TestBuildTriagePrompt_ApplicableCWEs_ExternalInput(t *testing.T) {
 	surface := makeSurface("func() { return input; }")
-	prompt := buildTriagePromptMid(surface)
+	prompt := buildTriagePrompt(surface)
 	if !strings.Contains(prompt, "CWE-89") {
 		t.Errorf("ExternalInput prompt should contain CWE-89, got:\n%s", prompt)
 	}
@@ -99,12 +90,15 @@ func TestBuildTriagePromptMid_ApplicableCWEs_ExternalInput(t *testing.T) {
 	if strings.Contains(prompt, "[]") {
 		t.Errorf("ExternalInput prompt should NOT contain '[]', got:\n%s", prompt)
 	}
+	if strings.Contains(prompt, "CVEMatches") {
+		t.Errorf("prompt should not reference CVEMatches field, got:\n%s", prompt)
+	}
 }
 
-func TestBuildTriagePromptMid_ApplicableCWEs_AuthBoundary(t *testing.T) {
+func TestBuildTriagePrompt_ApplicableCWEs_AuthBoundary(t *testing.T) {
 	surface := makeSurface("func() { return input; }")
 	surface.Kind = targeting.SurfaceAuthBoundary
-	prompt := buildTriagePromptMid(surface)
+	prompt := buildTriagePrompt(surface)
 	if !strings.Contains(prompt, "CWE-862") {
 		t.Errorf("AuthBoundary prompt should contain CWE-862, got:\n%s", prompt)
 	}
@@ -113,23 +107,12 @@ func TestBuildTriagePromptMid_ApplicableCWEs_AuthBoundary(t *testing.T) {
 	}
 }
 
-func TestBuildTriagePromptFrontier_ApplicableCWEs_ExternalInput(t *testing.T) {
-	surface := makeSurface("func() { return input; }")
-	prompt := buildTriagePromptFrontier(surface)
-	if !strings.Contains(prompt, "CWE-89") {
-		t.Errorf("Frontier ExternalInput prompt should contain CWE-89, got:\n%s", prompt)
-	}
-	if strings.Contains(prompt, "CVEMatches") {
-		t.Errorf("Frontier prompt should not reference CVEMatches field, got:\n%s", prompt)
-	}
-}
-
 // ── Fix 1 regression: B4 triage still obfuscates string literals ─────────
 
 func TestBuildTriagePrompt_StillObfuscates(t *testing.T) {
 	code := `executeQuery("SELECT * FROM users WHERE id='" + id + "'")`
 	surface := makeSurface(code)
-	prompt := buildTriagePromptMid(surface)
+	prompt := buildTriagePrompt(surface)
 	if strings.Contains(prompt, "SELECT") {
 		t.Errorf("B4 triage prompt should obfuscate string literals (no 'SELECT'), got:\n%s", prompt)
 	}
@@ -139,7 +122,7 @@ func TestBuildTriagePrompt_StillObfuscates(t *testing.T) {
 
 func TestStubGateDropsNoBodySurfaces(t *testing.T) {
 	mock := &mockProvider{response: "0.7"}
-	triager := New(mock, 0.5, "mid")
+	triager := New(mock, 0.5)
 
 	surfaces := []enrichment.EnrichedSurface{
 		{
@@ -204,7 +187,7 @@ func TestStubGateDropsNoBodySurfaces(t *testing.T) {
 
 func TestStubGatePassesThroughLongCodeWithoutBrace(t *testing.T) {
 	mock := &mockProvider{response: "0.3"}
-	triager := New(mock, 0.5, "mid")
+	triager := New(mock, 0.5)
 
 	surfaces := []enrichment.EnrichedSurface{
 		{

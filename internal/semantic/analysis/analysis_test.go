@@ -48,7 +48,7 @@ func TestScan_ExploitableVerdict_ReturnsFinding(t *testing.T) {
 			return `{"exploitable":true,"cwe":"CWE-89","severity":"HIGH","confidence":0.85,"explanation":"Direct SQL concat"}`, nil
 		},
 	}
-	s := New(p, "mid")
+	s := New(p)
 	surfaces := []enrichment.EnrichedSurface{makeSurface("s1", targeting.SurfaceExternalInput)}
 	findings, err := s.Scan(context.Background(), surfaces)
 	if err != nil {
@@ -71,7 +71,7 @@ func TestScan_NonExploitableVerdict_ReturnsFinding(t *testing.T) {
 			return `{"exploitable":false,"cwe":"CWE-89","severity":"LOW","confidence":0.2,"explanation":"safe"}`, nil
 		},
 	}
-	s := New(p, "mid")
+	s := New(p)
 	surfaces := []enrichment.EnrichedSurface{makeSurface("s1", targeting.SurfaceExternalInput)}
 	findings, err := s.Scan(context.Background(), surfaces)
 	if err != nil {
@@ -94,7 +94,7 @@ func TestScan_MalformedJSON_ReturnsDefaultFinding(t *testing.T) {
 			return "not json", nil
 		},
 	}
-	s := New(p, "mid")
+	s := New(p)
 	surfaces := []enrichment.EnrichedSurface{makeSurface("s1", targeting.SurfaceExternalInput)}
 	findings, err := s.Scan(context.Background(), surfaces)
 	if err != nil {
@@ -118,7 +118,7 @@ func TestScan_BatchPreservesOrder(t *testing.T) {
 			return `{"exploitable":false,"cwe":"CWE-327","severity":"LOW","confidence":0.1,"explanation":"safe"}`, nil
 		},
 	}
-	s := New(p, "mid")
+	s := New(p)
 	surfaces := []enrichment.EnrichedSurface{
 		{Surface: targeting.Surface{ID: "s0", File: "a.go", Kind: targeting.SurfaceAuthBoundary}},
 		{Surface: targeting.Surface{ID: "s1", File: "b.go", Kind: targeting.SurfaceDangerousSink}},
@@ -152,7 +152,7 @@ func TestScan_PerSurfaceErrorSkipped(t *testing.T) {
 			return `{"exploitable":true,"cwe":"CWE-89","severity":"HIGH","confidence":0.85,"explanation":"ok","taint_mismatch":false}`, nil
 		},
 	}
-	s := New(p, "mid")
+	s := New(p)
 	surfaces := []enrichment.EnrichedSurface{
 		makeSurface("s1", targeting.SurfaceExternalInput),
 		makeSurface("s2", targeting.SurfaceExternalInput),
@@ -173,7 +173,7 @@ func (e assertAnError) Error() string { return string(e) }
 
 func TestBuildPrompt_ContainsCWE(t *testing.T) {
 	surface := makeSurface("s1", targeting.SurfaceExternalInput)
-	prompt := buildPrompt(surface, "mid", "")
+	prompt := buildPrompt(surface, "")
 	if !strings.Contains(prompt, "CWE-89") {
 		t.Errorf("prompt for ExternalInput surface should contain CWE-89, got:\n%s", prompt)
 	}
@@ -250,25 +250,13 @@ func TestParseVerdict_TaintMismatchParsed(t *testing.T) {
 }
 
 func TestSurfaceDeadline(t *testing.T) {
-	cases := []struct {
-		mode string
-		want time.Duration
-	}{
-		{"small", 45 * time.Second},
-		{"mid", 120 * time.Second},
-		{"frontier", 300 * time.Second},
-		{"", 120 * time.Second},
-	}
-	for _, c := range cases {
-		got := surfaceDeadline(c.mode)
-		if got != c.want {
-			t.Errorf("surfaceDeadline(%q) = %v, want %v", c.mode, got, c.want)
-		}
+	if surfaceDeadline != 300*time.Second {
+		t.Errorf("surfaceDeadline = %v, want 300s", surfaceDeadline)
 	}
 }
 
 func TestScan_ConcurrencySmoke(t *testing.T) {
-	// Mid mode uses SetLimit(2). 4 surfaces must complete without deadlock.
+	// Scan runs serialized (SetLimit(1)). 4 surfaces must complete without deadlock.
 	var callCount int
 	p := &mockProvider{
 		generateFunc: func(_ context.Context, _ string, _ *llm.Options) (string, error) {
@@ -276,7 +264,7 @@ func TestScan_ConcurrencySmoke(t *testing.T) {
 			return `{"exploitable":true,"cwe":"CWE-89","severity":"HIGH","confidence":0.85,"explanation":"test"}`, nil
 		},
 	}
-	s := New(p, "mid")
+	s := New(p)
 	surfaces := []enrichment.EnrichedSurface{
 		makeSurface("s1", targeting.SurfaceExternalInput),
 		makeSurface("s2", targeting.SurfaceExternalInput),
@@ -305,11 +293,13 @@ func TestScanOne_EmptyResponseRetry(t *testing.T) {
 				// First call returns empty — triggers retry
 				return "", nil
 			}
-			// Second call returns valid verdict
-			return `{"exploitable":true,"cwe":"CWE-89","severity":"HIGH","confidence":0.85,"explanation":"test"}`, nil
+			// Second call returns valid verdict. Confidence kept below the
+			// self-consistency threshold (0.85) so this test stays isolated
+			// to the empty-response retry path.
+			return `{"exploitable":true,"cwe":"CWE-89","severity":"HIGH","confidence":0.80,"explanation":"test"}`, nil
 		},
 	}
-	s := New(p, "mid")
+	s := New(p)
 	surface := makeSurface("s1", targeting.SurfaceExternalInput)
 	finding, err := s.scanOne(context.Background(), surface)
 	if err != nil {
@@ -329,7 +319,7 @@ func TestScan_TaintMismatch_SetsFieldOnFinding(t *testing.T) {
 			return `{"exploitable":false,"cwe":"CWE-89","severity":"LOW","confidence":0.2,"explanation":"no DB calls","taint_mismatch":true}`, nil
 		},
 	}
-	s := New(p, "mid")
+	s := New(p)
 	surfaces := []enrichment.EnrichedSurface{
 		{Surface: targeting.Surface{ID: "s1", File: "x.go", Kind: targeting.SurfaceExternalInput}},
 	}

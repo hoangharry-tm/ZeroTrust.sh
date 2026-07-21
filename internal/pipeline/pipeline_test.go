@@ -188,7 +188,7 @@ func TestViolationToFinding_LineRangeAndRuleIDPopulated(t *testing.T) {
 			Surface:   targeting.Surface{Line: 42, File: "Foo.java"},
 			SinkNodes: []string{"executeQuery"},
 		},
-		CWE:     "CWE-89",
+		CWE:      "CWE-89",
 		Evidence: "DCC: sink match",
 	}
 	f := violationToFinding(r)
@@ -272,8 +272,8 @@ func TestSinkContextLines_FallsBackWhenNoBody(t *testing.T) {
 func TestViolationToFinding_MatchedCodeIsSourceNotLabels(t *testing.T) {
 	r := contracts.Result{
 		Surface: enrichment.EnrichedSurface{
-			Surface: targeting.Surface{File: "Foo.java", Line: 10, FunctionName: "query"},
-			Code:    "void query(String s) {\n  stmt.executeQuery(s);\n}",
+			Surface:   targeting.Surface{File: "Foo.java", Line: 10, FunctionName: "query"},
+			Code:      "void query(String s) {\n  stmt.executeQuery(s);\n}",
 			SinkNodes: []string{"executeQuery"},
 		},
 		CWE:      "CWE-89",
@@ -297,7 +297,7 @@ func TestViolationToFinding_JustificationIncludesFunctionName(t *testing.T) {
 				Line:         55,
 			},
 		},
-		CWE:     "CWE-89",
+		CWE:      "CWE-89",
 		Evidence: "user-controlled value reaches SQL sink",
 	}
 	f := violationToFinding(r)
@@ -633,9 +633,9 @@ func TestB5MultipleViolationsMixed(t *testing.T) {
 		"s3": makeViolationFinding("s3", "CWE-22"),
 	}
 	b5Findings := []finding.Finding{
-		makeB5Finding("s1", true, false, 0.9),                       // elevate (CWE-89 matches B3 CWE-89)
-		makeB5FindingWithCWE("s2", "CWE-78", false, true, 0.85),     // suppress (CWE-78 matches B3 CWE-78)
-		makeB5Finding("s3", false, false, 0.3),                       // inconclusive
+		makeB5Finding("s1", true, false, 0.9),                   // elevate (CWE-89 matches B3 CWE-89)
+		makeB5FindingWithCWE("s2", "CWE-78", false, true, 0.85), // suppress (CWE-78 matches B3 CWE-78)
+		makeB5Finding("s3", false, false, 0.3),                  // inconclusive
 	}
 
 	out, _ := processB5Findings(b5Findings, index)
@@ -651,8 +651,6 @@ func TestB5MultipleViolationsMixed(t *testing.T) {
 		t.Errorf("s2 should be suppressed, got %v", suppressed.SeverityLabel)
 	}
 }
-
-
 
 // ── No-change path (inconclusive B5) ────────────────────────────────────────
 

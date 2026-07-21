@@ -36,7 +36,6 @@ import (
 // Scanner runs the LLM semantic reasoning pass over enriched surfaces.
 type Scanner struct {
 	provider llm.Provider
-	llmMode  string
 	root     string
 }
 
@@ -47,51 +46,21 @@ func (s *Scanner) WithRoot(root string) *Scanner {
 }
 
 // New returns a Scanner backed by the provided LLM provider.
-// llmMode must be "small", "mid" (default), or "frontier".
-func New(provider llm.Provider, llmMode string) *Scanner {
-	if llmMode == "" {
-		llmMode = "mid"
-	}
-	return &Scanner{provider: provider, llmMode: llmMode}
+func New(provider llm.Provider) *Scanner {
+	return &Scanner{provider: provider}
 }
 
-// analysisOpts returns LLM options appropriate for the given analysis mode.
-func analysisOpts(mode string) *llm.Options {
-	switch mode {
-	case "small":
-		return &llm.Options{
-			Temperature: 0.1,
-			NumPredict:  128,
-			NumCtx:      4096,
-			Think:       new(false),
-		}
-	case "frontier":
-		return &llm.Options{
-			Temperature: 0.1,
-			NumPredict:  1024,
-			NumCtx:      8192,
-		}
-	default: // mid
-		return &llm.Options{
-			Temperature: 0.1,
-			NumPredict:  512,
-			NumCtx:      16384,
-			Think:       new(false),
-		}
+// analysisOpts returns the LLM options for B5 analysis calls.
+func analysisOpts() *llm.Options {
+	return &llm.Options{
+		Temperature: 0.1,
+		NumPredict:  1024,
+		NumCtx:      8192,
 	}
 }
 
-// surfaceDeadline returns the per-surface LLM timeout for the given mode.
-func surfaceDeadline(mode string) time.Duration {
-	switch mode {
-	case "small":
-		return 45 * time.Second
-	case "frontier":
-		return 300 * time.Second
-	default: // mid
-		return 120 * time.Second
-	}
-}
+// surfaceDeadline is the per-surface LLM timeout.
+const surfaceDeadline = 300 * time.Second
 
 // Scan runs Tier 3 analysis on escalated surfaces concurrently.
 // Returns one finding per surface. The caller (pathb) filters for
@@ -110,12 +79,7 @@ func (s *Scanner) Scan(ctx context.Context, surfaces []enrichment.EnrichedSurfac
 
 	results := make([]indexedFinding, len(surfaces))
 	g, gctx := errgroup.WithContext(ctx)
-	switch s.llmMode {
-	case "frontier":
-		g.SetLimit(1)
-	default: // mid, small
-		g.SetLimit(2)
-	}
+	g.SetLimit(1) // serialize: safe for both local Ollama and rate-limited API providers
 
 	for i, surface := range surfaces {
 		g.Go(func() error {
@@ -156,19 +120,17 @@ func (s *Scanner) scanOne(ctx context.Context, surface enrichment.EnrichedSurfac
 		"code_len", len(surface.Code),
 	)
 
-	// Per-surface deadline prevents a single hung Ollama call from blocking the entire batch.
-	surfaceTimeout := surfaceDeadline(s.llmMode)
-	sctx, cancel := context.WithTimeout(ctx, surfaceTimeout)
+	// Per-surface deadline prevents a single hung LLM call from blocking the entire batch.
+	sctx, cancel := context.WithTimeout(ctx, surfaceDeadline)
 	defer cancel()
 
-	opts := analysisOpts(s.llmMode)
-	prompt := buildPrompt(surface, s.llmMode, s.root)
+	opts := analysisOpts()
+	prompt := buildPrompt(surface, s.root)
 
 	slog.Debug(
 		"analysis: prompt",
 		"prompt", prompt,
-		"llm_mode", s.llmMode,
-		"timeout", surfaceTimeout,
+		"timeout", surfaceDeadline,
 	)
 
 	genStart := time.Now()
@@ -179,8 +141,7 @@ func (s *Scanner) scanOne(ctx context.Context, surface enrichment.EnrichedSurfac
 			slog.Warn("analysis: surface timeout",
 				"surface_id", surface.ID,
 				"function", surface.FunctionName,
-				"mode", s.llmMode,
-				"timeout", surfaceTimeout,
+				"timeout", surfaceDeadline,
 			)
 		} else {
 			slog.Debug(
@@ -197,7 +158,6 @@ func (s *Scanner) scanOne(ctx context.Context, surface enrichment.EnrichedSurfac
 	if raw == "" {
 		slog.Warn("analysis: empty response, retrying with reduced num_predict",
 			"surface_id", surface.ID,
-			"mode", s.llmMode,
 		)
 		retryOpts := *opts
 		retryOpts.NumPredict = max(opts.NumPredict / 2, 64)
@@ -228,9 +188,9 @@ func (s *Scanner) scanOne(ctx context.Context, surface enrichment.EnrichedSurfac
 		"taint_mismatch", verdict.TaintMismatch,
 	)
 
-	// Self-consistency check for frontier mode: second evidence-only call
-	// for high-confidence exploitable findings.
-	if s.llmMode == "frontier" && verdict.Exploitable && verdict.Confidence >= 0.85 {
+	// Self-consistency check: second evidence-only call for high-confidence
+	// exploitable findings, to catch single-pass overconfidence.
+	if verdict.Exploitable && verdict.Confidence >= 0.85 {
 		verdict = s.selfConsistencyCheck(sctx, surface, verdict)
 	}
 

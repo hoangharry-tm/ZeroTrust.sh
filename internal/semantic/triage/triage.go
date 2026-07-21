@@ -62,17 +62,12 @@ type Result struct {
 type Triager struct {
 	llm       llm.Provider
 	threshold float64
-	llmMode   string
 }
 
 // New returns a Triager that uses provider for inference and drops surfaces
-// whose confidence score falls below threshold. llmMode must be "small",
-// "mid" (default), or "frontier".
-func New(provider llm.Provider, threshold float64, llmMode string) *Triager {
-	if llmMode == "" {
-		llmMode = "mid"
-	}
-	return &Triager{llm: provider, threshold: threshold, llmMode: llmMode}
+// whose confidence score falls below threshold.
+func New(provider llm.Provider, threshold float64) *Triager {
+	return &Triager{llm: provider, threshold: threshold}
 }
 
 // Filter evaluates each surface and returns a triage result. Surfaces with
@@ -95,7 +90,6 @@ func (t *Triager) Filter(ctx context.Context, surfaces []enrichment.EnrichedSurf
 			"has_sink_nodes", len(surface.SinkNodes) > 0,
 			"sink_nodes", surface.SinkNodes,
 			"code_len", len(surface.Code),
-			"llm_mode", t.llmMode,
 		)
 
 		code := strings.TrimSpace(surface.Code)
@@ -114,8 +108,8 @@ func (t *Triager) Filter(ctx context.Context, surfaces []enrichment.EnrichedSurf
 			continue
 		}
 
-		prompt := buildTriagePrompt(surface, t.llmMode)
-		opts := triageOpts(t.llmMode)
+		prompt := buildTriagePrompt(surface)
+		opts := triageOpts()
 
 		slog.Debug("triage: prompt",
 			"prompt", prompt,
@@ -195,38 +189,6 @@ func (t *Triager) Filter(ctx context.Context, surfaces []enrichment.EnrichedSurf
 	return results, nil
 }
 
-// buildTriagePrompt constructs the triage prompt for the given surface
-// using the mode-appropriate strategy.
-func buildTriagePrompt(surface enrichment.EnrichedSurface, mode string) string {
-	switch mode {
-	case "small":
-		return buildTriagePromptSmall(surface)
-	case "frontier":
-		return buildTriagePromptFrontier(surface)
-	default:
-		return buildTriagePromptMid(surface)
-	}
-}
-
-// buildTriagePromptSmall builds a zero-shot minimal prompt for ≤7B models.
-// Code truncated to ≤300 chars. Reply is single word: SAFE or UNSAFE.
-func buildTriagePromptSmall(surface enrichment.EnrichedSurface) string {
-	var sb strings.Builder
-	sb.WriteString("You are a security reviewer. Does this function contain an exploitable vulnerability?\n")
-	sb.WriteString("File: ")
-	sb.WriteString(filenameOnly(surface.File))
-	sb.WriteString("\nFunction: ")
-	sb.WriteString(surface.FunctionName)
-	sb.WriteString("\n\nCode:\n```\n")
-	code := obfuscateCode(stripIndent(surface.Code))
-	if len(code) > 300 {
-		code = code[:300]
-	}
-	sb.WriteString(code)
-	sb.WriteString("\n```\n\nReply with exactly one word: SAFE or UNSAFE")
-	return sb.String()
-}
-
 // applicableCWEsForKind returns the applicable CWE IDs for a given surface kind,
 // matching the contracts package mapping. Duplicated inline to avoid circular import.
 func applicableCWEsForKind(kind targeting.SurfaceKind) []string {
@@ -245,11 +207,11 @@ func applicableCWEsForKind(kind targeting.SurfaceKind) []string {
 }
 
 // buildTriagePromptMid builds an externalized step scaffold for 7B–30B models.
-// Uses continuous scale calibration.
-func buildTriagePromptMid(surface enrichment.EnrichedSurface) string {
+// Uses continuous scale calibration with an anchored 5-point guide.
+func buildTriagePrompt(surface enrichment.EnrichedSurface) string {
 	code := obfuscateCode(stripIndent(surface.Code))
-	if len(code) > 1000 {
-		code = code[:1000] + "\n...[truncated]"
+	if len(code) > 1500 {
+		code = code[:1500] + "\n...[truncated]"
 	}
 
 	taintInfo := "No confirmed taint path."
@@ -285,58 +247,9 @@ func buildTriagePromptMid(surface enrichment.EnrichedSurface) string {
 	return sb.String()
 }
 
-// buildTriagePromptFrontier builds a full prompt for frontier models (>30B or API).
-func buildTriagePromptFrontier(surface enrichment.EnrichedSurface) string {
-	code := obfuscateCode(stripIndent(surface.Code))
-	if len(code) > 1500 {
-		code = code[:1500]
-	}
-
-	taintInfo := "No confirmed taint path."
-	if len(surface.SinkNodes) > 0 {
-		taintInfo = fmt.Sprintf("CONFIRMED taint path to dangerous sink: %v", surface.SinkNodes)
-	}
-
-	var sb strings.Builder
-	sb.WriteString("You are a security code reviewer. Assess whether this function contains an exploitable vulnerability.\n")
-	sb.WriteString("File: ")
-	sb.WriteString(shortPath(surface.File))
-	sb.WriteString("\nFunction: ")
-	sb.WriteString(surface.FunctionName)
-	sb.WriteString("\nTaint analysis: ")
-	sb.WriteString(taintInfo)
-	sb.WriteString("\nApplicable CWEs: ")
-	cwes := applicableCWEsForKind(surface.Kind)
-	if len(cwes) == 0 {
-		sb.WriteString("[]")
-	} else {
-		sb.WriteString(strings.Join(cwes, ", "))
-	}
-	sb.WriteString("\n\nSource code:\n```\n")
-	sb.WriteString(code)
-	sb.WriteString("\n```\n\n")
-	sb.WriteString("Reply with ONLY a single decimal number between 0.0 and 1.0 representing your confidence ")
-	sb.WriteString("that this function is exploitable. 1.0 = certain vulnerability, 0.0 = certainly safe.\n")
-	sb.WriteString("Express your confidence as a decimal. Calibrate: 0.5 means genuine uncertainty, not a default.")
-	return sb.String()
-}
-
-// triageOpts returns LLM options appropriate for the given triage mode.
-func triageOpts(mode string) *llm.Options {
-	switch mode {
-	case "small":
-		return &llm.Options{Temperature: 0.0, NumPredict: 16, Think: new(false)}
-	case "frontier":
-		return &llm.Options{Temperature: 0.1, NumPredict: 256}
-	default: // mid
-		return &llm.Options{Temperature: 0.0, NumPredict: 32, Think: new(false)}
-	}
-}
-
-// filenameOnly extracts just the filename from a path.
-func filenameOnly(p string) string {
-	parts := strings.Split(p, "/")
-	return parts[len(parts)-1]
+// triageOpts returns the LLM options for triage calls.
+func triageOpts() *llm.Options {
+	return &llm.Options{Temperature: 0.1, NumPredict: 256}
 }
 
 // shortPath returns the last 2 path segments joined by "/".
@@ -347,9 +260,6 @@ func shortPath(p string) string {
 	}
 	return strings.Join(parts[len(parts)-2:], "/")
 }
-
-// boolPtr returns a pointer to b for use with llm.Options.Think.
-func boolPtr(b bool) *bool { return &b }
 
 // stripIndent removes leading whitespace from each line to reduce prompt token waste.
 func stripIndent(code string) string {
@@ -462,9 +372,9 @@ func blankStringLiterals(line string) string {
 }
 
 // parseConfidence parses a confidence score from a raw LLM response.
-// For mid mode: parses any decimal in [0.0, 1.0] (continuous scale).
-// For small mode: UNSAFE/SAFE.
-// Anchored labels (1.0, 0.7, 0.5, 0.3, 0.0) supported as backward compatibility.
+// Primary path: any decimal in [0.0, 1.0] (continuous scale, per the prompt's
+// calibration guide). Anchored labels and SAFE/UNSAFE are accepted as fallbacks
+// for models that don't follow the decimal-only instruction exactly.
 // If nothing parseable: returns 0.5 (uncertain), NOT 0.0 (certainly safe).
 func parseConfidence(raw string) float64 {
 	// Try regex for any decimal in [0.0, 1.0] first — primary path for continuous scale.
@@ -475,7 +385,6 @@ func parseConfidence(raw string) float64 {
 			return v
 		}
 	}
-	// Small mode: UNSAFE/SAFE
 	upper := strings.ToUpper(strings.TrimSpace(raw))
 	if upper == "UNSAFE" {
 		return 1.0

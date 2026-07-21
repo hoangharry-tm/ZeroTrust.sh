@@ -25,12 +25,11 @@ import (
 	"time"
 
 	"github.com/hoangharry-tm/zerotrust/internal/config"
+	"github.com/hoangharry-tm/zerotrust/internal/cpg_engine"
 	"github.com/hoangharry-tm/zerotrust/internal/finding"
 	"github.com/hoangharry-tm/zerotrust/internal/ingestion"
 	"github.com/hoangharry-tm/zerotrust/internal/ingestion/diffindex"
 	"github.com/hoangharry-tm/zerotrust/internal/output"
-	"github.com/hoangharry-tm/zerotrust/internal/scanner/joern"
-	"github.com/hoangharry-tm/zerotrust/pkg/cpg"
 	"github.com/hoangharry-tm/zerotrust/pkg/sqlite"
 )
 
@@ -61,10 +60,10 @@ func (p *Pipeline) loadCachedCPG(ctx context.Context, ingResult *ingestion.Resul
 // buildScopeFromChanges builds the CPG for changed files and expands scope via modules.
 func (p *Pipeline) buildScopeFromChanges(ctx context.Context, ingResult *ingestion.Result) []string {
 	changed := ingResult.ChangeSet.Changed
-	modules := joern.DetectWorkingModules(changed)
+	modules := detectWorkingModules(changed)
 
 	if p.cfg.JoernBin == "" {
-		return joern.FilterScopeByLanguage(changed)
+		return filterScopeByLanguage(changed)
 	}
 
 	graph := p.joern.GraphWithContext(ctx)
@@ -86,7 +85,7 @@ func (p *Pipeline) buildScopeFromChanges(ctx context.Context, ingResult *ingesti
 			Log:  fmt.Sprintf("warn: cpg build: %v — taint analysis disabled", buildErr),
 		})
 		p.alerts = append(p.alerts, fmt.Sprintf("CPG build failed (%v): taint analysis disabled, pattern-only path active", buildErr))
-		return joern.FilterScopeByLanguage(changed)
+		return filterScopeByLanguage(changed)
 	}
 
 	depth := moduleDepthForMode(p.cfg.ScanMode)
@@ -96,11 +95,11 @@ func (p *Pipeline) buildScopeFromChanges(ctx context.Context, ingResult *ingesti
 			p.logger.Error("cpg scope expansion failed, using pre-expansion modules",
 				"component", "scan", "err", expandErr)
 		} else {
-			modules = joern.DetectWorkingModules(expanded.Changed)
+			modules = detectWorkingModules(expanded.Changed)
 		}
-		joern.ExpandModuleScope(modules, graph, depth)
+		expandModuleScope(modules, graph, depth)
 	}
-	return joern.FilterScopeByLanguage(joern.FlattenScope(modules))
+	return filterScopeByLanguage(flattenScope(modules))
 }
 
 // runDedup applies Gate 1-4 dedup and SSVC scoring, emitting stage events.
@@ -179,7 +178,7 @@ func (p *Pipeline) buildOrLoadCPG(ctx context.Context, projectID, cpgPath string
 	}
 
 	// Check if a prior CPG snapshot exists.
-	versionPath := joern.VersionSnapshotPath(p.cfg.ProjectID)
+	versionPath := cpg_engine.VersionSnapshotPath(p.cfg.ProjectID)
 	snapshotExists := false
 	if _, err := os.Stat(cpgPath); err == nil {
 		// Version mismatch check: if the stored version differs from the current
@@ -221,7 +220,7 @@ func (p *Pipeline) buildOrLoadCPG(ctx context.Context, projectID, cpgPath string
 		graph := p.joern.GraphWithContext(ctx)
 		var changedFunctions []string
 		for _, f := range changedFiles {
-			nodes, err := graph.QueryNodesByFile(f, cpg.NodeMethod)
+			nodes, err := graph.QueryNodesByFile(f, cpg_engine.NodeMethod)
 			if err != nil || len(nodes) == 0 {
 				// If the file is new, we need a full rebuild.
 				output.Emit(p.events, output.Event{
@@ -242,7 +241,7 @@ func (p *Pipeline) buildOrLoadCPG(ctx context.Context, projectID, cpgPath string
 		}
 
 		// Apply incremental patch.
-		err := p.joern.IncrementalPatch(ctx, joern.IncrementalPatchConfig{
+		err := p.joern.IncrementalPatch(ctx, cpg_engine.IncrementalPatchConfig{
 			ChangedFunctions:   changedFunctions,
 			RemovedFiles:       nil, // removed not tracked here
 			MaxDepth:           config.New().CPGDefaultMaxDepth,
@@ -310,8 +309,8 @@ func (p *Pipeline) buildFullCPG(ctx context.Context, projectID, cpgPath string, 
 	buildStart := time.Now()
 	// Pre-detect language from file extensions so Joern skips irrelevant
 	// frontends (e.g. pysrc2cpg on Java repos breaks on Java 21+).
-	detectedLang := joern.DetectProjectLanguage(scopeFiles)
-	err = p.joern.BuildCPG(ctx, joern.BuildConfig{
+	detectedLang := cpg_engine.DetectProjectLanguage(scopeFiles)
+	err = p.joern.BuildCPG(ctx, cpg_engine.BuildConfig{
 		Paths:             scopeFiles,
 		ProjectRoot:       p.cfg.Target,
 		Language:          detectedLang,
@@ -378,7 +377,7 @@ func (p *Pipeline) buildFullCPG(ctx context.Context, projectID, cpgPath string, 
 	// Persist the Joern version alongside the snapshot for invalidation on
 	// repeat scans. Non-fatal: a write failure just means the next scan may
 	// rebuild unnecessarily.
-	versionPath := joern.VersionSnapshotPath(p.cfg.ProjectID)
+	versionPath := cpg_engine.VersionSnapshotPath(p.cfg.ProjectID)
 	if version, verErr := p.joern.Version(ctx); verErr == nil {
 		if writeErr := os.WriteFile(versionPath, []byte(version+"\n"), 0o644); writeErr != nil {
 			p.logger.Warn(
@@ -410,7 +409,7 @@ func cpgSnapshotPath(projectID string) string {
 // have not yet been processed, so prior_context is always 0.
 // Surfaces not present in neighbours keep their original relative order.
 func moduleDepthForMode(mode string) int {
-    var confDefault = config.New()
+	var confDefault = config.New()
 	switch mode {
 	case "Thorough":
 		return confDefault.ModuleDepthThorough
@@ -425,33 +424,33 @@ func moduleDepthForMode(mode string) int {
 
 // runJoernTaint performs inter-procedural taint analysis on scopeFiles using
 // the Joern CPG graph. Returns normalised Finding structs.
-func runJoernTaint(_ context.Context, graph cpg.Graph, scopeFiles []string) ([]finding.Finding, error) {
+func runJoernTaint(_ context.Context, graph cpg_engine.Graph, scopeFiles []string) ([]finding.Finding, error) {
 	slog.Debug("joern taint analysis started", "component", "joern", "scope_files", len(scopeFiles))
 	// Detect the primary language from scope files.
-	lang, ok := joern.DetectLanguageFromFiles(scopeFiles)
+	lang, ok := cpg_engine.DetectLanguageFromFiles(scopeFiles)
 	if !ok {
 		slog.Debug("joern taint: no recognisable language detected, skipping", "component", "joern")
 		return nil, nil
 	}
 	// Ensure the language has a taint config.
-	if _, hasConfig := joern.TaintConfigs[lang]; !hasConfig {
+	if _, hasConfig := cpg_engine.TaintConfigs[lang]; !hasConfig {
 		slog.Debug("joern taint: no taint config for language, skipping", "component", "joern", "lang", lang)
 		return nil, nil
 	}
 
 	// Build source and sink lists from CPG nodes matching our taxonomy.
-	var sources []cpg.TaintSource
-	var sinks []cpg.TaintSink
+	var sources []cpg_engine.TaintSource
+	var sinks []cpg_engine.TaintSink
 
 	for _, f := range scopeFiles {
-		calls, err := graph.QueryNodesByFile(f, cpg.NodeCall)
+		calls, err := graph.QueryNodesByFile(f, cpg_engine.NodeCall)
 		if err != nil {
 			continue
 		}
 		for _, c := range calls {
 			// Match against source definitions — use the taxonomy Kind.
-			if sd, ok := joern.SourceDefForCall(lang, c.Name); ok {
-				sources = append(sources, cpg.TaintSource{
+			if sd, ok := cpg_engine.SourceDefForCall(lang, c.Name); ok {
+				sources = append(sources, cpg_engine.TaintSource{
 					NodeID: c.ID,
 					Kind:   sd.Kind,
 					File:   c.File,
@@ -459,8 +458,8 @@ func runJoernTaint(_ context.Context, graph cpg.Graph, scopeFiles []string) ([]f
 				})
 			}
 			// Match against sink definitions — use the taxonomy Kind.
-			if sd, ok := joern.SinkDefForCall(lang, c.Name); ok {
-				sinks = append(sinks, cpg.TaintSink{
+			if sd, ok := cpg_engine.SinkDefForCall(lang, c.Name); ok {
+				sinks = append(sinks, cpg_engine.TaintSink{
 					NodeID: c.ID,
 					Kind:   sd.Kind,
 					File:   c.File,
@@ -495,7 +494,7 @@ func runJoernTaint(_ context.Context, graph cpg.Graph, scopeFiles []string) ([]f
 	}
 
 	// Normalise to Finding structs.
-	return joern.TaintPathsToFindings(paths, lang), nil
+	return cpg_engine.TaintPathsToFindings(paths, lang), nil
 }
 
 // newRunID generates a random 16-character hex string to uniquely identify a scan run.

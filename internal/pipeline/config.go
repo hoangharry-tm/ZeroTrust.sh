@@ -14,35 +14,29 @@
 
 package pipeline
 
-import "github.com/hoangharry-tm/zerotrust/internal/config"
-
 // Config holds the resolved, validated configuration for a single scan run.
 // It is populated from cobra flags in runScan before the pipeline is constructed.
 //
 // Flag → field mapping:
 //
 //	<directory>     → Target        (positional arg, defaults to ".")
-//	--model         → ModelName     (Ollama model name, e.g. "llama3.2")
-//	--offline       → Offline       (disable all network requests)
+//	--llm-provider  → LLMProvider   (ollama | openai; default "ollama")
+//	--model         → ModelName     (model name, e.g. "llama3.2" or "gpt-4o")
+//	--llm-base-url  → LLMBaseURL    (LLM API base URL; defaults to the provider's standard endpoint)
+//	--llm-api-key   → LLMAPIKey     (API key; required for --llm-provider openai)
 //	--report        → ReportPath    (HTML report destination, default "build/report.html")
 //	--project-id    → ProjectID     (override derived project ID for scan-state cache)
-//	--mode          → ScanMode      (Default | Thorough | Full; default "Default")
-//	--joern-url     → JoernURL      (Joern HTTP API URL; default "http://localhost:8080")
-//	--ollama-url    → OllamaURL     (Ollama HTTP API URL; default "http://localhost:11434")
-//	--token-cap     → TokenCap      (token budget cap for Path B Tier 3; default 50 000)
+//
+// ScanMode is fixed to "Default" — there is no scope flag; every scan covers
+// working modules (git diff) plus depth-2 module neighbours.
 type Config struct {
 	// Target is the absolute or relative path to the codebase to scan.
 	Target string
 
-	// ModelName is the Ollama model identifier used for LLM stages.
-	// Example: "llama3.2", "qwen2.5:3b".
+	// ModelName is the model identifier used for LLM stages.
+	// Example: "llama3.2", "qwen2.5:3b" (ollama), "gpt-4o" (openai).
 	// If empty, LLM stages are skipped.
 	ModelName string
-
-	// Offline disables all outbound network requests.
-	// When true: Trivy runs in offline mode, cosign/Rekor registry lookup is skipped,
-	// and MIV defaults to StatusWarn for unrecognised models.
-	Offline bool
 
 	// ReportPath is the file path where the self-contained HTML report is written.
 	ReportPath string
@@ -72,12 +66,16 @@ type Config struct {
 	// Example: "/usr/local/bin/joern-server" or "joern-server" (resolved via PATH).
 	JoernBin string
 
-	// OllamaURL is the base URL of the Ollama inference server.
-	OllamaURL string
+	// LLMProvider selects the LLM backend: "ollama" or "openai". Default: "ollama".
+	LLMProvider string
 
-	// TokenCap is the hard per-scan token budget for the Token Budget Controller.
-	// Surfaces that exceed the cap are emitted as SUPPRESSED findings.
-	TokenCap int
+	// LLMBaseURL is the base URL of the LLM API. Empty means the provider's
+	// standard default (Ollama: localhost:11434; OpenAI: api.openai.com).
+	LLMBaseURL string
+
+	// LLMAPIKey authenticates against the LLM provider. Required for
+	// LLMProvider "openai"; unused for "ollama".
+	LLMAPIKey string
 
 	// CalibrationPath is an optional path to a JSON calibration file produced by
 	// scripts/calibrate.py. Empty means compile-time defaults are used.
@@ -88,12 +86,8 @@ type Config struct {
 	// Surfaces below this threshold are dropped.
 	TriageThreshold float64
 
-	// Verbose enables debug-level logging to stderr for both Go and the Python worker.
+	// Verbose enables debug-level logging to stderr.
 	Verbose bool
-
-	// LLMMode controls the prompting strategy for LLM stages (B4 triage, B5 analysis).
-	// Values: "small" | "mid" | "frontier". Default: "mid".
-	LLMMode string
 }
 
 // defaults fills zero-value fields with safe production defaults.
@@ -110,16 +104,10 @@ func (c *Config) defaults() {
 	if c.JoernURL == "" {
 		c.JoernURL = "http://localhost:8080"
 	}
-	if c.OllamaURL == "" {
-		c.OllamaURL = "http://localhost:11434"
-	}
-	if c.TokenCap <= 0 {
-		c.TokenCap = config.New().DefaultTokenCap
+	if c.LLMProvider == "" {
+		c.LLMProvider = "ollama"
 	}
 	if c.TriageThreshold <= 0 {
 		c.TriageThreshold = 0.50
-	}
-	if c.LLMMode == "" {
-		c.LLMMode = "mid"
 	}
 }

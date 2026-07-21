@@ -427,15 +427,7 @@ func (p *Pipeline) runPathB(ctx context.Context, _ *ingestion.Result, ch chan<- 
 	)
 
 	// B5: LLM Reasoner — full analysis on escalated surfaces.
-	concurrency := 2
-	if p.cfg.LLMMode == "frontier" {
-		concurrency = 1
-	}
-	slog.Info("path b: B5 start",
-		"surfaces", len(allB5),
-		"llm_mode", p.cfg.LLMMode,
-		"concurrency", concurrency,
-	)
+	slog.Info("path b: B5 start", "surfaces", len(allB5))
 	analysisFindings, err := p.scan.Scan(ctx, allB5)
 	if err != nil {
 		p.logger.Warn("path b analysis error", "err", err)

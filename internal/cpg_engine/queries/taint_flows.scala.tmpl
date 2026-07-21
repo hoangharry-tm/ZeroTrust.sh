@@ -1,0 +1,57 @@
+{
+  val m = cpg.method.filter(_.id == {{.MethodID}}L)
+  val sinks = cpg.call.filter(c => {{.SinkSet}}.contains(c.name))
+  m.parameter
+    .reachableByFlows(sinks)
+    .map(p => {
+      val elems = p.elements.toList
+      val first = elems.head
+      val last  = elems.last
+
+      val intermediateJson = elems
+        .slice(1, elems.size - 1)
+        .map(n => s"""{
+          "id":   "${n.id.toString}",
+          "name": "${n match {
+            case c: Call               => c.name
+            case mp: MethodParameterIn => mp.name
+            case i: Identifier         => i.name
+            case _                     => ""
+          }}",
+          "file": "${try { n.property("FILENAME").asInstanceOf[String] } catch { case _ => "" }}",
+          "line": ${try { n.property("LINE_NUMBER").asInstanceOf[Int] } catch { case _ => 0 }},
+          "type": "${n.label}"
+        }""")
+        .mkString(",")
+
+      s"""{
+        "source": {
+          "id":   "${first.id.toString}",
+          "name": "${first match {
+            case mp: MethodParameterIn => mp.name
+            case m: Method             => m.name
+            case c: Call               => c.name
+            case _                     => ""
+          }}",
+          "file": "${first.location.filename}",
+          "line": ${first.lineNumber.getOrElse(0)},
+          "type": "${first.label}"
+        },
+        "sink": {
+          "id":   "${last.id.toString}",
+          "name": "${last match {
+            case mp: MethodParameterIn => mp.name
+            case c: Call               => c.name
+            case m: Method             => m.name
+            case _                     => ""
+          }}",
+          "file": "${last.location.filename}",
+          "line": ${last.lineNumber.getOrElse(0)},
+          "type": "${last.label}"
+        },
+        "intermediate": [${intermediateJson}]
+      }"""
+    })
+    .toList
+    .mkString("[", ",", "]")
+}

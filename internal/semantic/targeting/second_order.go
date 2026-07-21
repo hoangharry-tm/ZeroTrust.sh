@@ -3,7 +3,7 @@ package targeting
 import (
 	"path/filepath"
 
-	"github.com/hoangharry-tm/zerotrust/pkg/cpg"
+	cpg "github.com/hoangharry-tm/zerotrust/internal/cpg_engine"
 )
 
 // DetectSecondOrder finds surfaces where taint flows through a storage boundary.

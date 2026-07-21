@@ -1,0 +1,11 @@
+cpg.method
+  .filter(_.id == {{.NodeID}}L)
+  .in
+  .map(n => s"""{
+    "from":  "${ n.id.toString }",
+    "to":    "{{.NodeID}}",
+    "type":  "",
+    "label": ""
+  }""")
+  .toList
+  .mkString("[", ",", "]")
