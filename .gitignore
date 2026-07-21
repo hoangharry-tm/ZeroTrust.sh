@@ -51,3 +51,18 @@ pipeline/notebooks/*.ipynb
 
 # Dot files
 .*
+
+# Untracked per project cleanup
+.serena/
+product/
+scripts/
+worker/
+.test.json
+AGENTS.md
+HIGH_TODO.md
+ISSUES.md
+JOERN_ENGINE_TRIAGE_REPORT.md
+Oops.rej
+PERFORMANCE_DIAGNOSTIC_REPORT.md
+REMEDIATION_PLAN.md
+TODO.md
