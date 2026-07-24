@@ -13,7 +13,7 @@
 // limitations under the License.
 
 // Package enrichment implements the Call Graph + CVE Enrichment + Resource ID
-// Dataflow node (Path B Tier 1).
+// Dataflow node (Reasoning Tier 1).
 //
 // The Enricher augments each Heuristic Targeting surface with three data sources:
 //
@@ -49,9 +49,9 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
+	cpg "github.com/hoangharry-tm/zerotrust/internal/cpg_engine"
 	"github.com/hoangharry-tm/zerotrust/internal/finding"
 	"github.com/hoangharry-tm/zerotrust/internal/semantic/targeting"
-	cpg "github.com/hoangharry-tm/zerotrust/internal/cpg_engine"
 )
 
 // CVEMatch holds a single CVE finding from Trivy for a dependency used by a surface.
@@ -109,10 +109,16 @@ type EnrichedSurface struct {
 	// sink patterns at this surface. Populated by the enrichment layer from
 	// the CPG's sink pre-flagging pass.
 	SinkNodes []string
-	// CallPath lists the node types (cpg.NodeType values) along the taint
-	// propagation path from source to sink. Empty when the CPG taint
-	// tracker produced no path.
+	// CallPath lists the call/identifier names (cpg.Node.Name values) along
+	// the taint propagation path from source to sink. Empty when the CPG
+	// taint tracker produced no path.
 	CallPath []string
+	// Sanitized is true when every taint path found from source to this
+	// surface's sink(s) had a sanitizer node on it, per the CPG's own
+	// language-normalized taint taxonomy (cpg_engine.TaintPath.Sanitized) —
+	// not a keyword match against source text. False when no taint path was
+	// found at all (there's nothing to have sanitized).
+	Sanitized bool
 	// ContractCWE is the CWE matched by the DCC stage, if any. Empty when no contract matched.
 	ContractCWE string
 	// TaintConfidence indicates the strength of taint evidence:
@@ -214,6 +220,19 @@ func (e *Enricher) Enrich(ctx context.Context, surfaces []targeting.Surface, pro
 			for _, s := range surfaces {
 				surfaceIDSet[s.ID] = struct{}{}
 			}
+
+			// walkupCandidate holds a single-match attribution pending the
+			// fan-in check below — not committed to pathsByMethodID yet.
+			type walkupCandidate struct {
+				callerID   string
+				callerName string
+				path       cpg.TaintPath
+			}
+			var candidates []walkupCandidate
+			// sinkFanIn counts, for each taint path's sink node, how many
+			// DISTINCT surfaces a walk-up attribution wants to attach it to.
+			sinkFanIn := make(map[string]map[string]struct{}) // sinkNodeID -> set of callerIDs
+
 			for _, p := range allPaths {
 				sourceID := p.Source.NodeID
 				if sourceID == "" {
@@ -222,17 +241,27 @@ func (e *Enricher) Enrich(ctx context.Context, surfaces []targeting.Surface, pro
 				if _, direct := surfaceIDSet[sourceID]; direct {
 					continue // already attributed directly
 				}
-				// BFS upward through callers to find the closest surface ancestor.
+				// BFS upward through callers to find the closest surface ancestor(s).
 				// Uses surface-adjacency early-stop: if no caller at a given depth
 				// is a surface candidate, further expansion is unlikely to find one.
 				// depth=8 blanket cap caused over-attribution (SQL taint attributed to
 				// crypto utilities); depth=3 was too tight for deep call chains.
+				//
+				// Caller-edge proximity alone is not reachability: Joern's Java call
+				// graph over-approximates virtual dispatch (CHA-style resolution), so
+				// two unrelated classes that both call a same-named interface method
+				// can appear as "callers" of each other's call chains. When the BFS
+				// finds more than one distinct surface at the same proximity for a
+				// single taint path, that fan-out is itself evidence the heuristic
+				// can't disambiguate for this path — attribute to none rather than
+				// guess (a single unlucky guess previously attached an unrelated
+				// DB-backup Runtime.exec() sink to an unrelated goods-CRUD surface).
 				visited := map[string]bool{sourceID: true}
 				queue := []string{sourceID}
-				found := false
+				var matched []cpg.Node
 				pathKey := sourceID + ":" + p.Sink.NodeID
 
-				for depth := 0; depth < 6 && len(queue) > 0 && !found; depth++ {
+				for depth := 0; depth < 6 && len(queue) > 0 && len(matched) == 0; depth++ {
 					var next []string
 					hasAnySurfaceNeighbour := false
 
@@ -247,19 +276,18 @@ func (e *Enricher) Enrich(ctx context.Context, surfaces []targeting.Surface, pro
 							}
 							visited[caller.ID] = true
 							if _, isSurface := surfaceIDSet[caller.ID]; isSurface {
-								pathsByMethodID[caller.ID] = append(pathsByMethodID[caller.ID], p)
-								surfaceCallerChain[caller.ID] = append(surfaceCallerChain[caller.ID], caller.Name)
-								found = true
+								matched = append(matched, caller)
 								hasAnySurfaceNeighbour = true
 							}
 							next = append(next, caller.ID)
 						}
 					}
 
-					slog.Debug("enrichment: bfs_depth",
+					slog.Debug(
+						"enrichment: bfs_depth",
 						"depth", depth,
 						"queue_size", len(queue),
-						"found", found,
+						"matched", len(matched),
 						"has_surface_neighbour", hasAnySurfaceNeighbour,
 						"path_key", pathKey,
 					)
@@ -272,6 +300,64 @@ func (e *Enricher) Enrich(ctx context.Context, surfaces []targeting.Surface, pro
 					}
 					queue = next
 				}
+
+				switch len(matched) {
+				case 0:
+					// no ancestor found — leave unattributed, as before.
+				case 1:
+					caller := matched[0]
+					candidates = append(candidates, walkupCandidate{callerID: caller.ID, callerName: caller.Name, path: p})
+					if sinkFanIn[p.Sink.NodeID] == nil {
+						sinkFanIn[p.Sink.NodeID] = make(map[string]struct{})
+					}
+					sinkFanIn[p.Sink.NodeID][caller.ID] = struct{}{}
+				default:
+					names := make([]string, len(matched))
+					for i, m := range matched {
+						names[i] = m.Name
+					}
+					slog.Warn(
+						"enrichment: ambiguous taint attribution — multiple surfaces equidistant from taint source, dropping rather than guessing",
+						"path_key", pathKey,
+						"candidates", names,
+					)
+				}
+			}
+
+			// Fan-in guard: commit a walk-up candidate only if its sink isn't
+			// also claimed by several OTHER structurally-unrelated surfaces.
+			// Found live on a real Grafana scan: a single sink location
+			// (login_oauth.go's OAuth error handler) got walk-up-attributed
+			// to 5 completely unrelated surfaces spanning 3 different
+			// top-level packages (avatar, pluginproxy, static) — including a
+			// bare logger wrapper (logWrapper.Write) that has nothing to do
+			// with OAuth. A real inter-procedural flow is roughly one
+			// surface per sink; many structurally-unrelated surfaces
+			// converging on the exact same sink node is the signature of
+			// Joern's call-graph over-approximating interface/method-name
+			// dispatch (Go's io.Writer, or any other common-signature
+			// interface method), not real reachability — the BFS walk-up's
+			// per-path "multiple surfaces at once" ambiguity check (above)
+			// can't catch this because each individual path's own BFS finds
+			// exactly ONE ancestor; the ambiguity only becomes visible when
+			// looking across many DIFFERENT paths that all converge on the
+			// same sink. This mirrors the existing "many surfaces match one
+			// path — drop rather than guess" rule for the inverse direction.
+			const maxSinkFanIn = 3
+			droppedForFanIn := 0
+			for _, c := range candidates {
+				if len(sinkFanIn[c.path.Sink.NodeID]) > maxSinkFanIn {
+					droppedForFanIn++
+					continue
+				}
+				pathsByMethodID[c.callerID] = append(pathsByMethodID[c.callerID], c.path)
+				surfaceCallerChain[c.callerID] = append(surfaceCallerChain[c.callerID], c.callerName)
+			}
+			if droppedForFanIn > 0 {
+				slog.Warn(
+					"enrichment: sink fan-in guard — dropped walk-up attributions whose sink was claimed by too many unrelated surfaces",
+					"dropped", droppedForFanIn, "max_sink_fan_in", maxSinkFanIn,
+				)
 			}
 
 			attributed := 0
@@ -280,7 +366,8 @@ func (e *Enricher) Enrich(ctx context.Context, surfaces []targeting.Surface, pro
 					attributed++
 				}
 			}
-			slog.Info("enrichment: attribution summary",
+			slog.Info(
+				"enrichment: attribution summary",
 				"total_surfaces", len(surfaces),
 				"attributed", attributed,
 				"gap_pct", fmt.Sprintf("%.1f%%", 100*float64(len(surfaces)-attributed)/float64(len(surfaces))),
@@ -304,7 +391,8 @@ func (e *Enricher) Enrich(ctx context.Context, surfaces []targeting.Surface, pro
 	for _, s := range surfaces {
 		// s := s
 		g.Go(func() error {
-			slog.Debug("enrichment: input",
+			slog.Debug(
+				"enrichment: input",
 				"function", s.FunctionName,
 				"file", s.File,
 				"kind", s.Kind,
@@ -343,7 +431,8 @@ func (e *Enricher) Enrich(ctx context.Context, surfaces []targeting.Surface, pro
 							if len(codePreview) > 100 {
 								codePreview = codePreview[:100]
 							}
-							slog.Debug("enrichment: cpg_node_match",
+							slog.Debug(
+								"enrichment: cpg_node_match",
 								"surface_id", s.ID,
 								"node_name", n.Name,
 								"node_code_preview", codePreview,
@@ -355,14 +444,16 @@ func (e *Enricher) Enrich(ctx context.Context, surfaces []targeting.Surface, pro
 								absPath = filepath.Join(projectRoot, absPath)
 							}
 							if body := readFunctionBody(absPath, n.Line, n.Name); body != "" {
-								slog.Debug("enrichment: read_function_body",
+								slog.Debug(
+									"enrichment: read_function_body",
 									"surface_id", s.ID,
 									"success", true,
 									"chars", len(body),
 								)
 								es.Code = body
 							} else {
-								slog.Debug("enrichment: read_function_body",
+								slog.Debug(
+									"enrichment: read_function_body",
 									"surface_id", s.ID,
 									"success", false,
 									"chars", 0,
@@ -381,6 +472,7 @@ func (e *Enricher) Enrich(ctx context.Context, surfaces []targeting.Surface, pro
 
 			if paths, ok := pathsByMethodID[s.ID]; ok {
 				seenSinks := make(map[string]bool)
+				allSanitized := true
 				for _, p := range paths {
 					sinkLabel := p.Sink.Name
 					if sinkLabel == "" {
@@ -403,7 +495,14 @@ func (e *Enricher) Enrich(ctx context.Context, surfaces []targeting.Surface, pro
 						es.SinkFile = p.Sink.File
 						es.SinkLine = p.Sink.Line
 					}
+					if !p.Sanitized {
+						allSanitized = false
+					}
 				}
+				// Sanitized only means something when a path was actually found —
+				// a surface with zero taint paths hasn't been "sanitized", it's
+				// just unconfirmed (Contracts treats that as inconclusive, not safe).
+				es.Sanitized = len(paths) > 0 && allSanitized
 			}
 
 			// Augment CallPath with BFS caller-chain names for better sink confirmation.
@@ -442,7 +541,8 @@ func (e *Enricher) Enrich(ctx context.Context, surfaces []targeting.Surface, pro
 				if len(filtered) > 0 {
 					es.SinkNodes = filtered
 				}
-				slog.Debug("enrichment: sink_nodes_filtered",
+				slog.Debug(
+					"enrichment: sink_nodes_filtered",
 					"surface_id", s.ID,
 					"before", beforeFilter,
 					"after", len(es.SinkNodes),
@@ -453,11 +553,13 @@ func (e *Enricher) Enrich(ctx context.Context, surfaces []targeting.Surface, pro
 				es.ResourceIDFlows = flows
 			}
 
-			slog.Debug("enrichment: sink_nodes",
+			slog.Debug(
+				"enrichment: sink_nodes",
 				"surface_id", s.ID,
 				"sink_nodes", es.SinkNodes,
 			)
-			slog.Debug("enrichment: output",
+			slog.Debug(
+				"enrichment: output",
 				"surface_id", s.ID,
 				"function", s.FunctionName,
 				"file", s.File,
@@ -511,7 +613,8 @@ func (e *Enricher) Enrich(ctx context.Context, surfaces []targeting.Surface, pro
 			withCallPath++
 		}
 	}
-	slog.Info("enrichment: surface coverage",
+	slog.Info(
+		"enrichment: surface coverage",
 		"total", len(enriched),
 		"with_code", withCode,
 		"with_sink_nodes", withSinkNodes,
@@ -812,10 +915,7 @@ func readFunctionBody(absPath string, startLine int, methodName string) string {
 		// reported line with a fixed window, stopping early at the next
 		// method declaration to avoid bleeding into an unrelated method.
 		var out strings.Builder
-		limit := startLine - 1 + 20
-		if limit > len(lines) {
-			limit = len(lines)
-		}
+		limit := min(startLine-1+20, len(lines))
 		for i := startLine - 1; i < limit && out.Len() < 6000; i++ {
 			line := lines[i]
 			trimmed := strings.TrimSpace(line)
@@ -846,10 +946,11 @@ func readFunctionBody(absPath string, startLine int, methodName string) string {
 		if i >= actualStart {
 			stripped := stripStringsAndComments(line)
 			for _, ch := range stripped {
-				if ch == '{' {
+				switch ch {
+				case '{':
 					depth++
 					started = true
-				} else if ch == '}' {
+				case '}':
 					depth--
 				}
 			}

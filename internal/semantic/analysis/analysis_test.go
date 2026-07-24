@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hoangharry-tm/zerotrust/internal/cpg_engine"
 	"github.com/hoangharry-tm/zerotrust/internal/finding"
 	"github.com/hoangharry-tm/zerotrust/internal/semantic/enrichment"
 	"github.com/hoangharry-tm/zerotrust/internal/semantic/targeting"
@@ -24,7 +25,7 @@ func (m *mockProvider) Generate(ctx context.Context, prompt string, opts *llm.Op
 }
 
 func (m *mockProvider) Ping(_ context.Context) error { return nil }
-func (m *mockProvider) ModelName() string             { return "mock" }
+func (m *mockProvider) ModelName() string            { return "mock" }
 
 func makeSurface(id string, kind targeting.SurfaceKind) enrichment.EnrichedSurface {
 	return enrichment.EnrichedSurface{
@@ -208,6 +209,23 @@ func TestBuildAIP_RespectsContractCWE(t *testing.T) {
 	}
 }
 
+// TestBuildAIP_CWE22MentionsHttpDirSafety is a regression test for a real
+// false-positive pattern found live: multiple Grafana findings flagged
+// http.Dir(dir).Open(path)-routed reads as exploitable path traversal
+// purely because no explicit sanitizer was visible upstream — but
+// http.Dir.Open is root-anchored by construction (it prefixes the path with
+// "/" before Clean, so ".." can never escape the base directory) regardless
+// of upstream validation quality. The AI Failure Profile must call this out
+// so B5 stops flagging this exact structurally-safe pattern.
+func TestBuildAIP_CWE22MentionsHttpDirSafety(t *testing.T) {
+	surface := makeSurface("s1", targeting.SurfaceExternalInput)
+	surface.ContractCWE = "CWE-22"
+	aip := buildAIP(surface)
+	if !strings.Contains(aip, "http.Dir") {
+		t.Errorf("CWE-22 AI Failure Profile should mention http.Dir's root-anchoring safety, got:\n%s", aip)
+	}
+}
+
 func TestBuildAIP_KindFallbackWhenNoContractCWE(t *testing.T) {
 	surface := makeSurface("s1", targeting.SurfaceAuthBoundary)
 	surface.ContractCWE = ""
@@ -246,6 +264,51 @@ func TestParseVerdict_TaintMismatchParsed(t *testing.T) {
 	}
 	if !v.TaintMismatch {
 		t.Error("want taint_mismatch=true")
+	}
+}
+
+// TestParseVerdict_SalvagesMalformedJSON is a regression test for a real
+// production incident: a model's generation glitched mid-sentence inside
+// the "explanation" string value, leaking an unescaped fragment that broke
+// strict JSON parsing. The verdict itself was correct and well-reasoned
+// (exploitable=false, confidence=0.95) but json.Unmarshal has no partial
+// recovery, so the whole thing was discarded and replaced with a
+// meaningless zero-value verdict. Exact raw text reproduced from the log.
+func TestParseVerdict_SalvagesMalformedJSON(t *testing.T) {
+	raw := `{"exploitable":false,"cwe":"","severity":"LOW","confidence":0.95,"summary":"Caller validates hash format before reaching sink.","explanation":"get_callers returned Handler as the sole caller of this function, whose code checks that the :hash parameter is exactly 32 hex characters via validMD5.MatchString and returns early if invalid — so by the time Encode() runs with a.taint_mismatch=false,"taint_mismatch":false}`
+	v := parseVerdict(raw)
+	if v.Exploitable {
+		t.Error("want exploitable=false, salvaged from the malformed JSON")
+	}
+	if v.Confidence != 0.95 {
+		t.Errorf("want confidence=0.95 salvaged, got %v", v.Confidence)
+	}
+	if v.Severity != "LOW" {
+		t.Errorf("want severity=LOW salvaged, got %q", v.Severity)
+	}
+	if !strings.Contains(v.Explanation, "get_callers returned Handler") {
+		t.Errorf("want the explanation text salvaged (even if truncated), got %q", v.Explanation)
+	}
+	if !strings.Contains(v.Explanation, "[recovered from malformed JSON") {
+		t.Errorf("salvaged verdict should be tagged as recovered, got %q", v.Explanation)
+	}
+	if v.Summary != "Caller validates hash format before reaching sink." {
+		t.Errorf("want summary salvaged intact, got %q", v.Summary)
+	}
+}
+
+// TestParseVerdict_SalvageFailsWithoutExploitableField confirms salvage
+// requires the single most decision-critical field to be recoverable at
+// all — text too corrupted to find "exploitable" in falls back to the safe
+// default rather than guessing.
+func TestParseVerdict_SalvageFailsWithoutExploitableField(t *testing.T) {
+	raw := `{"cwe":"CWE-22","confidence":0.9, this is not valid json at all}`
+	v := parseVerdict(raw)
+	if v.Exploitable {
+		t.Error("want the safe default (exploitable=false) when salvage can't even find the exploitable field")
+	}
+	if v.Confidence != 0 {
+		t.Errorf("want a fully zero-value default, not a partial salvage, got confidence=%v", v.Confidence)
 	}
 }
 
@@ -335,5 +398,136 @@ func TestScan_TaintMismatch_SetsFieldOnFinding(t *testing.T) {
 	}
 	if findings[0].Exploitable {
 		t.Error("want Exploitable=false")
+	}
+}
+
+// TestScan_FabricatedNegativeVerdict_StillDowngraded is a regression test for
+// a real gap found in production: the mandatory-investigation gate only
+// downgraded a fabricated exploitable=TRUE verdict. Live testing showed a
+// model can just as easily fabricate a confident exploitable=FALSE verdict
+// without ever calling a tool — in one real run, qwen3.5:9b was nudged for
+// not investigating, still made zero tool calls, then wrote a justification
+// citing a specific caller and annotation that appeared nowhere in the
+// actual evidence. That direction is arguably more dangerous for a security
+// tool (a real vulnerability confidently and permanently dismissed), so the
+// gate must downgrade confidence regardless of which way the verdict goes.
+func TestScan_FabricatedNegativeVerdict_StillDowngraded(t *testing.T) {
+	provider := &mockChatProvider{responses: []llm.Message{
+		// Round 0: answers immediately, no tool call.
+		{Content: `{"exploitable":false,"cwe":"","severity":"LOW","confidence":0.95,"explanation":"Caller is gated by @PreAuthorize; no auth bypass."}`},
+		// After the nudge: still no tool call, same fabricated claim.
+		{Content: `{"exploitable":false,"cwe":"","severity":"LOW","confidence":0.95,"explanation":"Caller is gated by @PreAuthorize; no auth bypass."}`},
+	}}
+	s := New(provider).WithGraph(&fakeGraph{})
+	surface := makeGatedSurface("s1") // ContractCWE=CWE-862 (NoSinkModel, requiresInvestigation)
+
+	findings, err := s.Scan(context.Background(), []enrichment.EnrichedSurface{surface})
+	if err != nil {
+		t.Fatalf("Scan error: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("want 1 finding, got %d", len(findings))
+	}
+	f := findings[0]
+	if f.Exploitable {
+		t.Error("want Exploitable=false (the model's claimed verdict, even though fabricated)")
+	}
+	if f.Confidence > uninvestigatedConfidenceCap {
+		t.Errorf("want confidence capped at %.2f for an uninvestigated verdict, got %.2f — "+
+			"a fabricated exploitable=false must be downgraded exactly like a fabricated exploitable=true, "+
+			"or it can silently suppress a real DCC violation forever", uninvestigatedConfidenceCap, f.Confidence)
+	}
+	if !strings.Contains(f.Justification, "[uninvestigated:") {
+		t.Errorf("want the uninvestigated tag on the justification, got %q", f.Justification)
+	}
+}
+
+// TestScan_InvestigatedButHedgedVerdict_StillDowngraded is a regression test
+// for a gap the mandatory-investigation gate does NOT cover: a model that
+// DOES call a tool (so requiresInvestigation's !investigated check never
+// fires) but gets back inconclusive evidence, then reports high confidence
+// anyway using its own hedge words. Observed live on a real litemall scan:
+// QiniuStorage.java:71 got exploitable=true, confidence=0.9, severity=HIGH,
+// explanation "Caller chain includes controllers... where authorization
+// checks like @PreAuthorize are typically enforced upstream." — @PreAuthorize
+// appears nowhere in litemall (it uses Apache Shiro); "typically enforced"
+// is the model admitting it never actually verified this. A hedge word
+// modifying an auth claim is a stronger, cheaper tell than trying to parse
+// tool-call evidence for grounding.
+func TestScan_InvestigatedButHedgedVerdict_StillDowngraded(t *testing.T) {
+	g := &fakeGraph{callers: map[string][]cpg_engine.Node{
+		"m1": {{ID: "c1", Name: "SomeController"}},
+	}}
+	provider := &mockChatProvider{responses: []llm.Message{
+		{ToolCalls: []llm.ToolCall{{ID: "call_1", Name: "get_callers", Arguments: `{"function_id":"m1"}`}}},
+		// First hop alone would trip the "exploitable after only 1 hop"
+		// chase-nudge (see runToolLoop) before the hedge-guard downstream
+		// ever sees it — simulate the model chasing one hop further per that
+		// nudge, using get_neighbours_at_depth this time so it ALSO clears
+		// the dual-tool confirmation gate (2 distinct tool types used), then
+		// still landing on the same hedged, self-contradictory conclusion —
+		// so this test continues to exercise scanOne's hedge-guard
+		// specifically, not the chase-nudge or the dual-tool gate.
+		{ToolCalls: []llm.ToolCall{{ID: "call_2", Name: "get_neighbours_at_depth", Arguments: `{"function_id":"c1","depth":2}`}}},
+		{Content: `{"exploitable":true,"cwe":"CWE-862","severity":"HIGH","confidence":0.9,"explanation":"Caller chain includes controllers where authorization checks like @PreAuthorize are typically enforced upstream."}`},
+	}}
+	s := New(provider).WithGraph(g)
+	surface := makeGatedSurface("s1")
+	surface.ID = "m1"
+
+	findings, err := s.Scan(context.Background(), []enrichment.EnrichedSurface{surface})
+	if err != nil {
+		t.Fatalf("Scan error: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("want 1 finding, got %d", len(findings))
+	}
+	f := findings[0]
+	if f.Confidence > uninvestigatedConfidenceCap {
+		t.Errorf("want confidence capped at %.2f for a hedged, self-contradictory verdict, got %.2f — "+
+			"a model saying 'typically enforced' about an auth check is telling us it guessed, "+
+			"even though a tool WAS called", uninvestigatedConfidenceCap, f.Confidence)
+	}
+	if !strings.Contains(f.Justification, "[hedged claim of an unverified guard]") {
+		t.Errorf("want the hedge tag on the justification, got %q", f.Justification)
+	}
+}
+
+// TestScan_HedgeGuard_FiresForNonAuthCWEs is a regression test for a real
+// bug found live on a Grafana scan: the hedge-guard used to require the
+// explanation to also contain "auth", so a CWE-22 (path traversal) finding
+// whose explanation literally said "...this remains uncertain but leans
+// toward exploitable" — a textbook self-admission of guessing — was NOT
+// downgraded, because the topic gate silently exempted every non-auth CWE.
+// Hedge language is topic-agnostic; this locks in that the guard fires for
+// CWE-22 (and by extension any CWE) just as it does for CWE-862.
+func TestScan_HedgeGuard_FiresForNonAuthCWEs(t *testing.T) {
+	g := &fakeGraph{callers: map[string][]cpg_engine.Node{
+		"m1": {{ID: "c1", Name: "HandleRequest"}},
+	}}
+	provider := &mockChatProvider{responses: []llm.Message{
+		{ToolCalls: []llm.ToolCall{{ID: "call_1", Name: "get_callers", Arguments: `{"function_id":"m1"}`}}},
+		{ToolCalls: []llm.ToolCall{{ID: "call_2", Name: "get_neighbours_at_depth", Arguments: `{"function_id":"c1","depth":2}`}}},
+		{Content: `{"exploitable":true,"cwe":"CWE-22","severity":"HIGH","confidence":0.8,"explanation":"The taint path shows user input reaching a path-construction sink; this remains uncertain but leans toward exploitable given the lack of visible validation."}`},
+	}}
+	s := New(provider).WithGraph(g)
+	surface := makeGatedSurface("s1")
+	surface.ID = "m1"
+	surface.ContractCWE = "CWE-22"
+
+	findings, err := s.Scan(context.Background(), []enrichment.EnrichedSurface{surface})
+	if err != nil {
+		t.Fatalf("Scan error: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("want 1 finding, got %d", len(findings))
+	}
+	f := findings[0]
+	if f.Confidence > uninvestigatedConfidenceCap {
+		t.Errorf("want confidence capped at %.2f for a hedged CWE-22 verdict with no 'auth' mention, got %.2f",
+			uninvestigatedConfidenceCap, f.Confidence)
+	}
+	if !strings.Contains(f.Justification, "[hedged claim of an unverified guard]") {
+		t.Errorf("want the hedge tag on a non-auth CWE explanation too, got %q", f.Justification)
 	}
 }

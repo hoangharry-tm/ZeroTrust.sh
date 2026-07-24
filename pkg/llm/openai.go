@@ -16,6 +16,7 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -90,10 +91,16 @@ func (c *openaiClient) Chat(ctx context.Context, messages []Message, opts *Optio
 	if len(resp.Choices) == 0 {
 		return Message{}, errors.New("openai: no choices returned")
 	}
-	return Message{
-		Role:    RoleAssistant,
-		Content: resp.Choices[0].Message.Content,
-	}, nil
+	msg := resp.Choices[0].Message
+	out := Message{Role: RoleAssistant, Content: msg.Content}
+	for _, tc := range msg.ToolCalls {
+		out.ToolCalls = append(out.ToolCalls, ToolCall{
+			ID:        tc.ID,
+			Name:      tc.Function.Name,
+			Arguments: tc.Function.Arguments,
+		})
+	}
+	return out, nil
 }
 
 // Ping verifies the OpenAI endpoint is reachable by listing models.
@@ -129,6 +136,29 @@ func applyOptions(params *openai.ChatCompletionNewParams, opts *Options) {
 			OfStringArray: opts.Stop,
 		}
 	}
+	if opts.JSON {
+		params.ResponseFormat = openai.ChatCompletionNewParamsResponseFormatUnion{
+			OfJSONObject: &shared.ResponseFormatJSONObjectParam{},
+		}
+	}
+	if len(opts.Tools) > 0 {
+		params.Tools = make([]openai.ChatCompletionToolParam, len(opts.Tools))
+		for i, t := range opts.Tools {
+			var schema map[string]any
+			if len(t.Parameters) > 0 {
+				// Best-effort: a malformed schema just means no parameters are
+				// advertised for this tool, not a request failure.
+				_ = json.Unmarshal(t.Parameters, &schema)
+			}
+			params.Tools[i] = openai.ChatCompletionToolParam{
+				Function: shared.FunctionDefinitionParam{
+					Name:        t.Name,
+					Description: param.NewOpt(t.Description),
+					Parameters:  schema,
+				},
+			}
+		}
+	}
 }
 
 // toSDKMessage converts our provider-agnostic Message to the OpenAI SDK message type.
@@ -138,8 +168,28 @@ func toSDKMessage(m Message) openai.ChatCompletionMessageParamUnion {
 		return openai.SystemMessage(m.Content)
 	case RoleUser:
 		return openai.UserMessage(m.Content)
+	case RoleTool:
+		return openai.ToolMessage(m.Content, m.ToolCallID)
 	case RoleAssistant:
-		return openai.AssistantMessage(m.Content)
+		if len(m.ToolCalls) == 0 {
+			return openai.AssistantMessage(m.Content)
+		}
+		assistant := &openai.ChatCompletionAssistantMessageParam{
+			ToolCalls: make([]openai.ChatCompletionMessageToolCallParam, len(m.ToolCalls)),
+		}
+		if m.Content != "" {
+			assistant.Content.OfString = param.NewOpt(m.Content)
+		}
+		for i, tc := range m.ToolCalls {
+			assistant.ToolCalls[i] = openai.ChatCompletionMessageToolCallParam{
+				ID: tc.ID,
+				Function: openai.ChatCompletionMessageToolCallFunctionParam{
+					Name:      tc.Name,
+					Arguments: tc.Arguments,
+				},
+			}
+		}
+		return openai.ChatCompletionMessageParamUnion{OfAssistant: assistant}
 	default:
 		// default to user for unknown roles
 		return openai.UserMessage(m.Content)

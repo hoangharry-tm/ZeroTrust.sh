@@ -12,15 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//go:build integration
+
 package diffindex
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/hoangharry-tm/zerotrust/pkg/sqlite"
+	"github.com/hoangharry-tm/zerotrust/pkg/postgres"
 )
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
@@ -28,9 +31,13 @@ import (
 func tempIndexer(t *testing.T) (*Indexer, string) {
 	t.Helper()
 	dir := t.TempDir()
-	db, err := sqlite.Open(filepath.Join(dir, "test.db"))
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		t.Skip("DATABASE_URL not set — skipping Postgres-backed integration test")
+	}
+	db, err := postgres.Open(context.Background(), dsn)
 	if err != nil {
-		t.Fatalf("sqlite.Open: %v", err)
+		t.Fatalf("postgres.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 	return New(db, nil), dir

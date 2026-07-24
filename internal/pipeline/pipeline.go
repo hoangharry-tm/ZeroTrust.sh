@@ -19,9 +19,9 @@ package pipeline
 // Pipeline execution order:
 //
 //  1. INGEST  — MIV + DI run in parallel (ingestion.Ingester).
-//  2. PATH A  — OpenGrep + ast-grep + Joern CPG run in parallel goroutines.
+//  2. DETERMINISTIC — OpenGrep + ast-grep + Joern CPG run in parallel goroutines.
 //     LLM Verifier filters false positives from pattern findings.
-//  3. PATH B  — Sequential tier pipeline:
+//  3. REASONING — Sequential tier pipeline:
 //     Heuristic Targeting → CVE Enrichment → CodeT5+ Classifier →
 //     Call Chain Assembler → Semantic Summarizer → Token Budget → LLM Scan.
 //     Each tier feeds directly into the next.
@@ -30,13 +30,12 @@ package pipeline
 //  5. PATCH   — Patch suggestions generated and validated for BLOCK/HIGH findings.
 //  6. REPORT  — Self-contained HTML report written to OutputPath.
 //
-// Both paths run concurrently (steps 2 and 3 overlap). Path B starts as soon as
-// the CPG build in Path A reports ready; it does not wait for LLM Verifier output.
+// Both paths run concurrently (steps 2 and 3 overlap). Reasoning starts as soon as
+// the CPG build in Deterministic reports ready; it does not wait for LLM Verifier output.
 
 import (
 	"context"
 	"crypto/rand"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -59,7 +58,6 @@ import (
 	"github.com/hoangharry-tm/zerotrust/internal/ingestion/miv"
 	"github.com/hoangharry-tm/zerotrust/internal/orchestrator"
 	"github.com/hoangharry-tm/zerotrust/internal/output"
-	"github.com/hoangharry-tm/zerotrust/internal/report"
 	"github.com/hoangharry-tm/zerotrust/internal/scanner"
 	"github.com/hoangharry-tm/zerotrust/internal/scanner/opengrep"
 	analysis "github.com/hoangharry-tm/zerotrust/internal/semantic/analysis"
@@ -68,7 +66,7 @@ import (
 	"github.com/hoangharry-tm/zerotrust/internal/semantic/enrichment"
 	"github.com/hoangharry-tm/zerotrust/internal/semantic/targeting"
 	"github.com/hoangharry-tm/zerotrust/internal/semantic/triage"
-	"github.com/hoangharry-tm/zerotrust/pkg/sqlite"
+	"github.com/hoangharry-tm/zerotrust/pkg/postgres"
 )
 
 // Pipeline holds all constructed stage instances for a single scan.
@@ -78,19 +76,20 @@ type Pipeline struct {
 	logger  *slog.Logger
 	logFile *os.File
 
-	runID    string
-	db       *sqlite.DB
-	ingester *ingestion.Ingester
+	runID     string
+	projectID string
+	db        *postgres.DB
+	ingester  *ingestion.Ingester
 
 	provider llm.Provider
 
-	// Path A — legacy incremental flow
+	// Deterministic — legacy incremental flow
 	opengrep *opengrep.Runner
 	joern    *cpg_engine.Client
 	// orch runs the dynamic tool dispatcher concurrently with Joern CPG init.
 	orch *orchestrator.Engine
 
-	// Path B
+	// Reasoning
 	target        *targeting.Targeter
 	enrich        *enrichment.Enricher
 	checker       *contracts.Checker
@@ -98,12 +97,11 @@ type Pipeline struct {
 	scan          *analysis.Scanner
 	cryptoChecker *crypto.Checker
 
-	// degradation alerts surfaced in the HTML report header
+	// degradation alerts surfaced during the scan (logged, no report to render into)
 	alerts []string
 
 	// shared
 	dd     *dedup.Layer
-	rep    *report.Generator
 	events chan<- output.Event
 }
 
@@ -191,10 +189,10 @@ func New(ctx context.Context, cfg Config) (*Pipeline, error) {
 	}
 	cfg.Target = absTarget
 
-	// Structured logger — JSON lines written to build/zerotrust.log alongside the report.
+	// Structured logger — JSON lines written to build/zerotrust.log.
 	// Also set as slog.Default so all slog.* calls in every package flow to the log file
 	// (and optionally to stderr when --verbose is active).
-	logDir := filepath.Dir(cfg.ReportPath)
+	logDir := "build"
 	if err := os.MkdirAll(logDir, 0o750); err != nil {
 		return nil, fmt.Errorf("mkdir %s: %w", logDir, err)
 	}
@@ -214,13 +212,8 @@ func New(ctx context.Context, cfg Config) (*Pipeline, error) {
 	logger := slog.New(defaultHandler)
 	slog.SetDefault(logger)
 
-	// Ingestion layer — SQLite state cache + DiffIndex + MIV.
-	dbPath, err := stateDBPath(cfg.Target)
-	if err != nil {
-		_ = logFile.Close()
-		return nil, err
-	}
-	db, err := sqlite.Open(dbPath)
+	// Ingestion layer — Postgres state cache + DiffIndex + MIV.
+	db, err := postgres.Open(ctx, cfg.DatabaseURL)
 	if err != nil {
 		_ = logFile.Close()
 		return nil, fmt.Errorf("open state db: %w", err)
@@ -242,7 +235,7 @@ func New(ctx context.Context, cfg Config) (*Pipeline, error) {
 		return nil, fmt.Errorf("llm: %w", err)
 	}
 
-	// Path A
+	// Deterministic
 	og := opengrep.NewMulti(scanner.BinarySpec{Name: "opengrep"}, logger).
 		WithExclude(".github", "test", "tests", "it")
 	orch := orchestrator.New(
@@ -256,22 +249,30 @@ func New(ctx context.Context, cfg Config) (*Pipeline, error) {
 	if secs := ztCfg.JoernQueryTimeoutSeconds; secs > 0 {
 		joernOpts = append(joernOpts, cpg_engine.WithQueryTimeout(time.Duration(secs)*time.Second))
 	}
+	if mb := ztCfg.JoernMaxHeapMB; mb > 0 {
+		joernOpts = append(joernOpts, cpg_engine.WithMaxHeapMB(mb))
+	}
 	jc, err := cpg_engine.New(joernOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("configure joern: %w", err)
 	}
 
-	// Path B — graph shared from Joern after CPG build
+	// Reasoning — graph shared from Joern after CPG build
 	graph := jc.GraphWithContext(ctx)
 	tgt := targeting.New(graph, cfg.Target)
 	enr := enrichment.New(graph, "trivy", false) // CVE enrichment always attempts network lookup
-	cc := contracts.New()
+	// NewWithEscalation: Contracts asks one scoped yes/no question (via the
+	// same LLM provider as Triage/Analysis) only for the narrow case where a
+	// confirmed taint path isn't sanitized by CPG structure or keyword —
+	// never a general "does this look vulnerable" prompt. See the Checker
+	// doc comment in internal/semantic/contracts for the asymmetric-trust
+	// rule this follows.
+	cc := contracts.NewWithEscalation(llmProvider).WithRoot(cfg.Target).WithGraph(graph)
 	cc2 := crypto.New()
 	tr := triage.New(llmProvider, cfg.TriageThreshold)
-	sc := analysis.New(llmProvider).WithRoot(cfg.Target)
+	sc := analysis.New(llmProvider).WithRoot(cfg.Target).WithGraph(graph)
 
 	dd := dedup.New(cfg.Target)
-	rg := report.New(cfg.ReportPath)
 
 	return &Pipeline{
 		cfg:           cfg,
@@ -291,13 +292,13 @@ func New(ctx context.Context, cfg Config) (*Pipeline, error) {
 		triager:       tr,
 		scan:          sc,
 		dd:            dd,
-		rep:           rg,
 	}, nil
 }
 
-// StartScanProcess executes the full pipeline to completion and writes the
-// HTML report. events receives stage notifications consumed by the active
-// CLI renderer. The caller is responsible for closing events after it returns.
+// StartScanProcess executes the full pipeline to completion, persisting
+// scored findings to the database. events receives stage notifications
+// consumed by the active CLI renderer (may be nil). The caller is
+// responsible for closing events after it returns.
 func (p *Pipeline) StartScanProcess(
 	ctx context.Context,
 	events chan<- output.Event,
@@ -310,6 +311,20 @@ func (p *Pipeline) StartScanProcess(
 
 	p.logger.Info("scan started",
 		"component", "scan", "target", p.cfg.Target, "mode", p.cfg.ScanMode)
+
+	// Prewarm Targeting's import-boundary classification (Phase 1 of
+	// Targeter.Run) as early as possible — it's pure Go/AST over the source
+	// tree with no CPG or ingestion dependency, so there's no reason to make
+	// it wait behind Joern startup, CPG build, and ingestion the way it
+	// would if Reasoning only computed it when Targeter.Run is eventually
+	// called. Fire-and-forget: Targeter.Run falls back to computing it
+	// itself if this hasn't finished (or failed) by the time Reasoning
+	// actually needs it, so a failure here is non-fatal.
+	go func() {
+		if err := p.target.PrewarmImportBoundaries(ctx); err != nil {
+			p.logger.Debug("prewarm import boundaries failed — Targeting will compute it inline", "err", err)
+		}
+	}()
 
 	// Step 0: Joern pre-start
 	p.startJoern(ctx)
@@ -325,11 +340,11 @@ func (p *Pipeline) StartScanProcess(
 	}
 	scopeFiles := p.resolveScope(ctx, ingResult)
 
-	// Steps 2+3: Path A ∥ Path B ∥ Orchestrator (parallel detection)
+	// Steps 2+3: Deterministic ∥ Reasoning ∥ Orchestrator (parallel detection)
 	findCh := make(finding.Channel, 256)
 	g, gctx := errgroup.WithContext(ctx)
-	g.Go(func() error { return p.runPathA(gctx, ingResult, scopeFiles, findCh) })
-	g.Go(func() error { return p.runPathB(gctx, ingResult, findCh) })
+	g.Go(func() error { return p.runDeterministic(gctx, ingResult, scopeFiles, findCh) })
+	g.Go(func() error { return p.runReasoning(gctx, ingResult, findCh) })
 	g.Go(func() error {
 		fs, err := p.orch.Run(gctx, p.cfg.Target)
 		if err != nil {
@@ -361,35 +376,46 @@ func (p *Pipeline) StartScanProcess(
 		return nil, err
 	}
 
-	// MVP: persistence bypassed — uncomment after demo to re-enable SQLite writes.
-	// p.persistFindings(ctx, ingResult, scored)
+	p.persistFindings(ctx, ingResult, scored)
 
-	// Step 6: Report
-	p.GenerateReport(start, scored)
-
-	// MVP: scan state commit bypassed — uncomment after demo.
-	// p.finalize(ctx, ingResult, start, changedCount, scored)
-	p.emitDone(start, scored)
+	changedCount := 0
+	if ingResult != nil && ingResult.ChangeSet != nil {
+		changedCount = len(ingResult.ChangeSet.Changed)
+	}
+	p.finalize(ctx, ingResult, start, changedCount, scored)
 	return scored, nil
 }
+
+// Provider returns the pipeline's configured LLM provider, for post-scan
+// stages driven from main.go (patch generation, PoE verification) that need
+// the same provider without reconstructing it.
+func (p *Pipeline) Provider() llm.Provider { return p.provider }
+
+// Graph returns the shared CPG graph, for post-scan stages (PoE verification)
+// that need call-graph queries after StartScanProcess has returned.
+func (p *Pipeline) Graph() cpg_engine.Graph { return p.joern.GraphWithContext(context.Background()) }
 
 // startJoern spawns the Joern subprocess before ingestion so the JVM is warm.
 // Non-fatal: failures disable taint analysis but pattern matching continues.
 func (p *Pipeline) startJoern(ctx context.Context) {
 	if p.cfg.JoernBin == "" {
+		// JoernBin empty means "connect to an externally managed server at
+		// JoernURL instead" — but that's a real, deliberate config choice,
+		// not the common case. Most callers (including the CLI's default,
+		// which never sets --joern-bin) land here by omission, and without
+		// this warning the entire CPG/taint-analysis path (Deterministic's
+		// Joern half, all of Reasoning, PoE route resolution) silently
+		// no-ops for the whole scan — the operator sees pattern-only
+		// findings with zero indication CPG analysis never ran.
+		p.logger.Warn("JoernBin not set — assuming an externally managed Joern server is already running at JoernURL; CPG/taint analysis will silently produce nothing if it isn't",
+			"joern_url", p.cfg.JoernURL)
 		return
 	}
 	if err := p.joern.Start(ctx); err != nil {
 		if errors.Is(err, cpg_engine.ErrPortInUse) {
 			p.resolvePortConflict(ctx)
 		} else {
-			output.Emit(p.events, output.Event{
-				Kind: output.EventLog,
-				Log: fmt.Sprintf(
-					"warn: joern start: %v — taint analysis disabled for this scan",
-					err,
-				),
-			})
+			p.logger.Warn("joern start failed — taint analysis disabled for this scan", "err", err)
 		}
 	}
 }
@@ -419,8 +445,8 @@ func (p *Pipeline) runIngestion(ctx context.Context) (*ingestion.Result, error) 
 		changedFiles = []string{p.cfg.Target}
 	}
 	if buildErr := p.buildOrLoadCPG(ctx, ingResult.ProjectID, cpgPath, changedFiles); buildErr != nil {
-		p.logger.Warn("CPG build during ingestion failed — Path B will be degraded", "err", buildErr)
-		// Non-fatal: Path A still runs, Path B runs with limited taint analysis
+		p.logger.Warn("CPG build during ingestion failed — Reasoning will be degraded", "err", buildErr)
+		// Non-fatal: Deterministic still runs, Reasoning runs with limited taint analysis
 	}
 
 	// Pre-flag dangerous sinks so TaintPaths has seeds to work with.
@@ -454,12 +480,20 @@ func (p *Pipeline) registerRun(ctx context.Context, ingResult *ingestion.Result)
 	if ingResult != nil && ingResult.ProjectID != "" {
 		projectID = ingResult.ProjectID
 	}
-	if _, err := p.db.UpsertProject(ctx, sqlite.ProjectRow{
+	p.projectID = projectID
+	if _, err := p.db.UpsertProject(ctx, postgres.ProjectRow{
 		ProjectID:     projectID,
 		RootPath:      p.cfg.Target,
 		LastScannedAt: time.Now().Unix(),
 	}); err != nil {
 		p.logger.Warn("registerRun: failed to upsert project", "err", err)
+	}
+	if err := p.db.CreateScanRun(ctx, postgres.ScanRunRow{
+		RunID:     p.runID,
+		ProjectID: projectID,
+		ScanMode:  p.cfg.ScanMode,
+	}); err != nil {
+		p.logger.Warn("registerRun: failed to create scan run", "err", err)
 	}
 	p.logger.Debug("registered run", "project_id", projectID, "run_id", p.runID)
 }
@@ -496,97 +530,110 @@ func (p *Pipeline) runDedup(ctx context.Context, allFindings []finding.Finding) 
 	return scored, nil
 }
 
-// MVP: persistFindings bypassed (no SQLite).
-// Implementation preserved as comment — uncomment to re-enable after demo.
-//
-// func (p *Pipeline) persistFindings(ctx context.Context, ingResult *ingestion.Result, scored []finding.Finding) {
-//     if p.db == nil || p.runID == "" { return }
-//     now := time.Now().Unix()
-//     for i := range scored {
-//         f := &scored[i]
-//         row := sqlite.FindingRow{
-//             FindingID: f.ID, ProjectID: ingResult.ProjectID, RunID: p.runID,
-//             FilePath: f.Path, LineStart: f.LineRange.Start, LineEnd: f.LineRange.End,
-//             CWE: f.CWE, Severity: string(f.SeverityLabel), Confidence: f.Confidence,
-//             SourcePath: string(f.SourcePath), RuleID: f.RuleID, MatchedCode: f.MatchedCode,
-//             Justification: f.Justification, SuppressReason: string(f.SuppressReason),
-//             FirstSeenAt: now, LastSeenAt: now,
-//         }
-//         if err := p.db.UpsertFinding(ctx, row); err != nil {
-//             p.logger.Warn("failed to persist finding", "finding_id", f.ID, "err", err)
-//         }
-//     }
-// }
-
-// GenerateReport creates the HTML report file from scored findings.
-// If JSONReportPath is set, a JSON report is also written.
-func (p *Pipeline) GenerateReport(start time.Time, scored []finding.Finding) {
-	if err := os.MkdirAll(filepath.Dir(p.cfg.ReportPath), 0o750); err != nil {
-		p.logger.Error("failed to create report directory", "err", err)
+// persistFindings upserts every scored finding into the findings table under
+// the current run. Best-effort: a write failure is logged, not fatal — the
+// scan already succeeded, and the DB is a durability layer, not the pipeline
+// itself.
+func (p *Pipeline) persistFindings(ctx context.Context, ingResult *ingestion.Result, scored []finding.Finding) {
+	if p.db == nil || p.runID == "" || ingResult == nil {
 		return
 	}
-	f, err := os.Create(p.cfg.ReportPath)
-	if err != nil {
-		p.logger.Error("failed to create report file", "err", err)
-		return
-	}
-	defer f.Close()
+	now := time.Now().Unix()
+	for i := range scored {
+		f := &scored[i]
+		row := postgres.FindingRow{
+			FindingID: f.ID, ProjectID: ingResult.ProjectID, RunID: p.runID,
+			FilePath: f.Path, LineStart: f.LineRange.Start, LineEnd: f.LineRange.End,
+			CWE: f.CWE, Severity: f.SeverityLabel.String(), Confidence: f.Confidence,
+			SourcePath: string(f.SourcePath), RuleID: f.RuleID, MatchedCode: f.MatchedCode,
+			Justification: f.Justification, SuppressReason: string(f.SuppressReason),
+			Patch: f.Patch, PatchStatus: f.PatchStatus,
+			FirstSeenAt: now, LastSeenAt: now,
+		}
+		if err := p.db.UpsertFinding(ctx, row); err != nil {
+			p.logger.Warn("failed to persist finding", "finding_id", f.ID, "err", err)
+			continue // ssvc_scores/poe_results FK-reference findings; skip if the parent row failed
+		}
 
-	rootDir, _ := filepath.Abs(p.cfg.Target)
-	info := report.ScanInfo{
-		ProjectName:  filepath.Base(rootDir),
-		ScannedAt:    start.UTC().Format("2006-01-02 15:04 UTC"),
-		ScanMode:     p.cfg.ScanMode,
-		ScanDuration: time.Since(start).Round(time.Millisecond).String(),
-		RootDir:      rootDir,
-		Alerts:       p.alerts,
-	}
-	if err := p.rep.Render(f, info, scored); err != nil {
-		p.logger.Error("failed to render report", "err", err)
-	}
+		if f.SSVC != (finding.SSVCDimensions{}) {
+			if err := p.db.UpsertSSVCScore(ctx, postgres.SSVCScoreRow{
+				FindingID: f.ID, Exploitation: f.SSVC.Exploitation,
+				Automatable: f.SSVC.Automatable, TechnicalImpact: f.SSVC.TechnicalImpact,
+			}); err != nil {
+				p.logger.Warn("failed to persist SSVC score", "finding_id", f.ID, "err", err)
+			}
+		}
 
-	if p.cfg.JSONReportPath != "" {
-		p.writeJSONReport(scored)
+		if f.PoEResult != nil {
+			if err := p.db.UpsertPoEResult(ctx, postgres.PoEResultRow{
+				FindingID: f.ID, Status: string(f.PoEResult.Status),
+				Confidence: f.PoEResult.Confidence, BusinessImpactTier: f.PoEResult.BusinessImpactTier,
+				ExecSummary: f.PoEResult.ExecSummary,
+			}); err != nil {
+				p.logger.Warn("failed to persist PoE result", "finding_id", f.ID, "err", err)
+			}
+		}
 	}
 }
 
-func (p *Pipeline) writeJSONReport(scored []finding.Finding) {
-	if err := os.MkdirAll(filepath.Dir(p.cfg.JSONReportPath), 0o750); err != nil {
-		p.logger.Warn("report: failed to create JSON report directory", "err", err)
+// PersistPoEResults writes PoE verdicts back to Postgres for findings that
+// were verified. This is deliberately a separate call from persistFindings,
+// not folded into StartScanProcess: PoE verification is a post-scan,
+// opt-in step driven from main.go via Provider()/Graph() (it needs the
+// caller-supplied --poe-artifact path, which the pipeline itself has no
+// reason to know about). But persistFindings already upserted every
+// finding's row — including a nil poe_results row — by the time PoE runs,
+// so without this second write, poe_results and the boosted
+// confidence/severity on a PoESuccess never reach the database at all,
+// silently defeating the point of persisting them in the first place. Call
+// this after Verifier.Run, before process exit.
+func (p *Pipeline) PersistPoEResults(ctx context.Context, scored []finding.Finding) {
+	if p.db == nil || p.runID == "" {
 		return
 	}
-	jf, jerr := os.Create(p.cfg.JSONReportPath)
-	if jerr != nil {
-		p.logger.Warn("report: failed to create JSON report file", "err", jerr)
-		return
+	for i := range scored {
+		f := &scored[i]
+		if f.PoEResult == nil {
+			continue
+		}
+		if err := p.db.UpsertFinding(ctx, postgres.FindingRow{
+			FindingID: f.ID, ProjectID: p.projectID, RunID: p.runID,
+			FilePath: f.Path, LineStart: f.LineRange.Start, LineEnd: f.LineRange.End,
+			CWE: f.CWE, Severity: f.SeverityLabel.String(), Confidence: f.Confidence,
+			SourcePath: string(f.SourcePath), RuleID: f.RuleID, MatchedCode: f.MatchedCode,
+			Justification: f.Justification, SuppressReason: string(f.SuppressReason),
+			Patch: f.Patch, PatchStatus: f.PatchStatus,
+		}); err != nil {
+			p.logger.Warn("failed to persist PoE-updated finding", "finding_id", f.ID, "err", err)
+			continue
+		}
+		if err := p.db.UpsertPoEResult(ctx, postgres.PoEResultRow{
+			FindingID: f.ID, Status: string(f.PoEResult.Status),
+			Confidence: f.PoEResult.Confidence, BusinessImpactTier: f.PoEResult.BusinessImpactTier,
+			ExecSummary: f.PoEResult.ExecSummary,
+		}); err != nil {
+			p.logger.Warn("failed to persist PoE result", "finding_id", f.ID, "err", err)
+		}
 	}
-	defer jf.Close()
-
-	enc := json.NewEncoder(jf)
-	enc.SetIndent("", "  ")
-	if jerr = enc.Encode(scored); jerr != nil {
-		p.logger.Warn("report: failed to write JSON report", "err", jerr)
-		return
-	}
-	p.logger.Info("report: JSON report written", "path", p.cfg.JSONReportPath)
 }
 
-// MVP: finalize (SQLite commit + scan run record) bypassed.
-// Full implementation preserved as comment — uncomment to re-enable after demo:
-//
-// func (p *Pipeline) finalize(ctx context.Context, ingResult *ingestion.Result, start time.Time, changedCount int, scored []finding.Finding) {
-//     if err := p.ingester.CommitScan(ctx, ingResult.ProjectID, ingResult.ChangeSet); err != nil {
-//         output.Emit(p.events, output.Event{Kind: output.EventLog, Log: fmt.Sprintf("warn: commit scan state: %v", err)})
-//     }
-//     elapsed := time.Since(start)
-//     p.logger.Info("scan complete", "component", "scan", "findings", len(scored), "elapsed", elapsed, "report", p.cfg.ReportPath)
-//     if p.db != nil && p.runID != "" {
-//         if err := p.db.FinalizeScanRun(ctx, p.runID, time.Now().Unix(), changedCount, len(scored)); err != nil {
-//             p.logger.Warn("failed to finalize scan_run", "component", "scan", "err", err)
-//         }
-//     }
-//     p.emitDone(start, scored)
-// }
+// finalize commits the ingestion changeset, finalizes the scan_run row, and
+// emits the completion event.
+func (p *Pipeline) finalize(ctx context.Context, ingResult *ingestion.Result, start time.Time, changedCount int, scored []finding.Finding) {
+	if ingResult != nil {
+		if err := p.ingester.CommitScan(ctx, ingResult.ProjectID, ingResult.ChangeSet); err != nil {
+			p.logger.Warn("commit scan state failed", "err", err)
+		}
+	}
+	elapsed := time.Since(start)
+	p.logger.Info("scan complete", "component", "scan", "findings", len(scored), "elapsed", elapsed)
+	if p.db != nil && p.runID != "" {
+		if err := p.db.FinalizeScanRun(ctx, p.runID, time.Now().Unix(), changedCount, len(scored)); err != nil {
+			p.logger.Warn("failed to finalize scan_run", "component", "scan", "err", err)
+		}
+	}
+	p.emitDone(start, scored)
+}
 
 // emitDone logs scan completion and emits EventDone.
 func (p *Pipeline) emitDone(start time.Time, scored []finding.Finding) {
@@ -596,20 +643,18 @@ func (p *Pipeline) emitDone(start time.Time, scored []finding.Finding) {
 	}
 	elapsed := time.Since(start)
 	p.logger.Info("scan complete",
-		"component", "scan", "findings", len(scored),
-		"elapsed", elapsed, "report", p.cfg.ReportPath)
+		"component", "scan", "findings", len(scored), "elapsed", elapsed)
 	output.Emit(p.events, output.Event{
 		Kind: output.EventDone,
 		Done: &output.ScanSummary{
 			Elapsed:       elapsed,
 			TotalFindings: len(scored),
 			BySeverity:    bySeverity,
-			ReportPath:    p.cfg.ReportPath,
 		},
 	})
 }
 
-// runPathA executes all Path A detectors concurrently, then runs the LLM Verifier
+// runDeterministic executes all Deterministic detectors concurrently, then runs the LLM Verifier
 // on the collected findings before writing to ch.
 //
 // Four goroutines collect into a buffer in parallel:
@@ -634,8 +679,8 @@ func isTestPath(path string) bool {
 		strings.Contains(path, "/tests/java/")
 }
 
-func (p *Pipeline) runPathA(ctx context.Context, res *ingestion.Result, scopeFiles []string, ch chan<- finding.Finding) error {
-	output.Emit(p.events, output.Event{Kind: output.EventStageStart, Stage: "path a"})
+func (p *Pipeline) runDeterministic(ctx context.Context, res *ingestion.Result, scopeFiles []string, ch chan<- finding.Finding) error {
+	output.Emit(p.events, output.Event{Kind: output.EventStageStart, Stage: "deterministic"})
 
 	// DiffIndex returns paths relative to the project root; make them absolute
 	// so subprocess scanners (opengrep, ast-grep) can find them from any CWD.
@@ -668,10 +713,7 @@ func (p *Pipeline) runPathA(ctx context.Context, res *ingestion.Result, scopeFil
 		graph := p.joern.GraphWithContext(ctx)
 		findings, err := runJoernTaint(gctx, graph, scopeFiles)
 		if err != nil {
-			output.Emit(p.events, output.Event{
-				Kind: output.EventLog,
-				Log:  fmt.Sprintf("warn: joern taint: %v", err),
-			})
+			p.logger.Warn("joern taint analysis failed", "err", err)
 			return nil
 		}
 		collect(findings)
@@ -697,10 +739,7 @@ func (p *Pipeline) runPathA(ctx context.Context, res *ingestion.Result, scopeFil
 			findings, err = p.opengrep.Scan(gctx, p.cfg.Target)
 		}
 		if err != nil {
-			output.Emit(p.events, output.Event{
-				Kind: output.EventLog,
-				Log:  fmt.Sprintf("warn: opengrep: %v", err),
-			})
+			p.logger.Warn("opengrep scan failed", "err", err)
 			return nil
 		}
 		collect(findings)
@@ -708,7 +747,7 @@ func (p *Pipeline) runPathA(ctx context.Context, res *ingestion.Result, scopeFil
 	})
 
 	if err := g.Wait(); err != nil {
-		return fmt.Errorf("path a: %w", err)
+		return fmt.Errorf("deterministic: %w", err)
 	}
 
 	for _, f := range rawBuf {
@@ -717,16 +756,16 @@ func (p *Pipeline) runPathA(ctx context.Context, res *ingestion.Result, scopeFil
 
 	output.Emit(p.events, output.Event{
 		Kind:  output.EventStageEnd,
-		Stage: "path a",
+		Stage: "deterministic",
 		Summary: &output.StageSummary{
-			Stage:  "path a",
+			Stage:  "deterministic",
 			Detail: fmt.Sprintf("%d findings", len(rawBuf)),
 		},
 	})
 	return nil
 }
 
-// runPathB executes the Path B semantic detection tier pipeline and writes
+// runReasoning executes the Reasoning semantic detection tier pipeline and writes
 // findings to ch. Returns nil when Joern CPG is unavailable (0 surfaces selected).
 func (p *Pipeline) Close() error {
 	p.logger.Debug("closing pipeline", "component", "scan")
@@ -735,28 +774,13 @@ func (p *Pipeline) Close() error {
 		defer cancel()
 		_ = p.joern.Stop(stopCtx) //nolint:errcheck // best-effort cleanup
 	}
-	// MVP: p.db.Close() bypassed — no SQLite opened.
-	// Uncomment when re-enabling ingestion layer: if p.db != nil { _ = p.db.Close() }
+	if p.db != nil {
+		_ = p.db.Close() //nolint:errcheck // best-effort cleanup
+	}
 	if p.logFile != nil {
 		_ = p.logFile.Close() //nolint:errcheck
 	}
 	return nil
-}
-
-// stateDBPath returns the path to the SQLite state file inside the target
-// project directory at <target>/.zerotrust/scans.db, creating the directory
-// and a .gitignore guard if needed.
-func stateDBPath(target string) (string, error) {
-	dir := filepath.Join(target, ".zerotrust")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", fmt.Errorf("mkdir .zerotrust: %w", err)
-	}
-	// Ensure scans.db is never accidentally committed.
-	giPath := filepath.Join(dir, ".gitignore")
-	if _, err := os.Stat(giPath); os.IsNotExist(err) {
-		_ = os.WriteFile(giPath, []byte("scans.db\nscan_state.db\n"), 0o600)
-	}
-	return filepath.Join(dir, "scans.db"), nil
 }
 
 // ── CPG build helpers ─────────────────────────────────────────────────────────

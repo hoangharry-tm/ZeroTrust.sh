@@ -25,6 +25,7 @@ import (
 
 	"github.com/hoangharry-tm/zerotrust/internal/config"
 	cpg "github.com/hoangharry-tm/zerotrust/internal/cpg_engine"
+	"github.com/hoangharry-tm/zerotrust/pkg/util"
 )
 
 // ── mock graph ───────────────────────────────────────────────────────────────
@@ -404,6 +405,41 @@ func TestCallGraphDepth_Unreachable(t *testing.T) {
 	assert.Equal(t, -1, cg.CallGraphDepth("orphan"))
 }
 
+// ── T6b: isTestFile filter ───────────────────────────────────────────────────
+
+// TestIsTestFile_ExcludesConventionalTestPaths is a regression test for a
+// real gap found live: pipeline's filterTestFiles only ever applied to the
+// incremental (explicit changed-file-list) scan path. A whole-directory
+// first scan builds its CPG via Joern's own importCode(inputPath=<dir>),
+// which recursively includes every file regardless of any Go-side file
+// list — so test files reached targeting and burned real triage/B5 LLM
+// calls on non-production code, on every scan this session (all of which
+// used this exact whole-directory pattern). Filtering at surface-seed
+// selection over CPG method nodes — this function's call site in Run —
+// applies no matter how the CPG was built.
+func TestIsTestFile_ExcludesConventionalTestPaths(t *testing.T) {
+	cases := []struct {
+		file string
+		want bool
+	}{
+		{"pkg/api/plugins.go", false},
+		{"pkg/api/plugins_test.go", true},
+		{"pkg/api/pluginproxy/pluginproxy_test.go", true},
+		{"src/main/java/FooService.java", false},
+		{"src/test/java/FooServiceTest.java", true},
+		{"utils.py", false},
+		{"test_utils.py", true},
+		{"components/Button.tsx", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.file, func(t *testing.T) {
+			if got := util.IsTestFile(tc.file); got != tc.want {
+				t.Errorf("util.IsTestFile(%q) = %v, want %v", tc.file, got, tc.want)
+			}
+		})
+	}
+}
+
 // ── T7: isAuthMethod filter ─────────────────────────────────────────────────
 
 func TestIsAuthMethod_AuthNamePasses(t *testing.T) {
@@ -539,7 +575,7 @@ func TestDetectSecondOrder_StorageInjection(t *testing.T) {
 		"sink1":    true,
 	}
 
-	surfaces := DetectSecondOrder(cg, methods, fileClass, sourceReachable, backwardReachable)
+	surfaces := DetectSecondOrder(cg, methods, fileClass, sourceReachable, backwardReachable, "")
 
 	// storage1 should be detected as second-order (reads from storage → sink).
 	found := false
@@ -572,6 +608,6 @@ func TestDetectSecondOrder_NoStorageBoundary(t *testing.T) {
 	sourceReachable := map[string]bool{"a": true, "b": true}
 	backwardReachable := map[string]bool{"a": true, "b": true}
 
-	surfaces := DetectSecondOrder(cg, methods, fileClass, sourceReachable, backwardReachable)
+	surfaces := DetectSecondOrder(cg, methods, fileClass, sourceReachable, backwardReachable, "")
 	assert.Empty(t, surfaces, "no storage boundary should yield no second-order surfaces")
 }

@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -45,8 +46,8 @@ const (
 //	LOW      0.30 – 0.59
 //	SUPPRESSED < 0.30 (or explicit suppression)
 //
-// A cross-path boost of +15 pp (capped at 1.0) is applied when both Path A
-// and Path B confirm the same finding.
+// A cross-path boost of +15 pp (capped at 1.0) is applied when both Deterministic
+// and Reasoning confirm the same finding.
 type SeverityLabel int
 
 // SeverityLabel constants ordered from highest to lowest severity.
@@ -127,8 +128,8 @@ type SourcePath string
 
 // SourcePath constants identifying which detection path(s) produced a finding.
 const (
-	SourcePattern  SourcePath = "PATTERN"  // Path A only
-	SourceSemantic SourcePath = "SEMANTIC" // Path B only
+	SourcePattern  SourcePath = "PATTERN"  // Deterministic only
+	SourceSemantic SourcePath = "SEMANTIC" // Reasoning only
 	SourceBoth     SourcePath = "BOTH"     // confirmed by both paths
 )
 
@@ -226,7 +227,7 @@ type Finding struct {
 	ID string `json:"ID"`
 	// SurfaceID is the CPG node ID of the surface that produced this finding.
 	// Used to correlate B5 LLM findings back to their B3 violation origin.
-	// Empty for Path A findings.
+	// Empty for Deterministic findings.
 	SurfaceID string `json:"SurfaceID"`
 	// Path is the file path relative to the project root.
 	Path string `json:"Path"`
@@ -246,20 +247,20 @@ type Finding struct {
 	Justification string `json:"Justification"`
 	// DCCEvidence is the raw DCC structural contract match string (pipeline-internal).
 	// Stored separately from Justification so the report can display them independently.
-	// Empty for Path A findings.
+	// Empty for Deterministic findings.
 	DCCEvidence string `json:"DCCEvidence"`
 	// Summary is the short human-readable one-sentence description of the finding
-	// for use as the report card title. For Path B findings this is the B5 LLM
-	// explanation (≤25 words). For Path A findings this is the rule description.
+	// for use as the report card title. For Reasoning findings this is the B5 LLM
+	// explanation (≤25 words). For Deterministic findings this is the rule description.
 	// Falls back to the first sentence of Justification if empty.
 	Summary string `json:"Summary"`
 	// MatchedCode is the source snippet at the finding location.
 	MatchedCode string `json:"MatchedCode"`
-	// RuleID is the OpenGrep / ast-grep rule identifier that matched (Path A only).
-	// Empty for Path B findings.
+	// RuleID is the OpenGrep / ast-grep rule identifier that matched (Deterministic only).
+	// Empty for Reasoning findings.
 	RuleID string `json:"RuleID"`
 	// CVE is the primary CVE identifier (e.g. "CVE-2021-44228"); empty when no CVE match.
-	// Populated for Path B findings that passed through the enrichment stage.
+	// Populated for Reasoning findings that passed through the enrichment stage.
 	CVE string `json:"CVE"`
 	// CVSS is the CVSS v3 base score (0.0–10.0) for the primary CVE; 0.0 when no CVE match.
 	CVSS float64 `json:"CVSS"`
@@ -384,22 +385,29 @@ func New(path string, lr LineRange, cwe, justification string, opts ...Option) F
 		Confidence:    confLow,
 		SeverityLabel: SeverityLow,
 	}
-	f.ID = ComputeID(cwe, path, "")
+	f.ID = ComputeID(cwe, path, lr.Start)
 	for _, o := range opts {
 		o(&f)
 	}
-	// Recompute ID after opts may have set MatchedCode.
-	f.ID = ComputeID(f.CWE, f.Path, f.MatchedCode)
 	return f
 }
 
 // ComputeID returns the canonical stable dedup hash for a finding.
-// All producers (opengrep, ast-grep, Path B) must use this function so that
+// All producers (opengrep, ast-grep, Reasoning) must use this function so that
 // Gate 1 dedup and cross-path confidence boosting recognise the same finding
 // regardless of which path produced it.
 //
-// Formula: hex(SHA-256(CWE + ":" + path + ":" + matchedCode))
-func ComputeID(cwe, path, matchedCode string) string {
-	sum := sha256.Sum256([]byte(cwe + ":" + path + ":" + matchedCode))
+// Formula: hex(SHA-256(CWE + ":" + path + ":" + line)). Keyed on line, not on
+// matched/extracted code text — a real cross-run bug found live: the
+// Reasoning path's code-snippet extraction (sink-context window, minified
+// text) isn't byte-identical across runs even for the exact same surface, so
+// hashing on that text let the SAME file:line accumulate multiple,
+// contradictory, permanently-coexisting rows (BLOCK, LOW, and HIGH verdicts
+// for litemall's StorageService.java:71, none ever superseding the others).
+// A CWE+file+line key is what a human actually means by "this finding" — a
+// re-scan of the same location now overwrites the same row (UPSERT on this
+// ID) instead of appending a sibling one.
+func ComputeID(cwe, path string, line int) string {
+	sum := sha256.Sum256([]byte(cwe + ":" + path + ":" + strconv.Itoa(line)))
 	return hex.EncodeToString(sum[:])
 }

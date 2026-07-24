@@ -36,17 +36,32 @@ func makeSurface(code string) enrichment.EnrichedSurface {
 	}
 }
 
-func TestTriagePrompt_HasCalibrationGuide(t *testing.T) {
+func TestTriagePrompt_HasCategoricalScaleNoLiteralNumbers(t *testing.T) {
+	// The prompt must NOT contain a literal numeric anchor scale — a real bug
+	// found in production: every one of 49 real triage calls in a litemall
+	// scan returned the literal string "0.25", the second example number in
+	// the old decimal calibration guide, verbatim, regardless of the actual
+	// code being scored. The model was copying a displayed digit, not
+	// reasoning. Category words (parsed to numbers only in Go, never shown to
+	// the model) plus a mandatory Reasoning line replaced it.
 	surface := makeSurface("func() { return 1; }")
 	prompt := buildTriagePrompt(surface)
 
-	for _, label := range []string{"0.00", "0.25", "0.50", "0.75", "1.00"} {
-		if !strings.Contains(prompt, label) {
-			t.Errorf("prompt should contain calibration point %q", label)
+	for _, category := range []string{"SAFE", "PROBABLY_SAFE", "UNCERTAIN", "PROBABLY_VULNERABLE", "EXPLOITABLE"} {
+		if !strings.Contains(prompt, category) {
+			t.Errorf("prompt should contain category %q", category)
 		}
 	}
-	if !strings.Contains(prompt, "decimal between 0.0 and 1.0") {
-		t.Errorf("prompt should instruct continuous decimal output")
+	if !strings.Contains(prompt, "Reasoning:") {
+		t.Errorf("prompt should require a Reasoning line before the Category line")
+	}
+	if !strings.Contains(prompt, "Category:") {
+		t.Errorf("prompt should require a Category line")
+	}
+	for _, anchor := range []string{"0.00", "0.25", "0.50", "0.75", "1.00"} {
+		if strings.Contains(prompt, anchor) {
+			t.Errorf("prompt must not contain the old literal numeric anchor %q — this is the exact anchoring bug being fixed", anchor)
+		}
 	}
 }
 
@@ -54,8 +69,41 @@ func TestTriagePrompt_TruncatesLongCode(t *testing.T) {
 	longCode := string(make([]byte, 5000))
 	surface := makeSurface(longCode)
 	prompt := buildTriagePrompt(surface)
-	if len(prompt) > 3000 {
+	// Ceiling = code budget (1500) + template's fixed scaffold overhead
+	// (worked examples, anti-fabrication guard) with headroom — the point
+	// of this test is that a 5000-byte input doesn't linearly bloat the
+	// prompt, not that the fixed scaffold text itself stays under an
+	// arbitrary cap.
+	if len(prompt) > 4000 {
 		t.Errorf("prompt should truncate code, got length %d", len(prompt))
+	}
+}
+
+func TestTriagePrompt_TruncationAnchorsOnSinkLine(t *testing.T) {
+	// Regression test for a real gap: truncation used to be a blind
+	// byte-offset head-cut, so a long function whose sink call sat past
+	// byte 1500 would never have that call shown to the model at all —
+	// it would score the surviving (irrelevant) head as SAFE/PROBABLY_SAFE
+	// with no way to ever see the thing it's supposed to be judging, and
+	// that drop is silent (no finding emitted). Build a function with 200
+	// filler lines before a uniquely-named sink call near the end, well
+	// past the 1500-byte budget from the head.
+	var sb strings.Builder
+	sb.WriteString("func handleRequest() {\n")
+	for i := 0; i < 200; i++ {
+		sb.WriteString("    doSomethingUnrelated()\n")
+	}
+	sb.WriteString("    UNIQUE_SINK_MARKER(userInput)\n")
+	sb.WriteString("}\n")
+
+	surface := makeSurface(sb.String())
+	surface.Line = 1
+	surface.SinkFile = surface.File
+	surface.SinkLine = 202 // the UNIQUE_SINK_MARKER line
+
+	prompt := buildTriagePrompt(surface)
+	if !strings.Contains(prompt, "UNIQUE_SINK_MARKER") {
+		t.Errorf("truncated prompt should still contain the sink line even though it's past the byte budget from the head, got:\n%s", prompt)
 	}
 }
 
@@ -213,26 +261,59 @@ func TestStubGatePassesThroughLongCodeWithoutBrace(t *testing.T) {
 	}
 }
 
-func TestParseConfidence_AnchoredLabels(t *testing.T) {
+func TestParseConfidence_CategoryLine(t *testing.T) {
+	// Primary path: the "Reasoning: ... / Category: X" format the prompt asks for.
+	tests := []struct {
+		input string
+		want  float64
+	}{
+		{"Reasoning: no sanitizer anywhere.\nCategory: EXPLOITABLE", 1.0},
+		{"Reasoning: sink reachable, nothing neutralizes it.\nCategory: PROBABLY_VULNERABLE", 0.75},
+		{"Reasoning: not enough evidence either way.\nCategory: UNCERTAIN", 0.5},
+		{"Reasoning: no sink is reachable here.\nCategory: PROBABLY_SAFE", 0.25},
+		{"Reasoning: guarded on every path.\nCategory: SAFE", 0.0},
+		{"reasoning: lowercase should still work\ncategory: exploitable", 1.0},
+		{"Category: PROBABLY_SAFE", 0.25}, // Reasoning line missing — still parses the Category
+	}
+	for _, tc := range tests {
+		got := parseConfidence(tc.input)
+		if got != tc.want {
+			t.Errorf("parseConfidence(%q) = %f, want %f", tc.input, got, tc.want)
+		}
+	}
+}
+
+func TestParseConfidence_BareCategoryWordFallback(t *testing.T) {
+	// No "Category:" line at all — a bare category word anywhere still parses.
+	tests := []struct {
+		input string
+		want  float64
+	}{
+		{"EXPLOITABLE", 1.0},
+		{"SAFE", 0.0},
+		{"probably safe", 0.25},   // space instead of underscore
+		{"PROBABLY VULNERABLE", 0.75},
+	}
+	for _, tc := range tests {
+		got := parseConfidence(tc.input)
+		if got != tc.want {
+			t.Errorf("parseConfidence(%q) = %f, want %f", tc.input, got, tc.want)
+		}
+	}
+}
+
+func TestParseConfidence_LegacyBareDecimalFallback(t *testing.T) {
+	// A model that ignores the category format entirely and emits a bare
+	// decimal is still parsed defensively (last-resort fallback), even
+	// though this path logs a warning in production.
 	tests := []struct {
 		input string
 		want  float64
 	}{
 		{"0.7", 0.7},
 		{"1.0", 1.0},
-		{"0.5", 0.5},
-		{"0.3", 0.3},
-		{"0.0", 0.0},
-		{"UNSAFE", 1.0},
-		{"SAFE", 0.0},
 		{" 0.7 ", 0.7},
-		{"certainly vulnerable: 1.0", 1.0},
-		// Continuous scale values (Problem 3)
-		{"0.75", 0.75},
-		{"0.25", 0.25},
-		{"0.50", 0.50},
-		{"0.00", 0.00},
-		{"0.85", 0.85},
+		{"certainly vulnerable: 0.9", 0.9},
 	}
 	for _, tc := range tests {
 		got := parseConfidence(tc.input)

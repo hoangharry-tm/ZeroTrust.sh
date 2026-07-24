@@ -28,7 +28,7 @@ import (
 // gate1Key returns the Gate 1 dedup key for f.
 //
 // Gate 1 is an exact-match key covering (CWE, file path, start line).
-// This catches the common case where both Path A and Path B independently
+// This catches the common case where both Deterministic and Reasoning independently
 // identify the same vulnerability at the same location — the two findings
 // are merged into one with SourcePath = BOTH and a +15 pp confidence boost.
 //
@@ -45,27 +45,6 @@ func gate1Key(f finding.Finding) string {
 	return hex.EncodeToString(sum[:8])
 }
 
-// gate2Key returns the Gate 2 dedup key for f.
-//
-// Gate 2 is a location-anchored fingerprint using (CWE, normalised file path).
-// Unlike Gate 1 (which requires exact line match), Gate 2 treats findings at
-// different lines in the same file as duplicates. This catches the case where
-// Path A's pattern rule matches one invocation on line 10 while Path B's
-// semantic analysis finds the same CWE at line 20 in the same function.
-//
-// The normalised path is already repo-relative when the finding is constructed
-// (the scanner strips the project root prefix). The fingerprint includes CWE
-// to avoid conflating distinct vulnerability types in the same file.
-//
-// Formula: hex(SHA-256(CWE + ":" + Path))
-// Reference: Kamiya, T., Kusumoto, S., & Inoue, K. (2002). CCFinder: a
-// multilinguistic token-based code clone detection system for large scale
-// source code. IEEE Transactions on Software Engineering, 28(7), 654-670.
-func gate2Key(f finding.Finding) string {
-	raw := fmt.Sprintf("%s:%s", f.CWE, f.Path)
-	sum := sha256.Sum256([]byte(raw))
-	return hex.EncodeToString(sum[:8])
-}
 
 // merge combines two findings that have been identified as duplicates.
 // The surviving finding receives the higher confidence and, if the two

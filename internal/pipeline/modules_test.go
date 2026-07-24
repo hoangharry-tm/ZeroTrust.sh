@@ -2,34 +2,31 @@ package pipeline
 
 import "testing"
 
-func TestIsTestFile(t *testing.T) {
-	tests := []struct {
-		path string
-		want bool
-	}{
-		{"src/main/java/FooTest.java", true},
-		{"src/main/java/FooService.java", false},
-		{"src/test/java/FooService.java", true},
-		{"handler_test.go", true},
-		{"handler.go", false},
-		{"test_utils.py", true},
-		{"utils.py", false},
-		{"src/contest/entry.go", false},
-		{"__tests__/foo.test.ts", true},
-		{"src/components/Button.tsx", false},
-
-		// Maven integration test (src/it/) coverage
-		{"src/it/java/org/owasp/webgoat/integration/SSRFIntegrationTest.java", true},
-		{"src/test/java/Foo.java", true},
-		{"src/main/java/FooService.java", false},
-		{"src/it/resources/logback-test.xml", true},
+// TestFilterScopeByLanguage_ExcludesTestFiles is a regression test for a
+// real gap found live: isTestFile/filterTestFiles were fully implemented,
+// each with their own correct exclusion logic, but filterTestFiles was
+// never actually called from anywhere in the pipeline — filterScopeByLanguage
+// only checked language support, never test-file status. On a real Grafana
+// scan this let test fixtures (mocked SSRF-shaped requests, etc.) reach
+// targeting/reasoning as real surfaces; one even produced a genuine CWE-918
+// VIOLATION verdict for what was actually test/mock code. This test locks in
+// that filterScopeByLanguage — the single choke point every CPG-scope call
+// site funnels through — now also excludes test files.
+func TestFilterScopeByLanguage_ExcludesTestFiles(t *testing.T) {
+	files := []string{
+		"pkg/api/plugins.go",
+		"pkg/api/plugins_test.go",
+		"pkg/api/pluginproxy/pluginproxy_test.go",
+		"pkg/api/admin.go",
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.path, func(t *testing.T) {
-			if got := isTestFile(tt.path); got != tt.want {
-				t.Errorf("isTestFile(%q) = %v, want %v", tt.path, got, tt.want)
-			}
-		})
+	got := filterScopeByLanguage(files)
+	want := []string{"pkg/api/plugins.go", "pkg/api/admin.go"}
+	if len(got) != len(want) {
+		t.Fatalf("filterScopeByLanguage(%v) = %v, want %v", files, got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("filterScopeByLanguage(%v)[%d] = %q, want %q", files, i, got[i], want[i])
+		}
 	}
 }

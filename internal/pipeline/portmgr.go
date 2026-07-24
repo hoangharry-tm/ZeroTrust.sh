@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"os"
 	"os/exec"
@@ -25,8 +26,6 @@ import (
 	"strings"
 	"syscall"
 	"time"
-
-	"github.com/hoangharry-tm/zerotrust/internal/output"
 )
 
 func (p *Pipeline) resolvePortConflict(ctx context.Context) {
@@ -35,12 +34,13 @@ func (p *Pipeline) resolvePortConflict(ctx context.Context) {
 		port = 8080
 	}
 
+	p.logger.Warn("resolving joern port conflict",
+		"port", port, "joern_url", p.cfg.JoernURL)
+
 	pid, name, lsofErr := findProcessOnPort(port)
 	if lsofErr != nil || pid == 0 {
-		output.Emit(p.events, output.Event{
-			Kind: output.EventLog,
-			Log:  fmt.Sprintf("warn: joern port %d in use — cannot identify process: %v — taint analysis disabled", port, lsofErr),
-		})
+		p.logger.Warn("joern port in use — cannot identify process, taint analysis disabled",
+			"port", port, "err", lsofErr)
 		return
 	}
 
@@ -56,18 +56,15 @@ func (p *Pipeline) resolvePortConflict(ctx context.Context) {
 
 	if !interactive || (buf[0] != 'y' && buf[0] != 'Y') {
 		fmt.Fprintln(os.Stderr)
-		output.Emit(p.events, output.Event{
-			Kind: output.EventLog,
-			Log:  fmt.Sprintf("warn: joern port %d in use by PID %d (%s) — taint analysis disabled", port, pid, name),
-		})
+		p.logger.Warn("joern port in use, declined to kill — taint analysis disabled",
+			"port", port, "pid", pid, "process", name)
 		return
 	}
 
+	p.logger.Info("killing process on joern port", "pid", pid, "port", port, "process", name)
 	if killErr := syscall.Kill(pid, syscall.SIGTERM); killErr != nil {
-		output.Emit(p.events, output.Event{
-			Kind: output.EventLog,
-			Log:  fmt.Sprintf("warn: failed to kill PID %d on port %d: %v — taint analysis disabled", pid, port, killErr),
-		})
+		p.logger.Warn("failed to kill process on joern port — taint analysis disabled",
+			"pid", pid, "port", port, "err", killErr)
 		return
 	}
 
@@ -84,16 +81,15 @@ func (p *Pipeline) resolvePortConflict(ctx context.Context) {
 	}
 
 	if retryErr := p.joern.Start(ctx); retryErr != nil {
-		output.Emit(p.events, output.Event{
-			Kind: output.EventLog,
-			Log:  fmt.Sprintf("warn: joern retry after killing port %d failed: %v — taint analysis disabled", port, retryErr),
-		})
+		p.logger.Warn("joern retry after killing port owner failed — taint analysis disabled",
+			"port", port, "err", retryErr)
 	}
 }
 
 // joernPortFromURL extracts the TCP port from a Joern URL string.
 // Returns 0 if the URL cannot be parsed.
 func joernPortFromURL(rawURL string) int {
+	slog.Debug("extracting port from joern URL", "url", rawURL)
 	if !strings.Contains(rawURL, ":") {
 		return 0
 	}
@@ -120,6 +116,7 @@ func joernPortFromURL(rawURL string) int {
 // findProcessOnPort returns the PID and process name of the process bound to
 // the given TCP port. Returns (0, "", error) if the process cannot be identified.
 func findProcessOnPort(port int) (int, string, error) {
+	slog.Debug("finding process on port", "port", port)
 	if _, err := exec.LookPath("lsof"); err != nil {
 		return 0, "", fmt.Errorf("lsof not found: %w", err)
 	}

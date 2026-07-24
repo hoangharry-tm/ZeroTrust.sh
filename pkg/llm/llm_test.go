@@ -57,8 +57,14 @@ func TestNew_OllamaExplicit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if _, ok := p.(*ollamaClient); !ok {
-		t.Error("expected concrete type *ollamaClient")
+	// New wraps every provider with WithRetry, so the concrete type one level
+	// down is what needs checking here, not p itself.
+	rp, ok := p.(*retryProvider)
+	if !ok {
+		t.Fatal("expected New to return a *retryProvider wrapper")
+	}
+	if _, ok := rp.next.(*ollamaClient); !ok {
+		t.Error("expected wrapped concrete type *ollamaClient")
 	}
 }
 
@@ -212,6 +218,111 @@ func TestFactory_OpenAIPing(t *testing.T) {
 	}
 	if err := p.Ping(context.Background()); err != nil {
 		t.Fatalf("Ping error: %v", err)
+	}
+}
+
+func TestFactory_OpenAIChatParsesToolCallResponse(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/chat/completions", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Tools []struct {
+				Type     string `json:"type"`
+				Function struct {
+					Name string `json:"name"`
+				} `json:"function"`
+			} `json:"tools"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if len(req.Tools) != 1 || req.Tools[0].Function.Name != "get_callers" {
+			t.Fatalf("unexpected tools in request: %+v", req.Tools)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{
+			"id": "chatcmpl-123", "object": "chat.completion", "created": 1, "model": "gpt-4o",
+			"choices": [{
+				"index": 0,
+				"message": {
+					"role": "assistant",
+					"content": null,
+					"tool_calls": [{
+						"id": "call_1",
+						"type": "function",
+						"function": {"name": "get_callers", "arguments": "{\"function_id\":\"m1\"}"}
+					}]
+				},
+				"finish_reason": "tool_calls"
+			}]
+		}`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	p, err := New(Config{Provider: ProviderOpenAI, BaseURL: srv.URL, Model: "gpt-4o", APIKey: "sk-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := &Options{Tools: []ToolDef{
+		{Name: "get_callers", Description: "list callers", Parameters: []byte(`{"type":"object"}`)},
+	}}
+	msg, err := p.Chat(context.Background(), []Message{{Role: RoleUser, Content: "who calls m1?"}}, opts)
+	if err != nil {
+		t.Fatalf("Chat error: %v", err)
+	}
+	if len(msg.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d: %+v", len(msg.ToolCalls), msg)
+	}
+	if msg.ToolCalls[0].Name != "get_callers" || msg.ToolCalls[0].ID != "call_1" {
+		t.Errorf("unexpected tool call: %+v", msg.ToolCalls[0])
+	}
+	var args struct {
+		FunctionID string `json:"function_id"`
+	}
+	if err := json.Unmarshal([]byte(msg.ToolCalls[0].Arguments), &args); err != nil || args.FunctionID != "m1" {
+		t.Errorf("unexpected arguments: %q (err=%v)", msg.ToolCalls[0].Arguments, err)
+	}
+}
+
+func TestFactory_OpenAIChatRoundTripsToolResultMessage(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/chat/completions", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Messages []map[string]any `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if len(req.Messages) != 3 {
+			t.Fatalf("expected 3 messages, got %d: %+v", len(req.Messages), req.Messages)
+		}
+		if req.Messages[2]["role"] != "tool" || req.Messages[2]["tool_call_id"] != "call_1" {
+			t.Errorf("tool result message mismatch: %+v", req.Messages[2])
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{
+			"id": "chatcmpl-124", "object": "chat.completion", "created": 1, "model": "gpt-4o",
+			"choices": [{"index": 0, "message": {"role": "assistant", "content": "done"}, "finish_reason": "stop"}]
+		}`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	p, err := New(Config{Provider: ProviderOpenAI, BaseURL: srv.URL, Model: "gpt-4o", APIKey: "sk-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	messages := []Message{
+		{Role: RoleUser, Content: "who calls m1?"},
+		{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "call_1", Name: "get_callers", Arguments: `{"function_id":"m1"}`}}},
+		{Role: RoleTool, Content: `["AuthMiddleware"]`, ToolCallID: "call_1"},
+	}
+	msg, err := p.Chat(context.Background(), messages, nil)
+	if err != nil {
+		t.Fatalf("Chat error: %v", err)
+	}
+	if msg.Content != "done" {
+		t.Errorf("unexpected reply: %+v", msg)
 	}
 }
 

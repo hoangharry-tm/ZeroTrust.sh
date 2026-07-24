@@ -269,7 +269,7 @@ func (r *Runner) Scan(ctx context.Context, target string) ([]finding.Finding, er
 }
 
 // ScanFiles runs OpenGrep against a specific file list and returns normalised findings.
-// Used by the legacy runPathA incremental flow.
+// Used by the legacy runDeterministic incremental flow.
 func (r *Runner) ScanFiles(ctx context.Context, files []string) ([]finding.Finding, error) {
 	if len(files) == 0 {
 		return nil, nil
@@ -309,7 +309,7 @@ func (r *Runner) ScanFiles(ctx context.Context, files []string) ([]finding.Findi
 	return filtered, nil
 }
 
-// ponytail: reserved for the Path A high-confidence fast path. Not currently
+// ponytail: reserved for the Deterministic high-confidence fast path. Not currently
 // wired in the pipeline; callers should gate on f.Confidence >= 0.85 instead.
 // ScanHighConfidence runs a scan restricted to rules tagged confidence: high.
 // Results are intended to bypass the LLM Verifier and go directly to dedup.

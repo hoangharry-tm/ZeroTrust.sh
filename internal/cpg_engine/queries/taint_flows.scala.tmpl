@@ -1,4 +1,10 @@
-{
+// See project_wide_taint_flows.scala.tmpl for why this is an IIFE, not a
+// bare `{ }` block: outer `val`s (m, sinks) in a bare block were found live
+// to get echoed individually by Joern's REPL, corrupting the captured
+// response with an intermediate value's raw toString() instead of this
+// query's actual JSON result.
+(() => {
+  def san(s: String): String = if (s == null) "" else s.map(c => if (c=='\\'||c=='"'||c<32||c>126) ' ' else c).mkString
   val m = cpg.method.filter(_.id == {{.MethodID}}L)
   val sinks = cpg.call.filter(c => {{.SinkSet}}.contains(c.name))
   m.parameter
@@ -12,13 +18,13 @@
         .slice(1, elems.size - 1)
         .map(n => s"""{
           "id":   "${n.id.toString}",
-          "name": "${n match {
+          "name": "${san(n match {
             case c: Call               => c.name
             case mp: MethodParameterIn => mp.name
             case i: Identifier         => i.name
             case _                     => ""
-          }}",
-          "file": "${try { n.property("FILENAME").asInstanceOf[String] } catch { case _ => "" }}",
+          })}",
+          "file": "${san(try { n.property("FILENAME").asInstanceOf[String] } catch { case _ => "" })}",
           "line": ${try { n.property("LINE_NUMBER").asInstanceOf[Int] } catch { case _ => 0 }},
           "type": "${n.label}"
         }""")
@@ -27,25 +33,25 @@
       s"""{
         "source": {
           "id":   "${first.id.toString}",
-          "name": "${first match {
+          "name": "${san(first match {
             case mp: MethodParameterIn => mp.name
             case m: Method             => m.name
             case c: Call               => c.name
             case _                     => ""
-          }}",
-          "file": "${first.location.filename}",
+          })}",
+          "file": "${san(first.location.filename)}",
           "line": ${first.lineNumber.getOrElse(0)},
           "type": "${first.label}"
         },
         "sink": {
           "id":   "${last.id.toString}",
-          "name": "${last match {
+          "name": "${san(last match {
             case mp: MethodParameterIn => mp.name
             case c: Call               => c.name
             case m: Method             => m.name
             case _                     => ""
-          }}",
-          "file": "${last.location.filename}",
+          })}",
+          "file": "${san(last.location.filename)}",
           "line": ${last.lineNumber.getOrElse(0)},
           "type": "${last.label}"
         },
@@ -54,4 +60,4 @@
     })
     .toList
     .mkString("[", ",", "]")
-}
+})()

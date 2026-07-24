@@ -3,6 +3,7 @@ package crypto
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"runtime"
 	"strings"
@@ -19,9 +20,14 @@ var (
 
 type Checker struct{}
 
-func New() *Checker { return &Checker{} }
+func New() *Checker {
+	slog.Debug("creating crypto checker")
+	return &Checker{}
+}
 
 func (c *Checker) Check(ctx context.Context, es enrichment.EnrichedSurface) []finding.Finding {
+	slog.Debug("checking crypto for surface",
+		"surface_id", es.ID, "file", es.File)
 	var ff []finding.Finding
 	ff = append(ff, c.cwe327(es)...)
 	ff = append(ff, c.cwe321(es)...)
@@ -31,6 +37,9 @@ func (c *Checker) Check(ctx context.Context, es enrichment.EnrichedSurface) []fi
 }
 
 func (c *Checker) CheckAll(ctx context.Context, surfaces []enrichment.EnrichedSurface) ([]finding.Finding, error) {
+	slog.Debug("checking crypto for all surfaces",
+		"surface_count", len(surfaces), "workers", min(runtime.NumCPU(), 4))
+
 	w := min(runtime.NumCPU(), 4)
 	ch := make(chan struct{}, w)
 	var mu sync.Mutex
@@ -38,6 +47,7 @@ func (c *Checker) CheckAll(ctx context.Context, surfaces []enrichment.EnrichedSu
 	for _, es := range surfaces {
 		select {
 		case <-ctx.Done():
+			slog.Warn("crypto check cancelled", "error", ctx.Err())
 			return nil, ctx.Err()
 		case ch <- struct{}{}:
 		}
@@ -51,6 +61,7 @@ func (c *Checker) CheckAll(ctx context.Context, surfaces []enrichment.EnrichedSu
 	for range w {
 		ch <- struct{}{}
 	}
+	slog.Debug("crypto check completed", "findings", len(out))
 	return out, nil
 }
 
@@ -73,6 +84,7 @@ func codeOffsetToLine(code string, offset int, funcLine int) int {
 }
 
 func (c *Checker) cwe327(es enrichment.EnrichedSurface) []finding.Finding {
+	slog.Debug("checking CWE-327 (weak crypto)", "surface_id", es.ID)
 	weak := []string{"MessageDigest.getInstance", "md5", "sha1", "sha-1", "DES", "RC4", "ECB", "crypto.MD5", "crypto.SHA1", "des", "rc4"}
 	for _, sink := range es.SinkNodes {
 		for _, a := range weak {
@@ -91,6 +103,7 @@ func (c *Checker) cwe327(es enrichment.EnrichedSurface) []finding.Finding {
 }
 
 func (c *Checker) cwe321(es enrichment.EnrichedSurface) []finding.Finding {
+	slog.Debug("checking CWE-321 (hardcoded key)", "surface_id", es.ID)
 	pats := []string{`key\s*=\s*"`, `iv\s*=\s*"`, `secret\s*=\s*"`, `password\s*=\s*"`, `salt\s*=\s*"`}
 	for _, p := range pats {
 		if ok, _ := regexp.MatchString(p, es.Code); ok {
@@ -109,6 +122,7 @@ func (c *Checker) cwe321(es enrichment.EnrichedSurface) []finding.Finding {
 }
 
 func (c *Checker) cwe338(es enrichment.EnrichedSurface) []finding.Finding {
+	slog.Debug("checking CWE-338 (weak PRNG)", "surface_id", es.ID)
 	safe := []string{"crypto/rand", "crypto.rand", "SecureRandom", "cryptoRandom"}
 	for _, s := range safe {
 		if strings.Contains(es.Code, s) {
@@ -136,6 +150,7 @@ func (c *Checker) cwe338(es enrichment.EnrichedSurface) []finding.Finding {
 }
 
 func (c *Checker) cwe916(es enrichment.EnrichedSurface) []finding.Finding {
+	slog.Debug("checking CWE-916 (low iterations)", "surface_id", es.ID)
 	m := pbkdf2Re.FindStringSubmatch(es.Code)
 	if len(m) > 1 {
 		var n int

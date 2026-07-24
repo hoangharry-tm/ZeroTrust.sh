@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package targeting implements Path B Tier 1 surface selection.
+// Package targeting implements Reasoning Tier 1 surface selection.
 //
 // Surface selection is based on import-boundary analysis + call graph
 // reachability. No method-name patterns are used; the only patterns are
@@ -41,10 +41,12 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/hoangharry-tm/zerotrust/internal/config"
 	cpg "github.com/hoangharry-tm/zerotrust/internal/cpg_engine"
+	"github.com/hoangharry-tm/zerotrust/pkg/util"
 )
 
 // SurfaceKind classifies why a surface was selected.
@@ -89,14 +91,53 @@ func (cg CallGraph) CallGraphDepth(id string) int {
 type Targeter struct {
 	graph     cpg.Graph
 	callGraph cpg.CallGraph
-	fileClass map[string]FileClass // populated during Run()
-	root      string                // absolute path to project root; used by AnalyzeImports
+	root      string // absolute path to project root; used by AnalyzeImports
+
+	mu        sync.Mutex
+	fileClass map[string]FileClass // populated by PrewarmImportBoundaries or Run's Phase 1
 }
 
 // New returns a Targeter. root is the absolute path to the project root,
 // used for the import boundary walk.
 func New(graph cpg.Graph, root string) *Targeter {
 	return &Targeter{graph: graph, root: root}
+}
+
+// PrewarmImportBoundaries computes Run's Phase 1 (import-boundary
+// classification) ahead of time. It has no CPG dependency, unlike Run's later
+// phases (call graph fetch, METHOD node query) — so callers can run it
+// concurrently with CPG build / Deterministic-path work instead of waiting
+// for CPG readiness before starting it. Safe to call at most once; if Run
+// starts before this finishes, Run just computes the classification itself
+// (redundant but harmless) rather than blocking on it.
+func (t *Targeter) PrewarmImportBoundaries(ctx context.Context) error {
+	fileClasses, err := AnalyzeImports(ctx, t.root)
+	if err != nil {
+		return fmt.Errorf("targeting: prewarm import analysis: %w", err)
+	}
+	t.mu.Lock()
+	t.fileClass = fileClasses
+	t.mu.Unlock()
+	return nil
+}
+
+// importBoundaries returns the cached result from PrewarmImportBoundaries if
+// already computed, or computes it inline otherwise.
+func (t *Targeter) importBoundaries(ctx context.Context) (map[string]FileClass, error) {
+	t.mu.Lock()
+	cached := t.fileClass
+	t.mu.Unlock()
+	if cached != nil {
+		return cached, nil
+	}
+	fileClasses, err := AnalyzeImports(ctx, t.root)
+	if err != nil {
+		return nil, err
+	}
+	t.mu.Lock()
+	t.fileClass = fileClasses
+	t.mu.Unlock()
+	return fileClasses, nil
 }
 
 // ── Graph traversal helpers ───────────────────────────────────────────────────
@@ -179,12 +220,14 @@ func (t *Targeter) Run(ctx context.Context) ([]Surface, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
-	// Phase 1: classify files by import boundaries.
-	fileClasses, err := AnalyzeImports(ctx, t.root)
+	// Phase 1: classify files by import boundaries. This has no CPG
+	// dependency, so PrewarmImportBoundaries may already have computed it
+	// concurrently with CPG build/Deterministic-path work — reuse that
+	// result if present rather than redoing the file walk.
+	fileClasses, err := t.importBoundaries(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("targeting: import analysis: %w", err)
 	}
-	t.fileClass = fileClasses
 
 	// Phase 2: bulk-fetch call graph from Joern (one HTTP round-trip).
 	joernCG, err := t.graph.GetCallGraph()
@@ -205,6 +248,9 @@ func (t *Targeter) Run(ctx context.Context) ([]Surface, error) {
 
 	for _, m := range methods {
 		byID[m.ID] = m
+		if util.IsTestFile(m.File) {
+			continue
+		}
 		absFile := m.File
 		if !filepath.IsAbs(absFile) {
 			absFile = filepath.Join(t.root, m.File)
@@ -298,7 +344,7 @@ func (t *Targeter) Run(ctx context.Context) ([]Surface, error) {
 	}
 
 	// Phase 7: second-order source detection.
-	secondOrderSurfaces := DetectSecondOrder(joernCG, methods, fileClasses, forwardReachable, backwardReachable)
+	secondOrderSurfaces := DetectSecondOrder(joernCG, methods, fileClasses, forwardReachable, backwardReachable, t.root)
 	for _, s := range secondOrderSurfaces {
 		if _, exists := merged[s.ID]; !exists {
 			merged[s.ID] = s
@@ -365,7 +411,7 @@ func AutoFlagCVESurfaces(surfaces []Surface, cal config.Config) (flagged []Surfa
 	return flagged, remaining
 }
 
-// isAuthMethod returns true when the method name or annotations indicate
+// isAuthMethod reports whether m's name matches a common pattern indicating
 // authentication-related behaviour. Used to filter file-level auth boundary
 // seeds to only methods that are themselves auth-relevant.
 func isAuthMethod(m cpg.Node, root string) bool {

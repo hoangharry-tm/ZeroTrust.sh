@@ -112,6 +112,23 @@ var sinkPkgPrefixes = map[string][]string{
 		`"os/exec"`,
 		`"github.com/go-redis/redis"`,
 		`"github.com/redis/go-redis"`,
+		// Filesystem read/serve — found live to be a real, previously-total
+		// gap: this list had zero filesystem coverage (DB/exec/redis only),
+		// so CWE-22 (path traversal) could never produce a sink seed for Go
+		// at all, regardless of reasoning quality. Confirmed against two
+		// real CVEs this session: Grafana CVE-2021-43798 (getPluginAssets
+		// calling os.Open on a user-influenced path) and Gogs
+		// CVE-2018-18925 (Zip Slip via archive/zip during repo migration) —
+		// both structurally invisible to targeting before this. Unlike
+		// Python's deliberate omission of bare "os" (too noisy there,
+		// caught via subprocess instead), Go has no equivalent narrower
+		// signal for plain file I/O, so "os" is included here despite being
+		// a common import — the alternative is missing this entire CWE
+		// class for the language.
+		`"os"`,
+		`"io/ioutil"`,
+		`"path/filepath"`,
+		`"archive/zip"`,
 	},
 }
 

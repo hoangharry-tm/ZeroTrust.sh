@@ -29,12 +29,13 @@ import (
 	"github.com/hoangharry-tm/zerotrust/internal/finding"
 	"github.com/hoangharry-tm/zerotrust/internal/ingestion"
 	"github.com/hoangharry-tm/zerotrust/internal/ingestion/diffindex"
-	"github.com/hoangharry-tm/zerotrust/internal/output"
-	"github.com/hoangharry-tm/zerotrust/pkg/sqlite"
+	"github.com/hoangharry-tm/zerotrust/pkg/postgres"
 )
 
 func (p *Pipeline) loadCachedCPG(ctx context.Context, ingResult *ingestion.Result) {
-	cpgPath := cpgSnapshotPath(p.cfg.ProjectID)
+	// Use ingResult.ProjectID (a real, per-target derived hash), NOT
+	// p.cfg.ProjectID — see the package-level note on cpgSnapshotPath for why.
+	cpgPath := cpgSnapshotPath(ingResult.ProjectID)
 	if _, statErr := os.Stat(cpgPath); statErr == nil {
 		if loadErr := p.joern.LoadCPG(ctx, cpgPath); loadErr != nil {
 			p.logger.Warn("joern: failed to load cached CPG on no-change scan", "err", loadErr)
@@ -77,13 +78,10 @@ func (p *Pipeline) buildScopeFromChanges(ctx context.Context, ingResult *ingesti
 			"component", "scan", "sinks", len(p.joern.PreFlaggedSinks()))
 	}
 
-	cpgPath := cpgSnapshotPath(p.cfg.ProjectID)
+	cpgPath := cpgSnapshotPath(ingResult.ProjectID)
 	buildErr := p.buildOrLoadCPG(ctx, ingResult.ProjectID, cpgPath, changed)
 	if buildErr != nil {
-		output.Emit(p.events, output.Event{
-			Kind: output.EventLog,
-			Log:  fmt.Sprintf("warn: cpg build: %v — taint analysis disabled", buildErr),
-		})
+		p.logger.Warn("cpg build failed — taint analysis disabled", "err", buildErr)
 		p.alerts = append(p.alerts, fmt.Sprintf("CPG build failed (%v): taint analysis disabled, pattern-only path active", buildErr))
 		return filterScopeByLanguage(changed)
 	}
@@ -151,6 +149,7 @@ func (p *Pipeline) buildOrLoadCPG(ctx context.Context, projectID, cpgPath string
 					p.logger.Warn("cpg_cache: cached file not loadable, rebuilding",
 						"component", "cpg", "err", err)
 				} else {
+					p.ensureDBBackend(ctx, projectID)
 					return nil
 				}
 			} else {
@@ -186,11 +185,8 @@ func (p *Pipeline) buildOrLoadCPG(ctx context.Context, projectID, cpgPath string
 		if storedVersion, readErr := os.ReadFile(versionPath); readErr == nil {
 			stored := strings.TrimSpace(string(storedVersion))
 			if stored != "" && stored != currentVersion {
-				output.Emit(p.events, output.Event{
-					Kind:  output.EventLog,
-					Stage: "cpg",
-					Log:   fmt.Sprintf("Joern version changed from %s to %s — invalidating CPG snapshot", stored, currentVersion),
-				})
+				p.logger.Info("joern version changed — invalidating CPG snapshot",
+					"stored_version", stored, "current_version", currentVersion)
 				_ = os.Remove(cpgPath)
 				_ = os.Remove(versionPath)
 				snapshotExists = false
@@ -204,11 +200,7 @@ func (p *Pipeline) buildOrLoadCPG(ctx context.Context, projectID, cpgPath string
 	}
 
 	if snapshotExists {
-		output.Emit(p.events, output.Event{
-			Kind:  output.EventLog,
-			Stage: "cpg",
-			Log:   "loading prior CPG snapshot for incremental update",
-		})
+		p.logger.Info("loading prior CPG snapshot for incremental update")
 
 		// Load the prior CPG.
 		if err := p.joern.LoadCPG(ctx, cpgPath); err != nil {
@@ -223,11 +215,7 @@ func (p *Pipeline) buildOrLoadCPG(ctx context.Context, projectID, cpgPath string
 			nodes, err := graph.QueryNodesByFile(f, cpg_engine.NodeMethod)
 			if err != nil || len(nodes) == 0 {
 				// If the file is new, we need a full rebuild.
-				output.Emit(p.events, output.Event{
-					Kind:  output.EventLog,
-					Stage: "cpg",
-					Log:   fmt.Sprintf("no prior CPG nodes for %s — falling back to full build", f),
-				})
+				p.logger.Info("no prior CPG nodes for file — falling back to full build", "file", f)
 				return p.buildFullCPG(ctx, projectID, cpgPath, changedFiles)
 			}
 			for _, n := range nodes {
@@ -244,17 +232,13 @@ func (p *Pipeline) buildOrLoadCPG(ctx context.Context, projectID, cpgPath string
 		err := p.joern.IncrementalPatch(ctx, cpg_engine.IncrementalPatchConfig{
 			ChangedFunctions:   changedFunctions,
 			RemovedFiles:       nil, // removed not tracked here
-			MaxDepth:           config.New().CPGDefaultMaxDepth,
-			HubCallerThreshold: config.New().CPGHubCallerThreshold,
+			MaxDepth:           config.C.CPGDefaultMaxDepth,
+			HubCallerThreshold: config.C.CPGHubCallerThreshold,
 			SerializedCPGPath:  cpgPath,
 		})
 		if err != nil {
 			// Hub module detected or patch failed — fall back to full rebuild.
-			output.Emit(p.events, output.Event{
-				Kind:  output.EventLog,
-				Stage: "cpg",
-				Log:   fmt.Sprintf("incremental patch aborted (%v) — full rebuild", err),
-			})
+			p.logger.Info("incremental patch aborted — full rebuild", "err", err)
 			return p.buildFullCPG(ctx, projectID, cpgPath, changedFiles)
 		}
 
@@ -262,7 +246,7 @@ func (p *Pipeline) buildOrLoadCPG(ctx context.Context, projectID, cpgPath string
 		// changed_functions = 0 so the verification gate on the next scan
 		// can bypass the build entirely if no further changes occur.
 		if p.db != nil && projectID != "" {
-			if cacheErr := p.db.UpsertCPGCache(ctx, sqlite.CPGCacheRow{
+			if cacheErr := p.db.UpsertCPGCache(ctx, postgres.CPGCacheRow{
 				ProjectID:        projectID,
 				CPGPath:          cpgPath,
 				ScopeMode:        p.cfg.ScanMode,
@@ -280,6 +264,50 @@ func (p *Pipeline) buildOrLoadCPG(ctx context.Context, projectID, cpgPath string
 	return p.buildFullCPG(ctx, projectID, cpgPath, changedFiles)
 }
 
+// ensureDBBackend verifies Postgres actually holds an ingested CPG for
+// projectID before trusting the cache-hit path to skip re-ingestion, and
+// ingests now (the CPG is already loaded in Joern from LoadCPG a moment
+// ago) if it doesn't.
+//
+// Found live on a real OWASP Benchmark scan: buildOrLoadCPG's cache-hit
+// branch (cached.ChangedFunctions == 0) only ever called joern.LoadCPG and
+// returned — it never called IngestCPGToDB/SetDBBackend the way
+// buildFullCPG does. That meant every graph read (GetCallers,
+// QueryNodesByFile, ...) for the entire scan fell through to Joern's HTTP
+// REPL instead of the fast Postgres path, for the sole reason that nothing
+// had structurally changed since the last scan. Joern's REPL is not built
+// for thousands of sequential automated queries — it's a single-threaded
+// Scala REPL (dotty.tools.repl.State threaded through every call) that
+// accumulates every prior result binding for the life of the process, with
+// no reset endpoint; under that load it slowed progressively (5s -> 45s per
+// query) and eventually wedged outright (0% CPU, no response, RSS collapse)
+// on two separate multi-thousand-surface runs. The Postgres path has none of
+// that accumulation — it's a stateless query per call — so ensuring it's
+// actually populated on every cache hit, not just full builds, removes the
+// dependency on the REPL surviving thousands of calls in the first place.
+func (p *Pipeline) ensureDBBackend(ctx context.Context, projectID string) {
+	if p.db == nil || projectID == "" {
+		return
+	}
+	if version, ok, err := p.db.GetCPGVersion(ctx, projectID); err == nil && ok {
+		p.joern.SetDBBackend(p.db, projectID, version)
+		p.logger.Debug("cpg_cache: DB backend already populated, using fast path",
+			"component", "cpg", "cpg_version", version)
+		return
+	}
+
+	p.logger.Info("cpg_cache: hit but Postgres has no ingested CPG for this project — ingesting now",
+		"component", "cpg")
+	cpgVersion := fmt.Sprintf("%d", time.Now().Unix())
+	joernGraph := p.joern.GraphWithContext(ctx)
+	if err := joernGraph.IngestCPGToDB(ctx, p.db, projectID, cpgVersion); err != nil {
+		p.logger.Warn("cpg_cache: failed to ingest CPG to DB on cache hit, falling back to Joern HTTP for this run",
+			"component", "cpg", "err", err)
+		return
+	}
+	p.joern.SetDBBackend(p.db, projectID, cpgVersion)
+}
+
 // buildFullCPG builds a complete CPG from the given files and saves the snapshot.
 // Returns nil on success or an error the caller should handle as non-fatal.
 // The projectID parameter is used to update the cpg_cache table.
@@ -293,9 +321,9 @@ func (p *Pipeline) buildFullCPG(ctx context.Context, projectID, cpgPath string, 
 	if err != nil {
 		return fmt.Errorf("count loc: %w", err)
 	}
-	if loc > config.New().CPGMaxScopeLOC {
+	if loc > config.C.CPGMaxScopeLOC {
 		return fmt.Errorf("scope exceeds %d LOC (%d) — CPG build skipped; taint analysis disabled",
-			config.New().CPGMaxScopeLOC, loc)
+			config.C.CPGMaxScopeLOC, loc)
 	}
 
 	p.logger.Info(
@@ -337,7 +365,7 @@ func (p *Pipeline) buildFullCPG(ctx context.Context, projectID, cpgPath string, 
 
 	// Ensure project row exists before any FK-dependent writes (cpg_cache, etc.).
 	if p.db != nil && projectID != "" {
-		if _, err := p.db.UpsertProject(ctx, sqlite.ProjectRow{
+		if _, err := p.db.UpsertProject(ctx, postgres.ProjectRow{
 			ProjectID:     projectID,
 			RootPath:      p.cfg.Target,
 			LastScannedAt: time.Now().Unix(),
@@ -346,24 +374,24 @@ func (p *Pipeline) buildFullCPG(ctx context.Context, projectID, cpgPath string, 
 		}
 	}
 
-	// Drain CPG from Joern JVM into SQLite so all subsequent graph queries
+	// Drain CPG from Joern JVM into the DB so all subsequent graph queries
 	// read from the local DB instead of hitting Joern HTTP.
 	if p.db != nil && projectID != "" {
 		cpgVersion := fmt.Sprintf("%d", time.Now().Unix())
 		joernGraph := p.joern.GraphWithContext(ctx)
-		if ingestErr := joernGraph.IngestCPGToSQLite(ctx, p.db, projectID, cpgVersion); ingestErr != nil {
-			p.logger.Warn("failed to ingest CPG to SQLite, falling back to Joern HTTP",
+		if ingestErr := joernGraph.IngestCPGToDB(ctx, p.db, projectID, cpgVersion); ingestErr != nil {
+			p.logger.Warn("failed to ingest CPG to DB, falling back to Joern HTTP",
 				"component", "cpg", "err", ingestErr)
 		} else {
-			// Enable SQLite read path for all subsequent graph consumers.
-			p.joern.SetSQLiteBackend(p.db, projectID, cpgVersion)
+			// Enable DB read path for all subsequent graph consumers.
+			p.joern.SetDBBackend(p.db, projectID, cpgVersion)
 		}
 	}
 
 	// Persist CPG cache entry so the cpg_cache verification gate can skip
 	// future builds when no structural changes are detected.
 	if p.db != nil && projectID != "" {
-		if cacheErr := p.db.UpsertCPGCache(ctx, sqlite.CPGCacheRow{
+		if cacheErr := p.db.UpsertCPGCache(ctx, postgres.CPGCacheRow{
 			ProjectID:        projectID,
 			CPGPath:          cpgPath,
 			ScopeMode:        p.cfg.ScanMode,
@@ -392,6 +420,19 @@ func (p *Pipeline) buildFullCPG(ctx context.Context, projectID, cpgPath string, 
 
 // cpgSnapshotPath returns the path to the serialized CPG snapshot for the given
 // project ID. The snapshot lives at ~/.zerotrust/{projectID}.cpg.
+//
+// IMPORTANT: always pass ingestion.Result.ProjectID here (the derived,
+// per-target hash — see diffindex.DeriveProjectID), never the raw
+// pipeline.Config.ProjectID field directly. Config.ProjectID is only an
+// optional --project-id CLI override and is empty on every normal scan;
+// passing it straight through here used to make every call fall through to
+// the projectID=="" branch below, so EVERY project ever scanned on a
+// machine shared the exact same file, ~/.zerotrust/default.cpg. Found live:
+// scanning SaltStack right after OWASP Benchmark silently loaded OWASP's
+// leftover CPG snapshot via importCpg() (Joern has no way to know it's the
+// wrong project's graph — it just loads whatever valid binary it's given),
+// producing a corrupted, near-empty effective scan scope for the new
+// target.
 func cpgSnapshotPath(projectID string) string {
 	if projectID == "" {
 		projectID = "default"
@@ -409,14 +450,13 @@ func cpgSnapshotPath(projectID string) string {
 // have not yet been processed, so prior_context is always 0.
 // Surfaces not present in neighbours keep their original relative order.
 func moduleDepthForMode(mode string) int {
-	var confDefault = config.New()
 	switch mode {
 	case "Thorough":
-		return confDefault.ModuleDepthThorough
+		return config.C.ModuleDepthThorough
 	case "Full":
 		return 0 // 0 means no expansion needed — entire codebase is in scope
 	default: // Default
-		return confDefault.ModuleDepthDefault
+		return config.C.ModuleDepthDefault
 	}
 }
 

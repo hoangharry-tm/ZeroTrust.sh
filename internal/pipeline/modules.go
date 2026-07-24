@@ -15,11 +15,12 @@
 package pipeline
 
 import (
+	"log/slog"
 	"path/filepath"
 	"sort"
-	"strings"
 
 	"github.com/hoangharry-tm/zerotrust/internal/cpg_engine"
+	"github.com/hoangharry-tm/zerotrust/pkg/util"
 )
 
 // workingModule represents a detected working module — a directory containing
@@ -45,10 +46,12 @@ type workingModule struct {
 //	Modules: [{dir: "src/handlers", Files: 2}, {dir: "src/services", Files: 1}]
 func detectWorkingModules(changedFiles []string) []workingModule {
 	if len(changedFiles) == 0 {
+		slog.Debug("no changed files, no working modules detected")
 		return nil
 	}
 
-	// Group by directory.
+	slog.Debug("detecting working modules", "changed_files", len(changedFiles))
+
 	dirGroups := make(map[string][]string)
 	for _, f := range changedFiles {
 		d := filepath.Dir(f)
@@ -63,11 +66,12 @@ func detectWorkingModules(changedFiles []string) []workingModule {
 		})
 	}
 
-	// Sort by directory for deterministic output.
 	sort.Slice(modules, func(i, j int) bool {
 		return modules[i].dir < modules[j].dir
 	})
 
+	slog.Debug("working modules detected",
+		"count", len(modules), "directories", moduleDirs(modules))
 	return modules
 }
 
@@ -80,27 +84,31 @@ func detectWorkingModules(changedFiles []string) []workingModule {
 // files themselves.
 func expandModuleScope(modules []workingModule, g cpg_engine.Graph, depth int) {
 	if g == nil || depth <= 0 {
+		slog.Debug("no CPG graph or depth zero, scope = changed files only",
+			"graph_available", g != nil, "depth", depth)
 		for i := range modules {
 			modules[i].scopeFiles = modules[i].changedFiles
 		}
 		return
 	}
 
+	slog.Debug("expanding module scope via CPG neighbours", "depth", depth)
 	for i := range modules {
 		scopeSet := make(map[string]bool)
 		for _, f := range modules[i].changedFiles {
 			scopeSet[f] = true
 		}
 
-		// For each changed file, find neighbour functions and add their files.
 		for _, f := range modules[i].changedFiles {
 			nodes, err := g.QueryNodesByFile(f, cpg_engine.NodeMethod)
 			if err != nil {
+				slog.Debug("failed to query nodes for file", "file", f, "error", err)
 				continue
 			}
 			for _, n := range nodes {
 				neighbours, err := g.GetNeighboursAtDepth(n.ID, depth)
 				if err != nil {
+					slog.Debug("failed to get neighbours", "node", n.ID, "depth", depth, "error", err)
 					continue
 				}
 				for _, nb := range neighbours {
@@ -112,6 +120,10 @@ func expandModuleScope(modules []workingModule, g cpg_engine.Graph, depth int) {
 		}
 
 		modules[i].scopeFiles = setToSortedSlice(scopeSet)
+		slog.Debug("module scope expanded",
+			"module", modules[i].dir,
+			"changed", len(modules[i].changedFiles),
+			"scope", len(modules[i].scopeFiles))
 	}
 }
 
@@ -123,7 +135,9 @@ func flattenScope(modules []workingModule) []string {
 			seen[f] = true
 		}
 	}
-	return setToSortedSlice(seen)
+	result := setToSortedSlice(seen)
+	slog.Debug("flattened scope", "total_files", len(result))
+	return result
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -137,76 +151,50 @@ func setToSortedSlice(s map[string]bool) []string {
 	return r
 }
 
+func moduleDirs(modules []workingModule) []string {
+	dirs := make([]string, len(modules))
+	for i, m := range modules {
+		dirs[i] = m.dir
+	}
+	return dirs
+}
+
 // filterScopeByLanguage filters a file list to include only files that match
-// one of the supported languages. This reduces the CPG build scope to files
-// that taint analysis can actually process.
+// one of the supported languages, and excludes test files via
+// filterTestFiles. This reduces the CPG build scope to files that taint
+// analysis can actually process and that are actually worth reasoning
+// about.
+//
+// filterTestFiles existed, fully implemented with per-language exclusion
+// patterns and its own tests, but was never actually called from anywhere in
+// the pipeline — found live on a real Grafana scan: targeting selected 604
+// surfaces, and a meaningful fraction were test files (test fixtures,
+// mocked SSRF-shaped requests, etc.), including one that got a genuine
+// CWE-918 VIOLATION verdict for what was actually test/mock code. Wiring
+// the existing, already-correct exclusion in here (the single choke point
+// every CPG-scope call site already funnels through) fixes it everywhere
+// at once rather than patching each of the three call sites individually.
 func filterScopeByLanguage(files []string) []string {
 	result := make([]string, 0, len(files))
-	for _, f := range files {
+	for _, f := range filterTestFiles(files) {
 		if _, ok := cpg_engine.DetectLanguage(f); ok {
 			result = append(result, f)
 		}
 	}
+	slog.Debug("filtered scope by language",
+		"input", len(files), "output", len(result))
 	return result
 }
 
-// Source: conventional test-file naming per each language's official toolchain docs
-// (Maven/Gradle for Java/Kotlin, go test for Go, pytest/unittest for Python,
-// Jest/Vitest for JavaScript/TypeScript).
-
-// isTestFile reports whether path is a test file that should be excluded from
-// CPG ingestion. Matches by path pattern, not content.
-// Patterns are language-conventional and do not require a file read.
-func isTestFile(path string) bool {
-	base := filepath.Base(path)
-	parts := strings.Split(path, string(filepath.Separator))
-
-	// Java/Kotlin: filename ends with Test.java, Tests.java, IT.java, Spec.kt, Test.kt
-	if strings.HasSuffix(base, "Test.java") ||
-		strings.HasSuffix(base, "Tests.java") ||
-		strings.HasSuffix(base, "IT.java") ||
-		strings.HasSuffix(base, "Spec.kt") ||
-		strings.HasSuffix(base, "Test.kt") {
-		return true
-	}
-
-	// Go: filename ends with _test.go
-	if strings.HasSuffix(base, "_test.go") {
-		return true
-	}
-
-	// Python: filename starts with test or ends with _test.py
-	if strings.HasPrefix(base, "test") || strings.HasSuffix(base, "_test.py") {
-		return true
-	}
-
-	// JavaScript/TypeScript: filename ends with .test.js, .spec.js, .test.ts, .spec.ts
-	if strings.HasSuffix(base, ".test.js") ||
-		strings.HasSuffix(base, ".spec.js") ||
-		strings.HasSuffix(base, ".test.ts") ||
-		strings.HasSuffix(base, ".spec.ts") {
-		return true
-	}
-
-	// Path segment matching: check each segment exactly (not substring).
-	// This prevents "contest" from matching "test".
-	for _, part := range parts {
-		switch part {
-		case "test", "tests", "__tests__", "androidTest", "testFixtures", "it":
-			return true
-		}
-	}
-
-	return false
-}
-
-// filterTestFiles removes test files from files using isTestFile.
+// filterTestFiles removes test files from files using util.IsTestFile.
 func filterTestFiles(files []string) []string {
 	result := make([]string, 0, len(files))
 	for _, f := range files {
-		if !isTestFile(f) {
+		if !util.IsTestFile(f) {
 			result = append(result, f)
 		}
 	}
+	slog.Debug("filtered test files",
+		"input", len(files), "output", len(result))
 	return result
 }

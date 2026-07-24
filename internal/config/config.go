@@ -62,6 +62,10 @@ type Config struct {
 	BoostSSVCActive      float64 `json:"boost_ssvc_active"       validate:"gte=0,lte=1"`
 	BoostSSVCAutomatable float64 `json:"boost_ssvc_automatable"  validate:"gte=0,lte=1"`
 	FloorPatternPath     float64 `json:"floor_pattern_path"      validate:"gte=0,lte=1"`
+	// BoostPoEConfirmed is applied once when a sandboxed exploit attempt confirms
+	// a finding (finding.PoESuccess). Never applied in reverse: a failed or
+	// inconclusive attempt does not lower confidence (see internal/poe package doc).
+	BoostPoEConfirmed float64 `json:"boost_poe_confirmed" validate:"gte=0,lte=1"`
 
 	// ── CVSS → confidence mapping ────────────────────────────────────────────────
 	CVSSCritical       float64 `json:"cvss_critical"        validate:"gte=0,lte=10"`
@@ -96,7 +100,7 @@ type Config struct {
 	ModuleDepthDefault    int `json:"module_depth_default"     validate:"gte=0"`
 	ModuleDepthThorough   int `json:"module_depth_thorough"    validate:"gte=0"`
 
-	// ── Path A hardcoded confidence assignments ───────────────────────────────────
+	// ── Deterministic hardcoded confidence assignments ───────────────────────────────────
 	ConfSchemaCheck float64 `json:"conf_schema_check" validate:"gte=0,lte=1"`
 	ConfLowPattern  float64 `json:"conf_low_pattern"  validate:"gte=0,lte=1"`
 	ConfMidPattern  float64 `json:"conf_mid_pattern"  validate:"gte=0,lte=1"`
@@ -106,10 +110,35 @@ type Config struct {
 	PatchLLMMaxTokens   int     `json:"patch_llm_max_tokens"  validate:"gte=1"`
 	GeneratePatches     bool    `mapstructure:"generate_patches"`
 
+	// ── PoE eligibility policy ───────────────────────────────────────────────────
+	// Escalation gates that used to be hardcoded Go conditionals in
+	// internal/poe/poe.go's partitionEligible — moved here so the policy
+	// (which severities/languages get sandboxed verification) is inspectable
+	// and changeable without a code change, the same way Triage's threshold
+	// already was.
+	// PoEMinSeverity is the minimum finding.SeverityLabel (by name — "BLOCK"
+	// or "HIGH") eligible for --verify-poc. Findings below this are marked
+	// finding.PoENotAttempted without ever reaching the sandbox.
+	PoEMinSeverity string `json:"poe_min_severity"`
+	// PoESupportedLanguages lists the finding.LangFromPath values internal/poe
+	// has a RouteResolver for. Findings in any other language are marked
+	// finding.PoELanguageUnsupported.
+	PoESupportedLanguages []string `json:"poe_supported_languages"`
+
 	// ── Joern (non-Duration) ──────────────────────────────────────────────────────
 	JoernDefaultPort         int `json:"joern_default_port"          validate:"gte=1,lte=65535"`
 	JoernPingRetries         int `json:"joern_ping_retries"          validate:"gte=1"`
 	JoernQueryTimeoutSeconds int `json:"joern_query_timeout_seconds" validate:"gte=1"`
+	// JoernMaxHeapMB sets the Joern subprocess's JVM -Xmx via the joern
+	// launcher's -J passthrough (e.g. `joern --server -J-Xmx8192m`). Left
+	// unset, the JVM defaults to 1/4 of system RAM (ergonomic default) —
+	// found live to be too small on a 16GB machine once a project's CPG grew
+	// past litemall's scale: OWASP Benchmark's ~15k methods hit
+	// java.lang.OutOfMemoryError mid-query repeatedly, each one silently
+	// dropping that query's result (Joern returns the stack trace as
+	// "stdout", which fails JSON parsing the same way any other malformed
+	// response would) rather than crashing the whole scan outright.
+	JoernMaxHeapMB int `json:"joern_max_heap_mb" validate:"gte=0"`
 
 	// ── Python worker thresholds (shared via ZT_CONFIG_PATH) ─────────────────────
 	LLMVerifyTemperature    float64   `json:"llm_verify_temperature"     validate:"gte=0,lte=2"`
@@ -138,6 +167,17 @@ const (
 // per-query context deadline — if Joern returns 202 for 20+ consecutive
 // seconds it is likely in a GC-deadlock or OOM state.
 const JoernIdleTimeout = 90 * time.Second
+
+// ── PoE sandbox timeouts (internal/poe) ───────────────────────────────────────
+// One container is built and booted per scan, not per finding — these bound
+// the whole-scan cost of an opt-in --verify-poc run.
+const (
+	PoEBuildTimeout       = 300 * time.Second // docker build of the target project
+	PoEHealthPollTimeout  = 30 * time.Second  // wait for the app to accept connections
+	PoEHealthPollInterval = 500 * time.Millisecond
+	PoEExploitTimeout     = 10 * time.Second // per-finding exploit HTTP request
+	PoEStopTimeout        = 10 * time.Second // docker stop grace period before kill
+)
 
 // ── Network / worker timeouts ─────────────────────────────────────────────────
 const (
@@ -192,6 +232,7 @@ func defaultConfig() Config {
 		BoostSSVCActive:      0.10,
 		BoostSSVCAutomatable: 0.05,
 		FloorPatternPath:     0.60,
+		BoostPoEConfirmed:    0.20,
 
 		CVSSCritical:       9.0,
 		CVSSHigh:           7.0,
@@ -205,8 +246,9 @@ func defaultConfig() Config {
 		EPSSPoC:    0.1,
 		EPSSActive: 0.5,
 
-		AssemblerBatchSize:  5,
-		SummarizerBatchSize: 5,
+		AssemblerBatchSize:             5,
+		SummarizerBatchSize:            5,
+		SummarizerMaxFunctionsPerBatch: 15,
 
 		AssemblerMaxDepth:     3,
 		CPGDefaultMaxDepth:    5,
@@ -225,9 +267,13 @@ func defaultConfig() Config {
 		PatchLLMMaxTokens:   512,
 		GeneratePatches:     false,
 
+		PoEMinSeverity:        "HIGH",
+		PoESupportedLanguages: []string{"java", "python", "javascript", "typescript", "go"},
+
 		JoernDefaultPort:         8080,
 		JoernPingRetries:         12,
 		JoernQueryTimeoutSeconds: 120,
+		JoernMaxHeapMB:           8192,
 
 		LLMVerifyTemperature:    0.1,
 		LLMVerifyMaxPredict:     300,

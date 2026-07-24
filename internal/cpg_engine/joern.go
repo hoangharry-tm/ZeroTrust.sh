@@ -22,8 +22,8 @@
 // taint queries via an HTTP JSON API on 127.0.0.1 only.
 //
 // The CPG is shared between both detection paths via the pkg/Graph interface:
-//   - Path A's Joern taint analysis calls TaintPaths directly.
-//   - Path B's Heuristic Targeting and Call Chain Assembler call QueryNodes,
+//   - Deterministic's Joern taint analysis calls TaintPaths directly.
+//   - Reasoning's Heuristic Targeting and Call Chain Assembler call QueryNodes,
 //     GetCallGraph, GetCallers, GetCallees, and GetNeighboursAtDepth.
 //
 // # Subprocess lifecycle
@@ -79,7 +79,7 @@ import (
 
 	"github.com/hoangharry-tm/zerotrust/internal/config"
 
-	"github.com/hoangharry-tm/zerotrust/pkg/sqlite"
+	"github.com/hoangharry-tm/zerotrust/pkg/postgres"
 )
 
 // defaults for all configurable timeouts and retry counts.
@@ -130,16 +130,22 @@ func WithPingRetries(n int) Option { return func(c *Client) { c.pingRetries = n 
 // classpath noise. Pass os.Stderr here when debugging Joern startup failures.
 func WithSubprocessStderr(w io.Writer) Option { return func(c *Client) { c.subprocessStderr = w } }
 
-// SetSQLiteBackend attaches a SQLite read backend to the Client. When set,
+// WithMaxHeapMB sets the managed Joern subprocess's JVM -Xmx in megabytes.
+// 0 (the zero value) leaves the JVM's ergonomic default (1/4 of system RAM)
+// in place — pass config.C.JoernMaxHeapMB explicitly to get the tool's
+// configured default instead of the bare JVM one.
+func WithMaxHeapMB(mb int) Option { return func(c *Client) { c.maxHeapMB = mb } }
+
+// SetDBBackend attaches a DB read backend to the Client. When set,
 // all graph read queries (QueryNodes, GetCallers, GetCallees, etc.) read from
-// SQLite instead of hitting Joern HTTP — only TaintPaths still uses Joern HTTP.
-// Call after IngestCPGToSQLite completes to enable the fast path.
+// DB instead of hitting Joern HTTP — only TaintPaths still uses Joern HTTP.
+// Call after IngestCPGToDB completes to enable the fast path.
 // Safe to call at any point in the Client lifecycle; subsequent Graph() calls
 // inherit the backend.
-func (c *Client) SetSQLiteBackend(db *sqlite.DB, projectID, cpgVersion string) {
-	c.sqliteDB = db
-	c.sqliteProjectID = projectID
-	c.sqliteCPGVersion = cpgVersion
+func (c *Client) SetDBBackend(db *postgres.DB, projectID, cpgVersion string) {
+	c.pgDB = db
+	c.pgProjectID = projectID
+	c.pgCPGVersion = cpgVersion
 }
 
 // Client wraps the Joern HTTP server API and optionally manages its subprocess.
@@ -152,14 +158,15 @@ type Client struct {
 	pingRetries      int
 	queryTimeout     time.Duration
 	buildTimeout     time.Duration
+	maxHeapMB        int       // JVM -Xmx passed via joern's -J passthrough; 0 = JVM ergonomic default
 	subprocessStderr io.Writer // JVM stderr sink; defaults to io.Discard
 
 	httpClient *http.Client
 
-	// Optional SQLite backend for graph reads. Set via WithSQLiteBackend.
-	sqliteDB         *sqlite.DB
-	sqliteProjectID  string
-	sqliteCPGVersion string
+	// Optional DB backend for graph reads. Set via SetDBBackend.
+	pgDB         *postgres.DB
+	pgProjectID  string
+	pgCPGVersion string
 
 	// pre-flagged sinks — populated by PreFlagSinks before CPG build.
 	preFlaggedMu    sync.Mutex
@@ -171,10 +178,12 @@ type Client struct {
 
 	// subprocess state — protected by mu.
 	// cmd is non-nil only when this client spawned the process via Start.
-	mu      sync.Mutex
-	cmd     *exec.Cmd
-	done    chan struct{} // closed when the subprocess exits
-	crashed atomic.Bool   // set by the crash-watcher goroutine
+	mu       sync.Mutex
+	cmd      *exec.Cmd
+	done     chan struct{} // closed when the subprocess exits
+	crashed  atomic.Bool   // set by the crash-watcher goroutine
+	stopping atomic.Bool   // set by Stop before signalling, so the crash
+	// watcher can tell an intentional shutdown from a real crash.
 }
 
 // New returns a Client configured with the given options.
@@ -226,6 +235,7 @@ func (c *Client) Start(ctx context.Context) error {
 		c.mu.Unlock()
 		return ErrAlreadyStarted
 	}
+	c.stopping.Store(false)
 
 	if err := checkPortAvailable(ctx, c.host, c.port); err != nil {
 		c.mu.Unlock()
@@ -239,12 +249,19 @@ func (c *Client) Start(ctx context.Context) error {
 	// Use exec.Command (not exec.CommandContext) so the subprocess lifetime is
 	// not tied to the Start caller's context. waitReady uses ctx for polling
 	// timeout; the process itself lives until Stop() calls SIGTERM/SIGKILL.
-	//nolint:gosec // binaryPath comes from config, not user input at scan time
-	cmd := exec.Command(c.binaryPath,
+	args := []string{
 		"--server",
 		"--server-host", c.host,
 		"--server-port", strconv.Itoa(c.port),
-	)
+	}
+	if c.maxHeapMB > 0 {
+		// -J<flag> is the sbt-native-packager launcher's passthrough to the
+		// underlying `java` invocation (verified: `joern ... -J-Xmx100m`
+		// results in `java ... -Xmx100m` in the actual process args).
+		args = append(args, "-J-Xmx"+strconv.Itoa(c.maxHeapMB)+"m")
+	}
+	//nolint:gosec // binaryPath comes from config, not user input at scan time
+	cmd := exec.Command(c.binaryPath, args...)
 	cmd.Stdout = io.Discard                               // JVM stdout is startup noise; data arrives via HTTP API
 	cmd.Stderr = c.subprocessStderr                       // caller-configurable; defaults to io.Discard
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true} // own process group so Stop kills the entire tree
@@ -266,7 +283,11 @@ func (c *Client) Start(ctx context.Context) error {
 		defer close(done)
 		_ = cmd.Wait() //nolint:errcheck // exit status reported via crashed flag
 		c.crashed.Store(true)
-		slog.Warn("joern: subprocess exited unexpectedly")
+		if c.stopping.Load() {
+			slog.Debug("joern: subprocess exited (stop in progress)")
+		} else {
+			slog.Warn("joern: subprocess exited unexpectedly")
+		}
 	}()
 
 	slog.Debug("joern: waiting for server to become ready")
@@ -296,6 +317,10 @@ func (c *Client) Stop(ctx context.Context) error {
 	if cmd == nil || cmd.Process == nil {
 		return ErrNotManaged
 	}
+
+	// Mark before signalling so the crash-watcher goroutine (which races this
+	// call) logs the exit as an expected shutdown, not a crash.
+	c.stopping.Store(true)
 
 	pid := cmd.Process.Pid
 
@@ -453,10 +478,10 @@ func (c *Client) GraphWithContext(ctx context.Context) *joernGraph {
 }
 
 // newGraph creates a joernGraph with a fresh scan-scoped cache.
-// Graph methods always read the SQLite backend from the Client directly so
-// SetSQLiteBackend takes effect for ALL existing graph instances — not just
+// Graph methods always read the DB backend from the Client directly so
+// SetDBBackend takes effect for ALL existing graph instances — not just
 // graphs created after the call. This is critical for pipelines that create
-// the graph before the CPG is built and SQLite ingestion completes.
+// the graph before the CPG is built and DB ingestion completes.
 func (c *Client) newGraph(ctx context.Context) *joernGraph {
 	return &joernGraph{
 		client: c,

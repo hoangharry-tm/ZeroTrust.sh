@@ -67,8 +67,24 @@ func (c *Client) doQuery(ctx context.Context, query string) ([]byte, error) {
 	}
 	slog.Debug("joern: doQuery submitting", "query", query)
 
-	// Apply per-query deadline so a single slow traversal can't stall the scan.
-	qctx, cancel := context.WithTimeout(ctx, c.queryTimeout)
+	// Apply per-query deadline so a single slow traversal can't stall the scan
+	// — but only as a DEFAULT for callers with no deadline of their own.
+	// context.WithTimeout always takes whichever deadline is sooner, so
+	// unconditionally wrapping every incoming ctx here used to silently
+	// override BuildCPG's own, deliberately longer buildTimeout (900s):
+	// BuildCPG's importCode call passed a buildCtx already bounded to 900s,
+	// but doQuery re-wrapped it with queryTimeout (120s default) anyway,
+	// collapsing the effective deadline to 120s regardless — found live on
+	// SaltStack's ~5500-file Python source tree, whose pysrc2cpg parse
+	// genuinely needs more than 120s and failed with "context deadline
+	// exceeded" well within its supposed 900s budget. Only apply our own
+	// default when the caller hasn't already set one; respect an explicit,
+	// intentionally longer caller deadline as-is.
+	qctx := ctx
+	cancel := func() {}
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		qctx, cancel = context.WithTimeout(ctx, c.queryTimeout)
+	}
 	defer cancel()
 
 	uuid, err := c.postQuery(qctx, query)
@@ -284,9 +300,36 @@ func parseStdout(s string) string {
 	// Strip ANSI escape sequences before further processing.
 	s = stripANSI(s)
 
+	// Triple-quoted REPL value: "resN: String = """<content>""""". Checked
+	// FIRST and keyed on the 5-char anchor ` = """` rather than the old
+	// 4-char ` = "` — found live on a real OWASP Benchmark ingest: a 115KB
+	// paginated CALL-node response's sanitized "code" field legitimately
+	// contained a coincidental ` = "`-shaped substring (any JSON string value
+	// bytes could in principle line up that way), and strings.LastIndex
+	// picked THAT spurious match instead of the true REPL wrapper prefix —
+	// silently discarding everything before it, including the real opening
+	// """[, and feeding json.Unmarshal a truncated fragment starting mid
+	// object ("invalid character '\n' in string literal"). Three consecutive
+	// raw double-quote characters can never occur inside our own JSON
+	// content: every producer sanitizes name/file/code by replacing literal
+	// `"` with a space (see node_query.scala.tmpl's `san` helper), and no
+	// query template ever emits `"""` as JSON syntax. That makes ` = """` a
+	// structurally unambiguous anchor — anything after it, up to the FINAL
+	// `"""` in the string (Scala's own closing delimiter), is unconditionally
+	// the real content, never a coincidental match.
+	if idx := strings.Index(s, ` = """`); idx != -1 {
+		content := s[idx+len(` = """`):]
+		if end := strings.LastIndex(content, `"""`); end != -1 {
+			return content[:end]
+		}
+	}
+
 	// REPL annotation: "resN: Type = <value>" — strip prefix up to " = ".
 	// Use ` = "` instead of ` = ` to avoid matching ` = ` inside JSON code
 	// values (e.g. Java "x = y"). The REPL string value always starts with '"'.
+	// Only reached for values NOT using the triple-quote form above (short,
+	// single-line results) — for those the ambiguity this heuristic risks is
+	// far smaller since there's no large embedded JSON payload to collide with.
 	if idx := strings.LastIndex(s, ` = "`); idx != -1 {
 		// Use LastIndex to find the assignment closest to the actual value,
 		// skipping any preamble from the REPL session.
@@ -294,6 +337,21 @@ func parseStdout(s string) string {
 		if len(candidate) > 0 && (candidate[0] == '[' || candidate[0] == '{' || candidate[0] == '"') {
 			s = candidate
 		}
+	}
+
+	// Scala triple-quoted literal: """...""". Must be checked before the
+	// single-quote case below — it also starts and ends with '"', but its
+	// content is Scala's raw literal text, not JSON-escaped, so
+	// json.Unmarshal-decoding it as a JSON string fails and previously fell
+	// through to returning the string with the """ delimiters still
+	// attached, which every downstream json.Unmarshal call then rejected
+	// with "invalid character '\"' after top-level value". The REPL
+	// pretty-printer switches to this form whenever the underlying String
+	// contains literal newlines — the common case here, since every
+	// multi-node JSON-list query template in this codebase embeds \n for
+	// readability.
+	if len(s) >= 6 && strings.HasPrefix(s, `"""`) && strings.HasSuffix(s, `"""`) {
+		return s[3 : len(s)-3]
 	}
 
 	// Scala string literal: outer double-quotes with escaped inner quotes

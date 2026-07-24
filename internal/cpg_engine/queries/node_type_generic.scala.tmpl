@@ -2,15 +2,17 @@ cpg.graph
   .nodes
   .filter(_._label == {{.QuotedLabel}})
   .map(n => {
-    val sc     = try { n.property("CODE").asInstanceOf[String] } catch { case _ => "" }
-    val safesc = sc.map(c => if (c=='\\'||c=='"'||c<32||c>126) ' ' else c).mkString
+    def san(s: String): String = if (s == null) "" else s.map(c => if (c=='\\'||c=='"'||c<32||c>126) ' ' else c).mkString
+    val sc   = try { n.property("CODE").asInstanceOf[String] } catch { case _ => "" }
+    val name = try { n.property("NAME").asInstanceOf[String] } catch { case _ => "" }
+    val file = try { n.property("FILENAME").asInstanceOf[String] } catch { case _ => "" }
     s"""{
       "id":   "${n.id.toString}",
-      "name": "${try { n.property("NAME").asInstanceOf[String] } catch { case _ => "" }}",
-      "file": "${try { n.property("FILENAME").asInstanceOf[String] } catch { case _ => "" }}",
+      "name": "${san(name)}",
+      "file": "${san(file)}",
       "line": ${try { n.property("LINE_NUMBER").asInstanceOf[Int] } catch { case _ => 0 }},
       "type": "${n.label}",
-      "code": "${safesc}"
+      "code": "${san(sc)}"
     }"""
   })
   .toList

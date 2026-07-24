@@ -170,3 +170,92 @@ func TestBFS_DepthCapRespected(t *testing.T) {
 		t.Errorf("BFS made %d GetCallers calls, expected ≤ 15 (early-stop)", counter)
 	}
 }
+
+// TestSinkFanInGuard_DropsAttributionWhenTooManyUnrelatedSurfacesClaimSameSink
+// is a regression test for a real bug found live on a Grafana scan: a single
+// sink location got walk-up-attributed to 5 completely unrelated surfaces
+// spanning 3 different top-level packages — including a bare logger wrapper
+// that had nothing to do with the actual sink (OAuth error handling in a
+// different file entirely). Each individual taint path's own BFS found
+// exactly ONE ancestor (so the existing per-path "multiple surfaces matched"
+// ambiguity check never fired) — the ambiguity only becomes visible when
+// looking across many DIFFERENT paths that all converge on the same sink
+// node, which is exactly what the fan-in guard checks. 4 distinct sources,
+// each resolving to a distinct surface, all sharing sink "hubSink" — over
+// maxSinkFanIn(3) — must all be dropped.
+func TestSinkFanInGuard_DropsAttributionWhenTooManyUnrelatedSurfacesClaimSameSink(t *testing.T) {
+	// 4 distinct taint paths, 4 distinct sources, 4 distinct surface
+	// ancestors, ALL sharing the same sink node ID.
+	paths := make([]cpg.TaintPath, 4)
+	for i := range paths {
+		paths[i] = cpg.TaintPath{
+			Source: cpg.TaintSource{NodeID: fmt.Sprintf("src%d", i)},
+			Sink:   cpg.TaintSink{NodeID: "hubSink", Name: "sharedSink"},
+		}
+	}
+	callerMap := map[string]string{
+		"src0": "surf0", "src1": "surf1", "src2": "surf2", "src3": "surf3",
+	}
+
+	mock := &bfsMockGraph{
+		projectWideFunc: func(ids []string, lang string) ([]cpg.TaintPath, error) {
+			return paths, nil
+		},
+		getCallersFunc: func(id string) ([]cpg.Node, error) {
+			if next, ok := callerMap[id]; ok {
+				return []cpg.Node{{ID: next, Name: next}}, nil
+			}
+			return nil, nil
+		},
+	}
+
+	e := New(mock, "nonexistent", true)
+	surfaces := []targeting.Surface{{ID: "surf0"}, {ID: "surf1"}, {ID: "surf2"}, {ID: "surf3"}}
+	got, err := e.Enrich(context.Background(), surfaces, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, es := range got {
+		if len(es.SinkNodes) != 0 {
+			t.Errorf("surface %s: expected no sink attribution (fan-in guard should have dropped it), got SinkNodes=%v", es.ID, es.SinkNodes)
+		}
+	}
+}
+
+// TestSinkFanInGuard_AllowsAttributionUnderThreshold confirms the guard
+// doesn't over-trigger: 2 distinct surfaces sharing a sink (well under
+// maxSinkFanIn=3) is a plausible legitimate shared-helper pattern and must
+// still be attributed normally.
+func TestSinkFanInGuard_AllowsAttributionUnderThreshold(t *testing.T) {
+	paths := []cpg.TaintPath{
+		{Source: cpg.TaintSource{NodeID: "src0"}, Sink: cpg.TaintSink{NodeID: "sharedHelperSink", Name: "helperSink"}},
+		{Source: cpg.TaintSource{NodeID: "src1"}, Sink: cpg.TaintSink{NodeID: "sharedHelperSink", Name: "helperSink"}},
+	}
+	callerMap := map[string]string{"src0": "surf0", "src1": "surf1"}
+
+	mock := &bfsMockGraph{
+		projectWideFunc: func(ids []string, lang string) ([]cpg.TaintPath, error) {
+			return paths, nil
+		},
+		getCallersFunc: func(id string) ([]cpg.Node, error) {
+			if next, ok := callerMap[id]; ok {
+				return []cpg.Node{{ID: next, Name: next}}, nil
+			}
+			return nil, nil
+		},
+	}
+
+	e := New(mock, "nonexistent", true)
+	surfaces := []targeting.Surface{{ID: "surf0"}, {ID: "surf1"}}
+	got, err := e.Enrich(context.Background(), surfaces, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, es := range got {
+		if len(es.SinkNodes) == 0 {
+			t.Errorf("surface %s: expected sink attribution to survive (fan-in of 2 is under the threshold), got none", es.ID)
+		}
+	}
+}

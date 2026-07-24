@@ -14,6 +14,8 @@
 
 package pipeline
 
+import "log/slog"
+
 // Config holds the resolved, validated configuration for a single scan run.
 // It is populated from cobra flags in runScan before the pipeline is constructed.
 //
@@ -24,7 +26,7 @@ package pipeline
 //	--model         → ModelName     (model name, e.g. "llama3.2" or "gpt-4o")
 //	--llm-base-url  → LLMBaseURL    (LLM API base URL; defaults to the provider's standard endpoint)
 //	--llm-api-key   → LLMAPIKey     (API key; required for --llm-provider openai)
-//	--report        → ReportPath    (HTML report destination, default "build/report.html")
+//	--db-url        → DatabaseURL   (Postgres connection string; falls back to $DATABASE_URL)
 //	--project-id    → ProjectID     (override derived project ID for scan-state cache)
 //
 // ScanMode is fixed to "Default" — there is no scope flag; every scan covers
@@ -38,18 +40,17 @@ type Config struct {
 	// If empty, LLM stages are skipped.
 	ModelName string
 
-	// ReportPath is the file path where the self-contained HTML report is written.
-	ReportPath string
+	// DatabaseURL is the Postgres connection string scored findings and scan
+	// state are persisted to. Required — there is no report/file output;
+	// the database is the product of a scan.
+	DatabaseURL string
 
-	// JSONReportPath is the optional file path for the machine-readable JSON report.
-	// Empty string disables JSON output.
-	JSONReportPath string
-
-	// ProjectID overrides the project identifier used to key scan state in SQLite.
-	// If empty, a deterministic ID is derived from the resolved Target path.
+	// ProjectID overrides the project identifier used to key scan state in
+	// the database. If empty, a deterministic ID is derived from the
+	// resolved Target path.
 	ProjectID string
 
-	// ScanMode controls the CPG and Path B scope.
+	// ScanMode controls the CPG and Reasoning scope.
 	//   "Default"  — working modules (git diff) + depth-2 module neighbours.
 	//   "Thorough" — depth-3 neighbours + all sink-flagged modules.
 	//   "Full"     — entire codebase (no scope limit).
@@ -94,20 +95,26 @@ type Config struct {
 func (c *Config) defaults() {
 	if c.Target == "" {
 		c.Target = "."
-	}
-	if c.ReportPath == "" {
-		c.ReportPath = "build/report.html"
+		slog.Debug("config default applied", "field", "Target", "value", c.Target)
 	}
 	if c.ScanMode == "" {
 		c.ScanMode = "Default"
+		slog.Debug("config default applied", "field", "ScanMode", "value", c.ScanMode)
 	}
 	if c.JoernURL == "" {
 		c.JoernURL = "http://localhost:8080"
+		slog.Debug("config default applied", "field", "JoernURL", "value", c.JoernURL)
 	}
 	if c.LLMProvider == "" {
 		c.LLMProvider = "ollama"
+		slog.Debug("config default applied", "field", "LLMProvider", "value", c.LLMProvider)
 	}
 	if c.TriageThreshold <= 0 {
 		c.TriageThreshold = 0.50
+		slog.Debug("config default applied", "field", "TriageThreshold", "value", c.TriageThreshold)
 	}
+	slog.Info("config resolved",
+		"target", c.Target, "scan_mode", c.ScanMode, "joern_url", c.JoernURL,
+		"llm_provider", c.LLMProvider, "model", c.ModelName,
+		"triage_threshold", c.TriageThreshold, "verbose", c.Verbose)
 }

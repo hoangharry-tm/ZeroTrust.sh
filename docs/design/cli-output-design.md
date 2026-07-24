@@ -62,4 +62,6 @@ The three-renderer stack (MinimalRenderer/TreeRenderer/TUIRenderer) and the stan
 - `MinimalRenderer` — the CI/pipe path (still active)
 
 `charmbracelet/bubbletea` and `charmbracelet/bubbles` are no longer dependencies.
-`charmbracelet/lipgloss` is retained for the Docker dependency error box in `deps.go`.
+`charmbracelet/lipgloss` is unused in the codebase now too — Docker orchestration (and
+its dependency error box) was removed from the binary entirely — but it lingers as an
+unpruned entry in `go.mod`.

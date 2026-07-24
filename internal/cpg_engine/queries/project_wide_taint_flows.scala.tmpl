@@ -1,4 +1,16 @@
-{
+// Wrapped in an immediately-invoked function literal, not a bare `{ }` block,
+// so this is unambiguously ONE top-level statement to Joern's line-based
+// REPL bridge. A bare block with several outer `val`s (sinkSet, callSinks,
+// ctorCallSinks, ...) was found live to make Joern's REPL echo EACH one
+// separately — the captured "stdout" for one real query was a raw Scala
+// toString() dump of an intermediate `val sinks: List[Call]`, not our JSON
+// template's output at all, because that val's own echo happened to land
+// wherever our Go-side extraction heuristic looked. A function call's
+// parens can't be "complete" until the whole body closes, so nothing
+// inside ever gets a chance to echo independently — only the one true
+// return value does.
+(() => {
+  def san(s: String): String = if (s == null) "" else s.map(c => if (c=='\\'||c=='"'||c<32||c>126) ' ' else c).mkString
   val sinkSet = {{.SinkSet}}
   val callSinks = cpg.call.filter(c => sinkSet.contains(c.name))
   val ctorSinkSet = {{.CtorSinkSet}}
@@ -25,13 +37,13 @@
         .filterNot(n => n.id < 0)
         .map(n => s"""{
           "id":   "${n.id.toString}",
-          "name": "${n match {
+          "name": "${san(n match {
             case c: Call               => c.name
             case mp: MethodParameterIn => mp.name
             case i: Identifier         => i.name
             case _                     => ""
-          }}",
-          "file": "${try { n.property("FILENAME").asInstanceOf[String] } catch { case _ => "" }}",
+          })}",
+          "file": "${san(try { n.property("FILENAME").asInstanceOf[String] } catch { case _ => "" })}",
           "line": ${try { n.property("LINE_NUMBER").asInstanceOf[Int] } catch { case _ => 0 }},
           "type": "${n.label}"
         }""")
@@ -39,29 +51,29 @@
 
       s"""{
         "method_id":   "${methodID}",
-        "method_name": "${methodName}",
-        "method_file": "${methodFile}",
+        "method_name": "${san(methodName)}",
+        "method_file": "${san(methodFile)}",
         "source": {
           "id":   "${first.id.toString}",
-          "name": "${first match {
+          "name": "${san(first match {
             case mp: MethodParameterIn => mp.name
             case m: Method             => m.name
             case c: Call               => c.name
             case _                     => ""
-          }}",
-          "file": "${first.location.filename}",
+          })}",
+          "file": "${san(first.location.filename)}",
           "line": ${first.lineNumber.getOrElse(0)},
           "type": "${first.label}"
         },
         "sink": {
           "id":   "${last.id.toString}",
-          "name": "${last match {
+          "name": "${san(last match {
             case mp: MethodParameterIn => mp.name
             case c: Call               => c.name
             case m: Method             => m.name
             case _                     => ""
-          }}",
-          "file": "${last.location.filename}",
+          })}",
+          "file": "${san(last.location.filename)}",
           "line": ${last.lineNumber.getOrElse(0)},
           "type": "${last.label}"
         },
@@ -69,4 +81,4 @@
       }"""
     }
     .toList.mkString("[", ",", "]")
-}
+})()

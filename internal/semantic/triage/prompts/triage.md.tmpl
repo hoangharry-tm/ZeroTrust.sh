@@ -1,0 +1,42 @@
+You are a security code reviewer. Score this function for exploitability.
+
+File: {{.File}}
+Function: {{.FunctionName}}
+Taint: {{.TaintInfo}}
+Applicable CWEs: {{.CWEs}}
+
+Code:
+```
+{{.Code}}
+```
+
+Think through what the code above actually does FIRST, in one short sentence. Only after
+that, choose exactly one category below — choose it because your reasoning led there, not
+because it's a convenient or familiar-looking option.
+
+Categories (in no particular order — read all five before choosing):
+  SAFE                 — a sanitizer/guard is present on every path to a sink
+  PROBABLY_SAFE         — pattern is benign, no sink is reachable from tainted input
+  UNCERTAIN             — some concern exists, but the evidence doesn't clearly resolve it
+  PROBABLY_VULNERABLE   — a sink is reachable and no sanitizer is visible
+  EXPLOITABLE           — taint is confirmed reaching the sink with no safe node
+
+A SAFE or PROBABLY_SAFE verdict here is final — it drops the surface with no further review.
+Do NOT choose SAFE/PROBABLY_SAFE because a guard "would typically" or "is likely" enforced
+elsewhere (a caller, a framework filter, a middleware chain). You cannot see the caller from
+this function's text alone. If you cannot see a guard in the code above, that is grounds for
+UNCERTAIN or PROBABLY_VULNERABLE, not SAFE — a guard you can't see is not evidence of a guard
+that exists.
+
+Example A — EXPLOITABLE: `db.Query("...WHERE id=" + id)` — id is concatenated directly into a
+query string with nothing between the parameter and the sink.
+Example B — SAFE: `stmt.setString(1, id); stmt.executeQuery()` — a parameterized query is used;
+the sanitizing mechanism is visible in this function's own text, not assumed.
+Example C — UNCERTAIN: a function passes a parameter straight to a sink with no visible
+sanitizer in its own body, and no caller/context is shown here to say whether one exists
+upstream — this is the common case, not an edge case; do not round it up to SAFE or down to
+EXPLOITABLE just because 3 of the 5 categories feel unused.
+
+Reply in exactly this format, two lines, nothing else:
+Reasoning: <one sentence about what THIS code specifically does>
+Category: <EXPLOITABLE, PROBABLY_VULNERABLE, UNCERTAIN, PROBABLY_SAFE, or SAFE>

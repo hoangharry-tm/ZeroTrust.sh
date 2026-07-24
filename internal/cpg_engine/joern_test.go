@@ -400,6 +400,106 @@ func TestDoQuery_InitTimePollsUntilSuccess(t *testing.T) {
 	}
 }
 
+// TestDoQuery_RespectsCallerDeadlineOverQueryTimeout is a regression test for
+// a real bug found live: doQuery unconditionally wrapped every incoming ctx
+// with context.WithTimeout(ctx, c.queryTimeout) — and since Go's context
+// nesting always takes whichever deadline is SOONER, this silently collapsed
+// any caller's own, deliberately longer deadline down to c.queryTimeout.
+// BuildCPG gives itself a 900s buildTimeout specifically because CPG builds
+// on large projects can take a while, but every doQuery call it made
+// (including the importCode call itself) got re-clamped to the much shorter
+// default queryTimeout regardless. Found on a real SaltStack scan (~5500
+// Python files): the importCode call failed with "context deadline
+// exceeded" at 120s even though BuildCPG's own buildCtx had 900s left.
+func TestDoQuery_RespectsCallerDeadlineOverQueryTimeout(t *testing.T) {
+	// Requires 3 polls (at resultPollInterval=200ms) before succeeding —
+	// ~600ms total, longer than the 200ms queryTimeout below but well
+	// within the caller's own 3s deadline.
+	const pollsNeeded = 3
+	var calls int
+	var mu sync.Mutex
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/query":
+			_ = json.NewEncoder(w).Encode(querySubmitResponse{UUID: "slow-uuid", Success: true})
+		case r.Method == http.MethodGet && r.URL.Path == "/result/slow-uuid":
+			mu.Lock()
+			n := calls
+			calls++
+			mu.Unlock()
+			if n < pollsNeeded {
+				_ = json.NewEncoder(w).Encode(queryResultResponse{UUID: "slow-uuid", Success: false})
+			} else {
+				_ = json.NewEncoder(w).Encode(queryResultResponse{
+					UUID: "slow-uuid", Success: true, Stdout: `[{"id":"1"}]`,
+				})
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	c, err := New(WithServerURL(srv.URL), WithQueryTimeout(200*time.Millisecond), WithPingRetries(3))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// Caller explicitly sets its own, much longer deadline — simulating
+	// BuildCPG's buildCtx.
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	out, err := c.doQuery(ctx, "slow query")
+	if err != nil {
+		t.Fatalf("doQuery: %v — want success, caller's 3s deadline should NOT be "+
+			"clamped down to the 200ms queryTimeout", err)
+	}
+	if string(out) != `[{"id":"1"}]` {
+		t.Errorf("doQuery result = %q, want %q", out, `[{"id":"1"}]`)
+	}
+}
+
+// TestDoQuery_StillAppliesDefaultTimeoutWithoutCallerDeadline confirms the
+// per-query default protection still works for ordinary callers that pass a
+// plain, un-deadlined context (e.g. GetCallers/QueryNodesByFile via the
+// scan's root ctx) — the fix must not remove this safety net, only stop it
+// from overriding a caller's own explicit, longer deadline.
+func TestDoQuery_StillAppliesDefaultTimeoutWithoutCallerDeadline(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/query":
+			_ = json.NewEncoder(w).Encode(querySubmitResponse{UUID: "stuck-uuid", Success: true})
+		case r.Method == http.MethodGet && r.URL.Path == "/result/stuck-uuid":
+			// Never completes — always "still processing".
+			_ = json.NewEncoder(w).Encode(queryResultResponse{UUID: "stuck-uuid", Success: false})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	c, err := New(WithServerURL(srv.URL), WithQueryTimeout(150*time.Millisecond), WithPingRetries(3))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	start := time.Now()
+	_, err = c.doQuery(context.Background(), "never finishes")
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("doQuery: expected timeout error for a query that never completes, got nil")
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("doQuery took %v to time out — the 150ms default queryTimeout should have "+
+			"applied since no caller deadline was set", elapsed)
+	}
+}
+
 // ─── parseStdout ──────────────────────────────────────────────────────────────
 
 func TestParseStdout(t *testing.T) {
@@ -412,6 +512,42 @@ func TestParseStdout(t *testing.T) {
 		{"REPL annotation", `res0: String = "[{\"id\":\"1\"}]"`, `[{"id":"1"}]`},
 		{"Scala string literal", `"[{\"id\":\"1\"}]"`, `[{"id":"1"}]`},
 		{"trailing whitespace", `  [{"id":"1"}]  `, `[{"id":"1"}]`},
+		// Real-world regression: Joern's REPL pretty-printer renders a
+		// multi-line String result (the common case — every multi-node
+		// JSON-list query template embeds \n) as a Scala triple-quoted
+		// literal, not a single-quoted+escaped one. Reproduced verbatim
+		// (minus surrounding whitespace) from a live joern-server response
+		// during an end-to-end smoke test — without this case, every
+		// non-trivial GetCallGraph/IngestCPGToDB/QueryNodesByFile result
+		// failed to parse with "invalid character '\"' after top-level
+		// value", silently producing zero findings on any real codebase.
+		{
+			"Scala triple-quoted multi-line literal",
+			"val res4: String = \"\"\"[{\n      \"id\":   \"1\",\n      \"name\": \"get_user\"\n    }]\"\"\"",
+			"[{\n      \"id\":   \"1\",\n      \"name\": \"get_user\"\n    }]",
+		},
+		// Real-world regression #2: the OLD implementation keyed the
+		// triple-quote extraction off strings.LastIndex(s, ` = "`) (a 4-char
+		// heuristic) applied to the WHOLE string, before ever checking for
+		// `"""`. Found live on a real OWASP Benchmark IngestCPGToDB run: a
+		// large paginated CALL-node JSON payload happens to contain the
+		// literal substring ` = "` inside one of its own "code" field
+		// values (ordinary Java source text, sanitized but not required to
+		// avoid this specific 4-char sequence) — strings.LastIndex picked
+		// THAT coincidental match deep inside the payload instead of the
+		// true REPL wrapper's ` = """` prefix, silently discarding
+		// everything before it (including the real opening """[) and
+		// returning a fragment that starts mid-object. json.Unmarshal on
+		// that fragment failed with "invalid character '\n' in string
+		// literal" — a different, subtler failure than regression #1 above
+		// (which was about recognizing the wrapper existed at all; this one
+		// is about finding the CORRECT occurrence of it). Fixed by anchoring
+		// on the structurally-unambiguous 5-char ` = """` first.
+		{
+			"triple-quoted payload containing a coincidental ` = \"` substring",
+			"val res5: String = \"\"\"[{\n      \"id\": \"1\",\n      \"code\": \"int x = \\\"y\\\"\"\n    }]\"\"\"",
+			"[{\n      \"id\": \"1\",\n      \"code\": \"int x = \\\"y\\\"\"\n    }]",
+		},
 		// Console-error strings have no = separator; parseStdout must return them as-is
 		// so isJoernConsoleError can detect them in fetchResult.
 		{"console Error passthrough", `io.joern.console.Error: No CPG loaded`, `io.joern.console.Error: No CPG loaded`},

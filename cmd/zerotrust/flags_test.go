@@ -20,7 +20,33 @@ import (
 	"github.com/spf13/cobra"
 )
 
+func TestDBURLFlag_RequiredWhenUnset(t *testing.T) {
+	t.Setenv("DATABASE_URL", "")
+	cmd := &cobra.Command{}
+	defineFlags(cmd)
+
+	_, err := runConfigFromCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when --db-url and $DATABASE_URL are both unset")
+	}
+}
+
+func TestDBURLFlag_FallsBackToEnv(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://test:test@localhost:5432/test")
+	cmd := &cobra.Command{}
+	defineFlags(cmd)
+
+	cfg, err := runConfigFromCommand(cmd)
+	if err != nil {
+		t.Fatalf("runConfigFromCommand() returned error: %v", err)
+	}
+	if cfg.DatabaseURL != "postgres://test:test@localhost:5432/test" {
+		t.Errorf("DatabaseURL = %q, want fallback to $DATABASE_URL", cfg.DatabaseURL)
+	}
+}
+
 func TestLLMProviderFlag_InvalidRejected(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://test:test@localhost:5432/test")
 	cmd := &cobra.Command{}
 	defineFlags(cmd)
 	cmd.SetArgs([]string{"--llm-provider", "invalid"})
@@ -33,6 +59,7 @@ func TestLLMProviderFlag_InvalidRejected(t *testing.T) {
 }
 
 func TestLLMProviderFlag_DefaultIsOllama(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://test:test@localhost:5432/test")
 	cmd := &cobra.Command{}
 	defineFlags(cmd)
 
@@ -47,6 +74,7 @@ func TestLLMProviderFlag_DefaultIsOllama(t *testing.T) {
 
 func TestLLMProviderFlag_OpenAIRequiresAPIKey(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("DATABASE_URL", "postgres://test:test@localhost:5432/test")
 	cmd := &cobra.Command{}
 	defineFlags(cmd)
 	cmd.SetArgs([]string{"--llm-provider", "openai"})
@@ -60,6 +88,7 @@ func TestLLMProviderFlag_OpenAIRequiresAPIKey(t *testing.T) {
 
 func TestLLMProviderFlag_OpenAIAcceptsFlagKey(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("DATABASE_URL", "postgres://test:test@localhost:5432/test")
 	cmd := &cobra.Command{}
 	defineFlags(cmd)
 	cmd.SetArgs([]string{"--llm-provider", "openai", "--llm-api-key", "sk-test"})

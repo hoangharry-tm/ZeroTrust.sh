@@ -27,7 +27,7 @@
 //     — ponytail: stub awaiting Go embedding client.
 //  4. AST edit distance via Zhang-Shasha (last resort) — ponytail: stub.
 //
-// Cross-path boost: when Path A and Path B independently confirm the same
+// Cross-path boost: when Deterministic and Reasoning independently confirm the same
 // finding (merged SourcePath becomes BOTH), confidence receives a +15 pp
 // additive boost, capped at 1.0.
 //
@@ -49,7 +49,7 @@ import (
 
 	"github.com/hoangharry-tm/zerotrust/internal/config"
 	"github.com/hoangharry-tm/zerotrust/internal/finding"
-	"github.com/hoangharry-tm/zerotrust/pkg/sqlite"
+	"github.com/hoangharry-tm/zerotrust/pkg/postgres"
 )
 
 // Strategy identifies which dedup gate resolved a duplicate pair.
@@ -58,8 +58,6 @@ type Strategy string
 const (
 	// StrategyExactKey means gate 1 (CWE + file + line) resolved the duplicate.
 	StrategyExactKey Strategy = "exact_key"
-	// StrategyFingerprint means gate 2 (CWE + normalised path) resolved it.
-	StrategyFingerprint Strategy = "fingerprint"
 	// StrategyEmbedding means gate 3 (MiniLM embedding similarity) resolved it.
 	StrategyEmbedding Strategy = "embedding"
 	// StrategyEditDistance means gate 4 (AST edit distance) resolved it.
@@ -74,8 +72,8 @@ type MergeRecord struct {
 	DroppedID string
 	// Strategy is the gate that identified the duplicate.
 	Strategy Strategy
-	// CrossPathBoostApplied is true when one finding was from Path A and the
-	// other from Path B, triggering the +15 pp confidence boost.
+	// CrossPathBoostApplied is true when one finding was from Deterministic and the
+	// other from Reasoning, triggering the +15 pp confidence boost.
 	CrossPathBoostApplied bool
 }
 
@@ -91,7 +89,7 @@ type Stats struct {
 type Layer struct {
 	root string
 	sc   *Sidecar
-	db   *sqlite.DB
+	db   *postgres.DB
 	projectID string
 }
 
@@ -101,11 +99,13 @@ func New(root string) *Layer {
 	return &Layer{root: root, sc: &sc}
 }
 
-// SetDB attaches an optional SQLite store for cross-scan finding dedup.
-// When set, findings whose finding_id already exists in the DB are skipped
-// before entering the gate cascade. projectID is the project identifier used
-// to scope the DB queries.
-func (l *Layer) SetDB(db *sqlite.DB, projectID string) {
+// SetDB attaches an optional Postgres store for cross-scan finding dedup.
+// When set, findings whose finding_id already exists in the DB with an
+// unchanged verdict (severity/confidence/suppress_reason) are skipped before
+// entering the gate cascade; findings with a changed verdict survive so the
+// update gets persisted. projectID is the project identifier used to scope
+// the DB queries.
+func (l *Layer) SetDB(db *postgres.DB, projectID string) {
 	l.db = db
 	l.projectID = projectID
 }
@@ -159,25 +159,29 @@ func (l *Layer) process(ctx context.Context, input []finding.Finding) ([]finding
 	}
 	survivors = g1out
 
-	// ── Gate 2: code fingerprint (CWE + normalised path) ────────────────────
-	fpMap := make(map[string]int, len(survivors))
-	survivors2 := make([]finding.Finding, 0, len(survivors))
-
-	for _, f := range survivors {
-		k := gate2Key(f)
-		if idx, dup := fpMap[k]; dup {
-			merged, rec := merge(survivors2[idx], f, StrategyFingerprint)
-			survivors2[idx] = merged
-			records = append(records, rec)
-			stats.MergeCount++
-		} else {
-			fpMap[k] = len(survivors2)
-			survivors2 = append(survivors2, f)
-		}
-	}
+	// Gate 2 ("code fingerprint": CWE + normalised path, no line number) was
+	// removed here. Found live on a real Grafana scan: two genuinely
+	// distinct CWE-862 findings in the same file (getPluginAssets at line
+	// 276 — the actual CVE-2021-43798 surface, correctly investigated by B5
+	// with a real exploitable=true verdict — and an unrelated surface at
+	// line 371) got treated as "the same finding" purely because they
+	// shared a CWE and a file, with no check on how far apart they were.
+	// The merge kept the higher-confidence one (line 371) and silently
+	// discarded getPluginAssets' verdict entirely — the one real signal
+	// from this whole scan for the actual target CVE, gone with no trace
+	// in the persisted output. Gate 2's own doc comment described the
+	// intended case (deterministic and semantic paths reporting the SAME
+	// bug at slightly different attributed lines within one function), but
+	// the implementation had no way to distinguish that from two unrelated
+	// bugs of the same CWE anywhere in the same file — which is a normal,
+	// unremarkable thing for a real file to contain. Gate 1 (exact
+	// CWE+path+line) and Gates 3/4 (embedding/AST similarity, which compare
+	// actual content, not just location) already cover legitimate
+	// same-bug-different-line duplicates more precisely than a blunt
+	// CWE+path key ever could.
 
 	// ── Gate 3: embedding cosine similarity (MiniLM-L6-v2) ──────────────────
-	survivors3, recs3, mergeCount3, nearMissPairs := l.gate3(ctx, survivors2)
+	survivors3, recs3, mergeCount3, nearMissPairs := l.gate3(ctx, survivors)
 	records = append(records, recs3...)
 	stats.MergeCount += mergeCount3
 
@@ -219,9 +223,9 @@ func (l *Layer) process(ctx context.Context, input []finding.Finding) ([]finding
 // Returns the survivors (findings not found in the DB), merge records for
 // skipped findings, and the count of skipped duplicates.
 func (l *Layer) dedupHistorical(ctx context.Context, input []finding.Finding) ([]finding.Finding, []MergeRecord, int) {
-	known := make(map[string]struct{})
-	if err := l.db.WalkFindingIDs(ctx, l.projectID, func(id string) error {
-		known[id] = struct{}{}
+	known := make(map[string]postgres.FindingSnapshot)
+	if err := l.db.WalkFindingSnapshots(ctx, l.projectID, func(id string, snap postgres.FindingSnapshot) error {
+		known[id] = snap
 		return nil
 	}); err != nil {
 		slog.Warn("dedup: cross-scan query failed, proceeding without historical dedup",
@@ -234,7 +238,18 @@ func (l *Layer) dedupHistorical(ctx context.Context, input []finding.Finding) ([
 	var mergeCount int
 
 	for _, f := range input {
-		if _, exists := known[f.ID]; exists {
+		prior, exists := known[f.ID]
+		// Only treat this as "nothing new" when severity, confidence, and
+		// suppress_reason all match the persisted row. A later scan can
+		// legitimately produce a different verdict for the same finding_id
+		// (e.g. a reasoning-layer fix changes an existing violation's B5
+		// outcome) — dropping unconditionally on ID match silently discarded
+		// those updates and left stale rows in Postgres forever.
+		unchanged := exists &&
+			prior.Severity == f.SeverityLabel.String() &&
+			prior.Confidence == f.Confidence &&
+			prior.SuppressReason == string(f.SuppressReason)
+		if unchanged {
 			records = append(records, MergeRecord{
 				KeptID:    f.ID,
 				DroppedID: f.ID,
@@ -252,7 +267,7 @@ func (l *Layer) dedupHistorical(ctx context.Context, input []finding.Finding) ([
 //  1. Cross-path +15 pp boost (SourcePath == BOTH).
 //  2. CVE CVSS floor: if f.CVSS > 0, confidence = max(cvss/10.0, confidence).
 //  3. SSVC boost: Active exploitation +0.10; Automatable=Yes +0.05; capped at 1.0.
-//  4. Path A bypass MEDIUM floor: PATTERN findings cannot fall below 0.60.
+//  4. Deterministic bypass MEDIUM floor: PATTERN findings cannot fall below 0.60.
 //  5. Derive SeverityLabel from final confidence.
 func applyBoostAndScore(f finding.Finding) finding.Finding {
 	if f.SourcePath == finding.SourceBoth && f.Confidence < config.C.ConfBlock {

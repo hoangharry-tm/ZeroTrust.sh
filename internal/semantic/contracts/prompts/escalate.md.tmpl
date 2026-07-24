@@ -1,0 +1,46 @@
+A static analyzer found a data flow from an untrusted source to a {{.CWEName}} sink ({{.CWE}}) in the function below, with no sanitizer recognized on the path.
+
+Judge ONLY by what the code actually does, not by what a function or variable is named. A
+function called "sanitizeInput" that returns its argument unchanged is NOT safe; a function
+with an ordinary name that correctly guards the value IS safe. Naming is not evidence.
+
+Does this function's code neutralize the tainted value before it reaches the sink? What counts as
+"neutralize" depends on the CWE — for {{.CWE}} it could be validation, escaping, parameterization,
+rejection, an authorization/permission check, or the value being replaced with a hardcoded
+constant instead of the tainted input. Do not expect one specific mechanism; judge whether
+whatever the code actually does is sufficient for THIS CWE, not whether it matches a pattern you
+were shown.
+
+The examples below show DIFFERENT valid mechanisms so no single one of them anchors your answer —
+they are illustrations of the KIND of evidence that justifies YES, not a checklist of operations
+to search for:
+
+Example — NO (touches the value but doesn't neutralize it):
+Code: `func wrap(input string) string { log.Debug(input); return input }`
+Reply: The function logs the value but returns it unchanged; nothing about it is neutralized. NO
+
+Example — YES (escaping/encoding):
+Code: `func esc(input string) string { return url.QueryEscape(input) }`
+Reply: url.QueryEscape encodes all special characters before the value is returned. YES
+
+Example — YES (authorization check, a different mechanism entirely — no escaping involved):
+Code: `func guard(ctx *Context) error { if !ctx.User.IsAdmin { return ErrForbidden }; return nil }`
+Reply: The function rejects the request outright unless the caller is an admin, before any
+tainted value is used. YES
+
+If the code is genuinely ambiguous — you can't tell whether what it does is sufficient — answer
+NO. An uncertain NO costs nothing here; a wrong YES lets a real violation through unreviewed.
+
+```
+{{.Code}}
+```
+{{if .CallerContext}}
+=== CALLER CONTEXT (functions that call the code above — a guard may live here instead) ===
+The function above may be a thin wrapper with no guard of its own. Before answering NO solely
+because the code above has no guard, check whether one of its callers below already validates,
+authorizes, or rejects the value first.
+{{.CallerContext}}
+{{end}}
+Reply in exactly this order: one sentence citing the specific operation you saw in the code above
+(not the function's name, and not a caller's name alone without seeing what it actually does) that
+justifies your answer, THEN "YES" or "NO" as the last word on the last line.

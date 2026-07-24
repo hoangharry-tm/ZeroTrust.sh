@@ -16,7 +16,7 @@
 //
 // The Indexer compares the current file set against a SQLite state cache and
 // returns only files that are new or changed since the last scan, reducing
-// per-scan cost of OpenGrep, Joern CPG build, and Path B by ~80–95%.
+// per-scan cost of OpenGrep, Joern CPG build, and Reasoning by ~80–95%.
 //
 // Content hashing: each file is hashed with SHA-256; only files whose hash
 // differs from the cached value are considered changed. Deleted files appear
@@ -39,7 +39,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/hoangharry-tm/zerotrust/pkg/sqlite"
+	"github.com/hoangharry-tm/zerotrust/pkg/postgres"
 )
 
 // ChangeSet is the output of a differential comparison.
@@ -55,13 +55,13 @@ type ChangeSet struct {
 
 // Indexer computes the differential file set for each scan.
 type Indexer struct {
-	db     *sqlite.DB
+	db     *postgres.DB
 	logger *slog.Logger
 }
 
 // New returns an Indexer backed by db.
 // If logger is nil, slog.Default() is used.
-func New(db *sqlite.DB, logger *slog.Logger) *Indexer {
+func New(db *postgres.DB, logger *slog.Logger) *Indexer {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -149,7 +149,7 @@ func (ix *Indexer) Diff(ctx context.Context, projectID, projectRoot string) (*Ch
 		}
 
 		// Stream state directly to SQLite — no slice accumulation.
-		if err := ix.db.UpsertScanState(ctx, sqlite.ScanStateRow{
+		if err := ix.db.UpsertScanState(ctx, postgres.ScanStateRow{
 			ProjectID:     projectID,
 			FilePath:      relPath,
 			ContentHash:   hash,
@@ -258,9 +258,9 @@ var binaryExts = map[string]bool{
 	".wasm": true, ".db": true, ".sqlite": true,
 	// SQLite WAL-mode sidecar files have compound extensions: filepath.Ext()
 	// returns ".db-shm" and ".db-wal" (the suffix after the last dot in the
-	// full filename, e.g. "test.db-shm" → ".db-shm"). Without these entries
-	// the sidecar files created by the state cache (pkg/sqlite) appear in the
-	// ChangeSet whenever the DB lives inside the scanned project root.
+	// full filename, e.g. "test.db-shm" → ".db-shm"). Kept for target codebases
+	// that embed their own SQLite database — the state cache (pkg/postgres) is
+	// a separate Postgres instance and no longer lives inside the scanned tree.
 	".db-shm": true, ".db-wal": true,
 }
 

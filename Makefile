@@ -8,12 +8,16 @@ DOCKER_REGISTRY := ghcr.io/hoangharry-tm
 DOCKER_TAG      := latest
 
 # Joern version pin — update here when upgrading Joern.
-# The integration tests use JOERN_BIN (env) or the resolved binary below.
+# The integration test uses JOERN_BIN (env) or the resolved binary below.
 JOERN_VERSION := v4.0.550
 # Homebrew installs as "joern" (uses --server flag mode, not a separate joern-server binary).
 JOERN_BIN     := $(shell command -v joern 2>/dev/null || echo "$(HOME)/bin/joern/joern")
 
-.PHONY: build test test-rules test-integration joern-check lint worker-install format-template demo demo-report demo-report-small demo-report-large clean docker-build docker-push
+# Scan target directory and Postgres connection for `make scan`.
+SCAN_DIR    ?= .
+DATABASE_URL ?= postgres://zerotrust:zerotrust@localhost:5432/zerotrust?sslmode=disable
+
+.PHONY: build test test-integration joern-check lint scan scan-clean clean docker-build docker-push
 
 build:
 	@mkdir -p $(BUILD_DIR)
@@ -22,82 +26,13 @@ build:
 test:
 	$(GOTESTSUM) --format testdox --format-icons codicons --format-hide-empty-pkg -- $(GO_PKGS)
 
-test-rules:
-	@echo "Running OpenGrep rule tests..."
-	@./scripts/rules/test_rules.sh
-
-
-## Scan targets — full cleanup, build, and run with consistent configuration
-.PHONY: scan-clean scan-webgoat scan-webgoat-qwen2.5 scan-webgoat-qwen3.5 scan-webgoat-json
-
-scan-clean:
-	@echo "Cleaning artifacts and ports..."
-	@lsof -ti:8080 2>/dev/null | xargs kill -9 2>/dev/null || true
-	@sleep 1
-	@rm -rf ~/mh_code/webgoat/.zerotrust
-	@rm -rf ./workspace
-
-scan-webgoat: scan-clean build
-	@echo "Starting Ollama..."
-	@pgrep -f "ollama serve" > /dev/null || (ollama serve > /tmp/zt-scan/ollama.log 2>&1 & sleep 3)
-	@echo "Running scan with qwen3.5:9b..."
-	@./build/zerotrust scan ~/mh_code/webgoat \
-		--native \
-		--report /tmp/zt-scan/report.html \
-		--json-report /tmp/zt-scan/report.json \
-		--offline \
-		--verbose \
-		--joern-bin /opt/homebrew/bin/joern \
-		-m qwen3.5:9b \
-		2>&1 | tee /tmp/zt-scan/scan.log
-
-scan-webgoat-qwen2.5: scan-clean build
-	@echo "Starting Ollama..."
-	@pgrep -f "ollama serve" > /dev/null || (ollama serve > /tmp/zt-scan/ollama.log 2>&1 & sleep 3)
-	@echo "Running scan with qwen2.5-coder:7b..."
-	@./build/zerotrust scan ~/mh_code/webgoat \
-		--native \
-		--report /tmp/zt-scan/report.html \
-		--json-report /tmp/zt-scan/report.json \
-		--offline \
-		--verbose \
-		--joern-bin /opt/homebrew/bin/joern \
-		-m qwen2.5-coder:7b \
-		2>&1 | tee /tmp/zt-scan/scan.log
-
-scan-webgoat-qwen3.5: scan-clean build
-	@echo "Starting Ollama..."
-	@pgrep -f "ollama serve" > /dev/null || (ollama serve > /tmp/zt-scan/ollama.log 2>&1 & sleep 3)
-	@echo "Running scan with qwen3.5:9b..."
-	@./build/zerotrust scan ~/mh_code/webgoat \
-		--native \
-		--report /tmp/zt-scan/report.html \
-		--json-report /tmp/zt-scan/report.json \
-		--offline \
-		--verbose \
-		--joern-bin /opt/homebrew/bin/joern \
-		-m qwen3.5:9b \
-		2>&1 | tee /tmp/zt-scan/scan.log
-
-scan-webgoat-json: scan-clean build
-	@echo "Starting Ollama..."
-	@pgrep -f "ollama serve" > /dev/null || (ollama serve > /tmp/zt-scan/ollama.log 2>&1 & sleep 3)
-	@echo "Running scan with JSON output..."
-	@./build/zerotrust scan ~/mh_code/webgoat \
-		--native \
-		--report /tmp/zt-scan/report.html \
-		--json-report /tmp/zt-scan/report.json \
-		--offline \
-		--verbose \
-		--joern-bin /opt/homebrew/bin/joern \
-		-m qwen3.5:9b \
-		2>&1 | tee /tmp/zt-scan/scan.log
-
 # Run integration tests — requires a live Joern binary (Homebrew: brew install joern).
-# Set JOERN_BIN to override the resolved joern path.
+# Set JOERN_BIN to override the resolved joern path. Deliberately narrow: only
+# confirms Joern starts and responds to a ping, no real CPG/taint query — see
+# CLAUDE.md's "Known gaps" for why (fixture dependency was dropped).
 test-integration:
 	JOERN_BIN=$(JOERN_BIN) go test -v -race -timeout 10m -tags integration \
-		./internal/pattern/joern/...
+		./internal/cpg_engine/...
 
 # Verify Joern installation and print version.
 joern-check:
@@ -108,24 +43,19 @@ joern-check:
 lint:
 	golangci-lint run $(GO_PKGS)
 
-worker-install:
-	cd worker && uv sync --extra dev
+scan-clean:
+	@lsof -ti:8080 2>/dev/null | xargs kill -9 2>/dev/null || true
 
-format-template:
-	node scripts/format_template.mjs
+# Run a scan against SCAN_DIR (default: repo root) with sane local defaults.
+# Override any flag by appending SCAN_ARGS, e.g.:
+#   make scan SCAN_DIR=~/some/project SCAN_ARGS="--patch --verify-poc --poe-artifact ./app.jar"
+scan: scan-clean build
+	@pgrep -f "ollama serve" > /dev/null || (ollama serve > /dev/null 2>&1 & sleep 3)
+	./build/$(BINARY) scan $(SCAN_DIR) --db-url "$(DATABASE_URL)" --verbose $(SCAN_ARGS)
 
-demo:
-	@./scripts/pipeline/run_demo.sh
-
-demo-report-small:
-	go run ./cmd/zerotrust --mock --report $(BUILD_DIR)/report-small.html
-
-demo-report-large:
-	go run ./cmd/zerotrust --mock-large --report $(BUILD_DIR)/report-large.html
-	cp $(BUILD_DIR)/report-large.html site/public/report.html
-
-demo-report: demo-report-small
-
+# Bundles Joern/OpenGrep/ast-grep into one deploy image for users who don't
+# want to install those on PATH locally — not required for local dev, where
+# the Go binary shells out to whatever's on PATH.
 docker-build:
 	@mkdir -p $(BUILD_DIR)
 	go build -o $(BUILD_DIR)/$(BINARY) ./cmd/zerotrust
@@ -138,24 +68,5 @@ docker-build:
 docker-push:
 	docker push $(DOCKER_REGISTRY)/zerotrust-engine:$(DOCKER_TAG)
 
-## Training pipeline
-.PHONY: install
-install: ## Sync the environment using uv
-	@echo "🚀 Syncing environment with uv"
-	uv sync
-
-.PHONY: curate
-curate: ## Run curation using uv
-	uv run python -m worker.training.curate $(CURATE_ARGS)
-
-.PHONY: finetune
-finetune: ## Run finetuning using uv
-	uv run python pipeline/train/finetune.py $(FINETUNE_ARGS)
-
-.PHONY: train
-train: curate finetune
-
-.PHONY: clean
-clean: ## Remove the virtual environment and build artifacts
-	rm -rf .venv
+clean:
 	rm -rf $(BUILD_DIR)

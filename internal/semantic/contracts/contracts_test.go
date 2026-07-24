@@ -39,7 +39,7 @@ func TestRulebookCompleteness(t *testing.T) {
 			t.Errorf("missing rulebook entry for %s", cwe)
 			continue
 		}
-		if len(inv.SinkAnchors) == 0 {
+		if len(inv.SinkAnchors) == 0 && !inv.NoSinkModel {
 			t.Errorf("CWE %s: SinkAnchors is empty", cwe)
 		}
 		if inv.Reference == "" {
@@ -53,10 +53,10 @@ func TestRulebookCompleteness(t *testing.T) {
 
 func TestSafeNodesNonEmptyExceptCWE94(t *testing.T) {
 	for cwe, inv := range Rulebook {
-		switch cwe {
-		case "CWE-94":
+		switch {
+		case cwe == "CWE-94", inv.NoSinkModel:
 			if inv.SafeNodes != nil {
-				t.Errorf("CWE-94 should have nil SafeNodes, got %v", inv.SafeNodes)
+				t.Errorf("CWE %s should have nil SafeNodes, got %v", cwe, inv.SafeNodes)
 			}
 		default:
 			if len(inv.SafeNodes) == 0 {
@@ -88,7 +88,7 @@ func TestVerdictSafe(t *testing.T) {
 		},
 		{
 			name:    "OS command with shell escape",
-			surface: surfaceWith(targeting.SurfaceExternalInput, []string{"os.exec"}, []string{"shellEscape"}),
+			surface: surfaceWith(targeting.SurfaceExternalInput, []string{"exec.Command"}, []string{"shellEscape"}),
 		},
 		{
 			name:    "Path traversal with path clean",
@@ -103,16 +103,8 @@ func TestVerdictSafe(t *testing.T) {
 			surface: surfaceWith(targeting.SurfaceExternalInput, []string{"http.Get"}, []string{"urlAllowlist"}),
 		},
 		{
-			name:    "Missing auth with auth check",
-			surface: surfaceWith(targeting.SurfaceAuthBoundary, []string{"doFilter"}, []string{"authCheck"}),
-		},
-		{
-			name:    "Missing auth IDOR with auth middleware",
-			surface: surfaceWith(targeting.SurfaceIDORCandidate, []string{"hasRole"}, []string{"authMiddleware"}),
-		},
-		{
 			name:    "Broken crypto with SHA256",
-			surface: surfaceWith(targeting.SurfaceDangerousSink, []string{"crypto.MD5"}, []string{"sha256"}),
+			surface: surfaceWith(targeting.SurfaceDangerousSink, []string{"md5"}, []string{"sha256"}),
 		},
 		{
 			name:    "Deserialization with type filter",
@@ -172,18 +164,8 @@ func TestVerdictViolation(t *testing.T) {
 			wantCWE: "CWE-918",
 		},
 		{
-			name:    "Missing auth violation",
-			surface: surfaceWith(targeting.SurfaceAuthBoundary, []string{"doFilter"}, []string{"externalInput"}),
-			wantCWE: "CWE-862",
-		},
-		{
-			name:    "IDOR violation",
-			surface: surfaceWith(targeting.SurfaceIDORCandidate, []string{"isAuthenticated"}, []string{"userParam"}),
-			wantCWE: "CWE-862",
-		},
-		{
 			name:    "Broken crypto violation",
-			surface: surfaceWith(targeting.SurfaceDangerousSink, []string{"crypto.MD5"}, []string{"data"}),
+			surface: surfaceWith(targeting.SurfaceDangerousSink, []string{"md5"}, []string{"data"}),
 			wantCWE: "CWE-327",
 		},
 		{
@@ -485,47 +467,52 @@ func TestCWE22_FileTransferToSinkTriggersViolation(t *testing.T) {
 	}
 }
 
-// ── P1-A: CWE-862 real Java anchors ───────────────────────────────────────
+// ── P1-A: CWE-862 has no keyword sink model ───────────────────────────────
+//
+// CWE-862 (Missing Authorization) has no fixed dangerous-API signature to
+// keyword-match — unlike SQLi/exec/eval, its "sink" is whatever operation
+// the surface performs, and false-positive-prone auth-function-name
+// keyword matching (e.g. "getAttribute" matching ordinary getAttributes())
+// was removed. Contracts now always defers CWE-862 to B4/B5, except when
+// the CPG's own structural taint taxonomy (Sanitized) says otherwise.
 
-func TestCWE862_doFilterMatchesAnchor(t *testing.T) {
+func TestCWE862_NoSinkModel(t *testing.T) {
 	inv, ok := Rulebook["CWE-862"]
 	if !ok {
 		t.Fatal("CWE-862 missing from Rulebook")
 	}
-	anchors := make(map[string]bool, len(inv.SinkAnchors))
-	for _, a := range inv.SinkAnchors {
-		anchors[a] = true
+	if !inv.NoSinkModel {
+		t.Error("CWE-862 should have NoSinkModel=true")
 	}
-	if !anchors["doFilter"] {
-		t.Error("CWE-862 SinkAnchors missing doFilter")
+	if len(inv.SinkAnchors) != 0 {
+		t.Errorf("CWE-862 SinkAnchors should be empty, got %v", inv.SinkAnchors)
+	}
+	if len(inv.SafeNodes) != 0 {
+		t.Errorf("CWE-862 SafeNodes should be empty, got %v", inv.SafeNodes)
 	}
 }
 
-func TestCWE862_hasRoleMatchesAnchor(t *testing.T) {
-	inv, ok := Rulebook["CWE-862"]
-	if !ok {
-		t.Fatal("CWE-862 missing from Rulebook")
-	}
-	anchors := make(map[string]bool, len(inv.SinkAnchors))
-	for _, a := range inv.SinkAnchors {
-		anchors[a] = true
-	}
-	if !anchors["hasRole"] {
-		t.Error("CWE-862 SinkAnchors missing hasRole")
+func TestCWE862_DefersToLLMWhenNotSanitized(t *testing.T) {
+	c := New()
+	for _, kind := range []targeting.SurfaceKind{targeting.SurfaceAuthBoundary, targeting.SurfaceIDORCandidate} {
+		surface := surfaceWith(kind, []string{"doFilter"}, []string{"externalInput"})
+		result := c.Check(context.Background(), surface)
+		if result.Verdict != VerdictInconclusive {
+			t.Errorf("%s: expected VerdictInconclusive (defer to LLM), got %s", kind, result.Verdict)
+		}
+		if result.CWE != "CWE-862" {
+			t.Errorf("%s: expected CWE-862, got %q", kind, result.CWE)
+		}
 	}
 }
 
-func TestCWE862_GetAuthenticationMatchesAnchor(t *testing.T) {
-	inv, ok := Rulebook["CWE-862"]
-	if !ok {
-		t.Fatal("CWE-862 missing from Rulebook")
-	}
-	anchors := make(map[string]bool, len(inv.SinkAnchors))
-	for _, a := range inv.SinkAnchors {
-		anchors[a] = true
-	}
-	if !anchors["getAuthentication"] {
-		t.Error("CWE-862 SinkAnchors missing getAuthentication")
+func TestCWE862_SafeWhenStructurallySanitized(t *testing.T) {
+	c := New()
+	surface := surfaceWith(targeting.SurfaceIDORCandidate, []string{"doFilter"}, []string{"externalInput"})
+	surface.Sanitized = true
+	result := c.Check(context.Background(), surface)
+	if result.Verdict != VerdictSafe {
+		t.Errorf("expected VerdictSafe when CPG taint taxonomy confirms sanitization, got %s", result.Verdict)
 	}
 }
 
@@ -696,12 +683,29 @@ func TestApplicableCWEs_AuthBoundaryDoesNotIncludeCWE22(t *testing.T) {
 	}
 }
 
-func TestApplicableCWEs_IDORCandidateDoesNotIncludeCWE22(t *testing.T) {
+// TestApplicableCWEs_IDORCandidateIncludesCWE22 is a regression test for a
+// real gap found live: CWE-22 used to be entirely absent from
+// SurfaceIDORCandidate's applicable list — a bug, not a deliberate
+// exclusion, contrary to what an earlier version of this test asserted.
+// Found on a real Grafana scan: getPluginAssets (CVE-2021-43798) is exactly
+// this shape — a resource-ID parameter (pluginID) used both to look up a
+// resource (why targeting classifies it IDOR) and to construct a file path
+// passed to os.Open (a real CWE-22 sink). Since CWE-22 was never in this
+// list, the surface could only ever be checked against CWE-862, and B5's
+// real, correctly-investigated exploitable=true verdict for it got
+// classified under the wrong CWE regardless of how good the reasoning was.
+// A resource-ID-to-file-path lookup is one of the most common
+// IDOR-adjacent patterns there is, not an edge case.
+func TestApplicableCWEs_IDORCandidateIncludesCWE22(t *testing.T) {
 	cwes := applicableCWEs(targeting.SurfaceIDORCandidate)
+	found := false
 	for _, c := range cwes {
 		if c == "CWE-22" {
-			t.Error("SurfaceIDORCandidate must not include CWE-22: path traversal is not an IDOR concern")
+			found = true
 		}
+	}
+	if !found {
+		t.Error("SurfaceIDORCandidate must include CWE-22: an IDOR-classified surface (resource-ID lookup) commonly also reaches a path-traversal sink (file path built from that same ID)")
 	}
 }
 

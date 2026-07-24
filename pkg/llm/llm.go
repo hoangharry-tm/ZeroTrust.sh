@@ -21,6 +21,7 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
 )
@@ -64,6 +65,52 @@ type Options struct {
 	// Overrides the model's default (often 4096). Set to 2×NumPredict to give
 	// thinking models room for CoT + prompt + output without hitting done_reason=length.
 	NumCtx int `json:"num_ctx,omitempty"`
+	// Tools lists the functions the model may call instead of (or before)
+	// producing a final text answer. Empty means no tool-calling capability
+	// is offered for this request — both providers ignore Tools entirely.
+	//
+	// json:"-" — both providers surface tools at the top level of their own
+	// request bodies (OpenAI's ChatCompletionNewParams.Tools, Ollama's
+	// chatRequest.Tools), not nested inside the "options"/inference-parameter
+	// sub-object this struct otherwise represents on Ollama's wire format.
+	Tools []ToolDef `json:"-"`
+	// JSON requests constrained JSON output from the provider (Ollama's
+	// top-level "format":"json", OpenAI's response_format
+	// {"type":"json_object"}) instead of relying on regex/brace-slicing a
+	// JSON object out of free text. Use this whenever the prompt asks for a
+	// JSON verdict/object — it removes an entire class of "model wrapped the
+	// JSON in prose/markdown fences" failures rather than mitigating it after
+	// the fact. Do NOT set this for prompts that intentionally ask for plain
+	// text (e.g. "YES"/"NO", a category word, a unified diff) — constraining
+	// those to JSON would break the format they actually need.
+	// json:"-" — same reason as Tools: this is a top-level wire field on both
+	// providers, not an inference-parameter.
+	JSON bool `json:"-"`
+}
+
+// ToolDef describes one callable function offered to the model in a Chat
+// request. Parameters is a JSON Schema object (the same shape both OpenAI's
+// and Ollama's tool-calling APIs expect), e.g.:
+//
+//	json.RawMessage(`{"type":"object","properties":{"function_id":{"type":"string"}},"required":["function_id"]}`)
+type ToolDef struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	Parameters  json.RawMessage `json:"parameters"`
+}
+
+// ToolCall is one function invocation the model requested instead of (or
+// alongside) a text answer. Arguments is the model's raw JSON-encoded
+// argument object — callers unmarshal it themselves, matching the schema
+// they supplied in the corresponding ToolDef.
+type ToolCall struct {
+	// ID identifies this specific call — echo it back as Message.ToolCallID
+	// on the tool-result message so the provider can match results to calls.
+	// Ollama does not use call IDs; ID is empty for Ollama responses and the
+	// caller does not need to set ToolCallID when replying to it.
+	ID        string `json:"id,omitempty"`
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
 }
 
 // Role identifies the speaker in a chat turn.
@@ -74,12 +121,24 @@ const (
 	RoleSystem    Role = "system"
 	RoleUser      Role = "user"
 	RoleAssistant Role = "assistant"
+	// RoleTool is a tool-result message: the caller's answer to a ToolCall
+	// the model previously requested. Set ToolCallID to the ToolCall.ID it
+	// answers (leave empty for Ollama, which doesn't use call IDs).
+	RoleTool Role = "tool"
 )
 
 // Message is a single turn in a multi-turn chat conversation.
 type Message struct {
 	Role    Role   `json:"role"`
 	Content string `json:"content"`
+	// ToolCalls is set on an assistant response when the model chose to call
+	// one or more tools instead of (or before) answering. Empty on a normal
+	// text response. Callers must feed each result back as its own
+	// RoleTool message before the next Chat call.
+	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
+	// ToolCallID is set on a RoleTool message to identify which ToolCall it
+	// answers. Unused (leave empty) for Ollama.
+	ToolCallID string `json:"tool_call_id,omitempty"`
 }
 
 // ProviderKind identifies a supported LLM backend.
@@ -108,7 +167,10 @@ type Config struct {
 	Timeout time.Duration
 }
 
-// New returns the Provider selected by cfg.Provider.
+// New returns the Provider selected by cfg.Provider, wrapped with the
+// default retry/backoff policy (see WithRetry) so every caller gets
+// resilience against transient backend errors without needing to know
+// about it.
 // Returns an error if cfg.Model is empty or the provider kind is unknown.
 func New(cfg Config) (Provider, error) {
 	if cfg.Model == "" {
@@ -117,20 +179,35 @@ func New(cfg Config) (Provider, error) {
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = 120 * time.Second
 	}
+	var p Provider
 	switch cfg.Provider {
 	case ProviderOllama, "":
-		return newOllamaClient(cfg), nil
+		p = newOllamaClient(cfg)
 	case ProviderOpenAI:
-		return newOpenAIClient(cfg)
+		var err error
+		p, err = newOpenAIClient(cfg)
+		if err != nil {
+			return nil, err
+		}
 	default:
 		return nil, errors.New("llm: unknown provider: " + string(cfg.Provider))
 	}
+	return WithRetry(p, DefaultRetryConfig), nil
 }
 
 // SetProviderMIVBlocked marks an Ollama-backed provider as MIV-blocked.
 // After this call, Generate and Chat return ErrModelBlocked.
 // No-op for non-Ollama providers.
+//
+// Unwraps a retry-wrapped provider (New wraps every provider it returns via
+// WithRetry) before the type assertion — without this, p would always be a
+// *retryProvider here, the assertion to *ollamaClient would always fail, and
+// MIV blocking would silently stop working the moment retry wrapping was
+// introduced.
 func SetProviderMIVBlocked(p Provider) {
+	if rp, ok := p.(*retryProvider); ok {
+		p = rp.next
+	}
 	if oc, ok := p.(*ollamaClient); ok {
 		oc.mivBlock.Store(true)
 	}

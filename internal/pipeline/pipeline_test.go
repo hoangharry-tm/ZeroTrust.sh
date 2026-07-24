@@ -405,6 +405,10 @@ func makeB5Finding(surfaceID string, exploitable, taintMismatch bool, confidence
 		SeverityLabel: finding.SeverityHigh,
 		Confidence:    confidence,
 		Path:          "src/test.go",
+		// Summary (short headline) and Justification (fuller reasoning) are
+		// now separate fields on a real B5 verdict — set both here to match
+		// verdictToFinding's actual output shape.
+		Summary:       "B5 analysis result",
 		Justification: "B5 analysis result",
 		SourcePath:    finding.SourceSemantic,
 		TaintMismatch: taintMismatch,
@@ -477,8 +481,8 @@ func TestB5TaintMismatchSuppressesViolation(t *testing.T) {
 	if !handled["s1"] {
 		t.Error("want surface s1 marked as handled")
 	}
-	if !strings.Contains(f.Summary, "false positive") {
-		t.Errorf("want Summary to mention false positive, got %q", f.Summary)
+	if !strings.Contains(f.Summary, "suppressed") {
+		t.Errorf("want Summary to mention suppression, got %q", f.Summary)
 	}
 }
 
@@ -670,7 +674,7 @@ func TestB5NoChangePatch_UpdatesJustification(t *testing.T) {
 		t.Fatal("expected surface not handled (inconclusive B5)")
 	}
 
-	// Simulate the no-change patch that runPathB applies.
+	// Simulate the no-change patch that runReasoning applies.
 	orig := index[vf.SurfaceID]
 	if !strings.Contains(orig.Justification, "awaiting B5 review") {
 		t.Fatalf("expected 'awaiting B5 review' in original, got %q", orig.Justification)

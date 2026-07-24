@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//go:build integration
+
 package ingestion
 
 import (
@@ -22,20 +24,24 @@ import (
 
 	"github.com/hoangharry-tm/zerotrust/internal/ingestion/diffindex"
 	"github.com/hoangharry-tm/zerotrust/internal/ingestion/miv"
-	"github.com/hoangharry-tm/zerotrust/pkg/sqlite"
+	"github.com/hoangharry-tm/zerotrust/pkg/postgres"
 )
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
-// tempIngester creates a real Indexer (backed by a temp SQLite DB) and a MIV
-// Verifier pointing at empty registry paths (so it uses the embedded defaults).
+// tempIngester creates a real Indexer (backed by Postgres at $DATABASE_URL,
+// skipping the test if unset) and a MIV Verifier pointing at empty registry
+// paths (so it uses the embedded defaults).
 func tempIngester(t *testing.T) (*Ingester, string) {
 	t.Helper()
 
-	dbPath := filepath.Join(t.TempDir(), "state.db")
-	db, err := sqlite.Open(dbPath)
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		t.Skip("DATABASE_URL not set — skipping Postgres-backed integration test")
+	}
+	db, err := postgres.Open(context.Background(), dsn)
 	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
+		t.Fatalf("postgres.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 
@@ -309,8 +315,8 @@ func TestRun_MIVResultIsNeverNil(t *testing.T) {
 	writeFile(t, root, "main.go", "package main")
 
 	cases := []Config{
-		{ProjectRoot: root},                  // no model path
-		{ProjectRoot: root, ModelPath: "x"},  // non-existent model path
+		{ProjectRoot: root},                 // no model path
+		{ProjectRoot: root, ModelPath: "x"}, // non-existent model path
 	}
 	for _, cfg := range cases {
 		res, err := ig.Run(context.Background(), cfg)

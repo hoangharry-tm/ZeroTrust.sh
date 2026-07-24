@@ -1,6 +1,7 @@
 package targeting
 
 import (
+	"log/slog"
 	"path/filepath"
 
 	cpg "github.com/hoangharry-tm/zerotrust/internal/cpg_engine"
@@ -17,15 +18,24 @@ func DetectSecondOrder(
 	fileClass map[string]FileClass,
 	sourceReachable map[string]bool,
 	backwardReachable map[string]bool,
+	root string,
 ) []Surface {
-	// Collect storage-boundary methods: methods in files marked BoundaryStorage.
+	slog.Debug("detecting second-order injection surfaces",
+		"total_methods", len(methods), "file_class_entries", len(fileClass))
+
 	storageMethodIDs := make(map[string]bool)
 	for _, m := range methods {
+		// CPG node File values are project-relative (Joern's convention) — must
+		// join with root before matching fileClass's absolute-path keys, the
+		// same resolution targeting.go's Run() already does. Skipping instead
+		// of resolving here meant every method was silently excluded on every
+		// real scan (real File values are never already absolute), so this
+		// function has never actually detected anything in production — only
+		// the unit tests, which use pre-made absolute-path fixtures, exercised
+		// the "match" branch at all.
 		absFile := m.File
-		// Normalize to absolute if needed (match Run()'s logic).
 		if !filepath.IsAbs(absFile) {
-			// Caller should pass absolute paths; if not, this method is skipped.
-			continue
+			absFile = filepath.Join(root, m.File)
 		}
 		fc, ok := fileClass[absFile]
 		if !ok || fc.Bound&BoundaryStorage == 0 {
@@ -35,38 +45,38 @@ func DetectSecondOrder(
 	}
 
 	if len(storageMethodIDs) == 0 {
-		return nil // No storage boundaries detected.
+		slog.Debug("no storage boundary methods found, skipping second-order detection")
+		return nil
 	}
+	slog.Debug("storage boundary methods found", "count", len(storageMethodIDs))
 
-	// Collect storage method IDs as seeds.
 	var storageSeeds []string
 	for id := range storageMethodIDs {
 		storageSeeds = append(storageSeeds, id)
 	}
 
-	// Forward BFS from storage: all methods that call into storage.
 	storageReachable := bfsForward(cg, storageSeeds)
+	slog.Debug("forward BFS from storage completed",
+		"storage_seeds", len(storageSeeds), "reachable", len(storageReachable))
 
-	// Intersection: methods receiving external input AND writing to storage.
-	// These are first-order storage-write entry points.
 	storageWriters := make(map[string]bool)
 	for id := range sourceReachable {
 		if storageReachable[id] {
 			storageWriters[id] = true
 		}
 	}
+	slog.Debug("storage writers identified", "count", len(storageWriters))
 
-	// Reverse BFS from storage: methods that read from storage.
 	reverseCG := buildReverseCG(cg)
 	storageReaders := bfsForward(reverseCG, storageSeeds)
+	slog.Debug("reverse BFS from storage completed",
+		"storage_seeds", len(storageSeeds), "readers", len(storageReaders))
 
-	// Build a lookup map from node ID to cpg.Node for O(1) access.
 	nodeByID := make(map[string]cpg.Node, len(methods))
 	for _, m := range methods {
 		nodeByID[m.ID] = m
 	}
 
-	// Second-order surfaces: readers that also reach sinks.
 	out := make([]Surface, 0, len(storageReaders))
 	seen := make(map[string]bool)
 
@@ -87,5 +97,6 @@ func DetectSecondOrder(
 		})
 	}
 
+	slog.Debug("second-order detection completed", "surfaces_found", len(out))
 	return out
 }

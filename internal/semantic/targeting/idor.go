@@ -25,7 +25,10 @@
 // Reference: BolaRay (CCS 2024) zero-trust resource ID model.
 package targeting
 
-import "strings"
+import (
+	"log/slog"
+	"strings"
+)
 
 // idorSignals are substrings that indicate a function or file is likely
 // involved in accessing a specific resource or user record. Case-insensitive
@@ -50,22 +53,27 @@ var idorSignals = []string{
 // Auth-boundary surfaces themselves are excluded: they are by definition
 // performing an ownership check.
 func identifyIDOR(surfaces map[string]Surface, canReachAuth map[string]bool) []Surface {
+	slog.Debug("identifying IDOR candidates",
+		"total_surfaces", len(surfaces), "auth_reachable", len(canReachAuth))
+
 	var out []Surface
 	for id, s := range surfaces {
 		if s.Kind == SurfaceAuthBoundary {
 			continue
 		}
 		if canReachAuth[id] {
-			continue // auth present on some path — not an IDOR candidate
+			continue
 		}
 		if !hasIDORSignal(s) {
-			continue // no IDOR-relevant signal in function name or file path
+			continue
 		}
 		candidate := s
 		candidate.Kind = SurfaceIDORCandidate
 		candidate.IsIDORCandidate = true
 		out = append(out, candidate)
 	}
+	slog.Debug("IDOR candidates identified",
+		"candidates", len(out), "total_surfaces", len(surfaces))
 	return out
 }
 

@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hoangharry-tm/zerotrust/pkg/sqlite"
+	"github.com/hoangharry-tm/zerotrust/pkg/postgres"
 )
 
 // parseREPLInt extracts an integer from a Joern REPL result line like:
@@ -135,13 +135,15 @@ func TestWebGoatSmoke(t *testing.T) {
 		fmt.Println("Pagination match (within 5% delta)")
 	}
 
-	// ── 2d. Ingest into SQLite ──────────────────────────────────────────────
-	fmt.Println("=== 2d. Ingest into SQLite ===")
-	dbPath := "/tmp/webgoat-smoke.db"
-	_ = os.Remove(dbPath)
-	db, err := sqlite.Open(dbPath)
+	// ── 2d. Ingest into Postgres ─────────────────────────────────────────────
+	fmt.Println("=== 2d. Ingest into Postgres ===")
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		t.Skip("DATABASE_URL not set — skipping Postgres ingest smoke steps")
+	}
+	db, err := postgres.Open(ctx, dsn)
 	if err != nil {
-		t.Fatalf("sqlite.Open: %v", err)
+		t.Fatalf("postgres.Open: %v", err)
 	}
 	defer db.Close()
 
@@ -149,32 +151,29 @@ func TestWebGoatSmoke(t *testing.T) {
 	version := "smoke-1"
 
 	ingestStart := time.Now()
-	err = g.IngestCPGToSQLite(ctx, db, projectID, version)
+	err = g.IngestCPGToDB(ctx, db, projectID, version)
 	ingestDuration := time.Since(ingestStart)
 	if err != nil {
-		t.Fatalf("IngestCPGToSQLite: %v", err)
+		t.Fatalf("IngestCPGToDB: %v", err)
 	}
-	fmt.Printf("Ingested CPG into SQLite in %v\n", ingestDuration)
+	fmt.Printf("Ingested CPG into Postgres in %v\n", ingestDuration)
 
-	// ── 2e. Validate SQLite round-trip ───────────────────────────────────────
-	fmt.Println("=== 2e. Validate SQLite round-trip ===")
-	sqlDB := db.Reader()
-	var sqliteMethodCount int
-	err = sqlDB.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM cpg_nodes WHERE project_id=? AND cpg_version=? AND node_type='METHOD'",
-		projectID, version).Scan(&sqliteMethodCount)
+	// ── 2e. Validate Postgres round-trip ─────────────────────────────────────
+	fmt.Println("=== 2e. Validate Postgres round-trip ===")
+	cur, err := db.QueryNodesByType(ctx, projectID, version, "METHOD")
 	if err != nil {
-		err = sqlDB.QueryRowContext(ctx,
-			"SELECT COUNT(*) FROM cpg_nodes WHERE node_type='METHOD'").Scan(&sqliteMethodCount)
-		if err != nil {
-			t.Fatalf("Direct SQLite query failed: %v", err)
-		}
+		t.Fatalf("QueryNodesByType: %v", err)
 	}
-	fmt.Printf("Live count: %d, SQLite count: %d\n", methodCount, sqliteMethodCount)
-	if methodCount != sqliteMethodCount {
-		fmt.Printf("SQLite round-trip mismatch: live=%d vs sqlite=%d\n", methodCount, sqliteMethodCount)
+	defer cur.Close()
+	pgMethodCount := 0
+	for cur.Next() {
+		pgMethodCount++
+	}
+	fmt.Printf("Live count: %d, Postgres count: %d\n", methodCount, pgMethodCount)
+	if methodCount != pgMethodCount {
+		fmt.Printf("Postgres round-trip mismatch: live=%d vs postgres=%d\n", methodCount, pgMethodCount)
 	} else {
-		fmt.Println("SQLite round-trip match")
+		fmt.Println("Postgres round-trip match")
 	}
 
 	// ── 2f. Taint source node ID correctness ─────────────────────────────────

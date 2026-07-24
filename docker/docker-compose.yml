@@ -8,6 +8,20 @@
 # Docker orchestration automatically.
 
 services:
+  # Scan state + findings store. The scan's actual output — query it directly,
+  # there is no HTML/JSON report or CLI dashboard.
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "127.0.0.1:5432:5432"
+    environment:
+      - POSTGRES_USER=zerotrust
+      - POSTGRES_PASSWORD=zerotrust
+      - POSTGRES_DB=zerotrust
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
   # Local LLM inference — runs on the host's GPU if available.
   # Maps port 11434 so the engine can reach it via host.docker.internal.
   ollama:
@@ -27,9 +41,11 @@ services:
     image: zerotrust-engine:dev
     depends_on:
       - ollama
+      - postgres
     environment:
       - OLLAMA_URL=http://host.docker.internal:11434
       - JOERN_URL=http://127.0.0.1:8080
+      - DATABASE_URL=postgres://zerotrust:zerotrust@postgres:5432/zerotrust
       - HOME=/home/zt
     volumes:
       # User's codebase (read-only)
@@ -45,3 +61,4 @@ services:
 volumes:
   ollama_data:
   zerotrust_state:
+  postgres_data:

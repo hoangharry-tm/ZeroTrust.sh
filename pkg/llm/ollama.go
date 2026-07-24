@@ -51,11 +51,12 @@ func newOllamaClient(cfg Config) *ollamaClient {
 
 // generateRequest is the Ollama /api/generate request body.
 type generateRequest struct {
-	Model   string   `json:"model"`
-	Prompt  string   `json:"prompt"`
-	Stream  bool     `json:"stream"`
-	Options *Options `json:"options,omitempty"`
-	Think   *bool    `json:"think,omitempty"`
+	Model   string          `json:"model"`
+	Prompt  string          `json:"prompt"`
+	Stream  bool            `json:"stream"`
+	Options *Options        `json:"options,omitempty"`
+	Think   *bool           `json:"think,omitempty"`
+	Format  json.RawMessage `json:"format,omitempty"`
 }
 
 type generateResponse struct {
@@ -65,20 +66,98 @@ type generateResponse struct {
 	EvalCount  int    `json:"eval_count"`
 }
 
-// chatRequest is the Ollama /api/chat request body.
+// chatRequest is the Ollama /api/chat request body. Messages and Tools use
+// Ollama's own wire shapes (ollamaMessage/ollamaTool), which differ from our
+// public Message/ToolDef types in one specific way: Ollama's tool-call
+// arguments are a JSON object on the wire, while our public ToolCall.Arguments
+// is a JSON-encoded string (matching OpenAI's convention, which the rest of
+// this package is built around) — see toOllamaMessage/fromOllamaMessage.
 type chatRequest struct {
-	Model    string    `json:"model"`
-	Messages []Message `json:"messages"`
-	Stream   bool      `json:"stream"`
-	Options  *Options  `json:"options,omitempty"`
-	Think    *bool     `json:"think,omitempty"`
+	Model    string          `json:"model"`
+	Messages []ollamaMessage `json:"messages"`
+	Stream   bool            `json:"stream"`
+	Options  *Options        `json:"options,omitempty"`
+	Think    *bool           `json:"think,omitempty"`
+	Tools    []ollamaTool    `json:"tools,omitempty"`
+	Format   json.RawMessage `json:"format,omitempty"`
 }
 
+// jsonFormat is Ollama's wire value for "format":"json" — constrains the
+// model to emit valid JSON (structure/field-shape is still the model's own
+// choice; this only guarantees parseable output, which is exactly what every
+// JSON.RawMessage parseVerdict/jsonBlockRe call site in this codebase needs).
+var jsonFormat = json.RawMessage(`"json"`)
+
 type chatResponse struct {
-	Message    Message `json:"message"`
-	Done       bool    `json:"done"`
-	DoneReason string  `json:"done_reason"`
-	EvalCount  int     `json:"eval_count"`
+	Message    ollamaMessage `json:"message"`
+	Done       bool          `json:"done"`
+	DoneReason string        `json:"done_reason"`
+	EvalCount  int           `json:"eval_count"`
+}
+
+// ollamaMessage is Ollama's wire shape for one chat message.
+type ollamaMessage struct {
+	Role      string           `json:"role"`
+	Content   string           `json:"content"`
+	ToolCalls []ollamaToolCall `json:"tool_calls,omitempty"`
+}
+
+// ollamaToolCall is Ollama's wire shape for one requested tool call —
+// arguments is a JSON object here, not a string (contrast with OpenAI).
+type ollamaToolCall struct {
+	Function struct {
+		Name      string          `json:"name"`
+		Arguments json.RawMessage `json:"arguments"`
+	} `json:"function"`
+}
+
+// ollamaTool is Ollama's wire shape for one tool definition offered to the model.
+type ollamaTool struct {
+	Type     string                `json:"type"`
+	Function ollamaFunctionDefWire `json:"function"`
+}
+
+type ollamaFunctionDefWire struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	Parameters  json.RawMessage `json:"parameters,omitempty"`
+}
+
+// toOllamaMessage converts our public Message to Ollama's wire shape.
+// ToolCallID is dropped — Ollama doesn't use call IDs, a tool-result message
+// is identified purely by its position (role "tool") in the conversation.
+func toOllamaMessage(m Message) ollamaMessage {
+	om := ollamaMessage{Role: string(m.Role), Content: m.Content}
+	for _, tc := range m.ToolCalls {
+		var wtc ollamaToolCall
+		wtc.Function.Name = tc.Name
+		// tc.Arguments is our public JSON-encoded-string convention; Ollama
+		// wants the parsed object. Re-encoding a parse failure as a bare
+		// string is a reasonable fallback — better than dropping the call.
+		if json.Valid([]byte(tc.Arguments)) {
+			wtc.Function.Arguments = json.RawMessage(tc.Arguments)
+		} else {
+			b, _ := json.Marshal(tc.Arguments)
+			wtc.Function.Arguments = b
+		}
+		om.ToolCalls = append(om.ToolCalls, wtc)
+	}
+	return om
+}
+
+// fromOllamaMessage converts an Ollama wire message into our public Message,
+// re-encoding each tool call's object-shaped arguments into our
+// JSON-encoded-string convention.
+func fromOllamaMessage(om ollamaMessage) Message {
+	m := Message{Role: Role(om.Role), Content: om.Content}
+	for _, wtc := range om.ToolCalls {
+		args := string(wtc.Function.Arguments)
+		if args == "" {
+			args = "{}"
+		}
+		m.ToolCalls = append(m.ToolCalls, ToolCall{Name: wtc.Function.Name, Arguments: args})
+	}
+	return m
 }
 
 // SetMIVBlocked marks this client as blocked by the Model Integrity Verifier.
@@ -99,6 +178,9 @@ func (c *ollamaClient) Generate(ctx context.Context, prompt string, opts *Option
 	}
 	if opts != nil {
 		gReq.Think = opts.Think
+		if opts.JSON {
+			gReq.Format = jsonFormat
+		}
 	}
 	body, err := json.Marshal(gReq)
 	if err != nil {
@@ -158,14 +240,31 @@ func (c *ollamaClient) Chat(ctx context.Context, messages []Message, opts *Optio
 	if c.mivBlock.Load() {
 		return Message{}, ErrModelBlocked
 	}
+	wireMsgs := make([]ollamaMessage, len(messages))
+	for i, m := range messages {
+		wireMsgs[i] = toOllamaMessage(m)
+	}
 	cReq := chatRequest{
 		Model:    c.model,
-		Messages: messages,
+		Messages: wireMsgs,
 		Stream:   false,
 		Options:  opts,
 	}
 	if opts != nil {
 		cReq.Think = opts.Think
+		if opts.JSON {
+			cReq.Format = jsonFormat
+		}
+		for _, t := range opts.Tools {
+			cReq.Tools = append(cReq.Tools, ollamaTool{
+				Type: "function",
+				Function: ollamaFunctionDefWire{
+					Name:        t.Name,
+					Description: t.Description,
+					Parameters:  t.Parameters,
+				},
+			})
+		}
 	}
 	body, err := json.Marshal(cReq)
 	if err != nil {
@@ -213,9 +312,18 @@ func (c *ollamaClient) Chat(ctx context.Context, messages []Message, opts *Optio
 		"eval_count", cr.EvalCount,
 		"done_reason", cr.DoneReason,
 		"resp_len", len(cr.Message.Content),
+		// content: logged in full at Debug level, matching this package's
+		// existing style of logging full prompts — added after a real
+		// investigation gap: without this, a model's answer on a no-tool-call
+		// turn (e.g. the turn right before the investigation-gate nudge
+		// fires) was never recorded anywhere, only its length, making it
+		// impossible to verify whether the model had already silently
+		// decided a verdict before ever being nudged to investigate.
+		"content", cr.Message.Content,
+		"tool_calls", len(cr.Message.ToolCalls),
 		"elapsed_ms", elapsed.Milliseconds(),
 	)
-	return cr.Message, nil
+	return fromOllamaMessage(cr.Message), nil
 }
 
 // Ping checks that the Ollama server is reachable and the configured model is loaded.

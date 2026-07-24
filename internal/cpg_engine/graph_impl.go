@@ -23,7 +23,7 @@ import (
 	"sync"
 
 	"github.com/hoangharry-tm/zerotrust/internal/config"
-	"github.com/hoangharry-tm/zerotrust/pkg/sqlite"
+	"github.com/hoangharry-tm/zerotrust/pkg/postgres"
 )
 
 // joernNullStr is the literal "null" string Joern emits when a CPG node
@@ -37,7 +37,7 @@ func joernNullStr(s string) string {
 }
 
 // pageSize is the number of elements per paginated Joern HTTP query.
-// Matches the value used in IngestCPGToSQLite.
+// Matches the value used in IngestCPGToDB.
 const pageSize = 500
 
 // joernGraphCache is a thread-safe lookaside cache bound to a single scan
@@ -51,7 +51,7 @@ type joernGraphCache struct {
 }
 
 // joernGraph implements Graph via Joern HTTP JSON queries (Joern DSL over HTTP).
-// When a SQLite backend is set (via WithSQLiteBackend), all read queries hit SQLite
+// When a DB backend is set (via WithSQLiteBackend), all read queries hit DB
 // instead of Joern HTTP — only TaintPaths remains as a Joern HTTP call.
 // ctx is the scan lifetime context propagated to every doQuery call so that
 // Ctrl-C / deadline cancellation aborts in-flight Joern queries promptly.
@@ -63,14 +63,14 @@ type joernGraph struct {
 	cache  *joernGraphCache
 }
 
-// sqliteDB returns the Client's SQLite backend. Reads from the Client directly so
+// pgDB returns the Client's DB backend. Reads from the Client directly so
 // SetSQLiteBackend takes effect for ALL graph instances — not just ones created
 // after the call.
-func (g *joernGraph) sqliteDB() *sqlite.DB { return g.client.sqliteDB }
+func (g *joernGraph) pgDB() *postgres.DB { return g.client.pgDB }
 
-func (g *joernGraph) sqliteProjectID() string { return g.client.sqliteProjectID }
+func (g *joernGraph) pgProjectID() string { return g.client.pgProjectID }
 
-func (g *joernGraph) sqliteCPGVersion() string { return g.client.sqliteCPGVersion }
+func (g *joernGraph) pgCPGVersion() string { return g.client.pgCPGVersion }
 
 // config.C.CPGMaxTaintPaths caps the number of taint paths returned by TaintPaths.
 // CPGs for large codebases can produce thousands of paths; this cap prevents
@@ -111,20 +111,20 @@ type joernFlow struct {
 	Intermediate []joernNode `json:"intermediate"`
 }
 
-// ─── SQLite CPG ingestion ──────────────────────────────────────────────────────
+// ─── DB CPG ingestion ──────────────────────────────────────────────────────
 
-// IngestCPGToSQLite drains the full CPG from Joern JVM memory into SQLite
+// IngestCPGToDB drains the full CPG from Joern JVM memory into DB
 // using paginated stable-sorted queries. After this call all graph queries
-// (GetCallers, GetCallees, QueryNodes, etc.) can read from SQLite instead of
+// (GetCallers, GetCallees, QueryNodes, etc.) can read from DB instead of
 // hitting Joern HTTP — only TaintPaths remains as a Joern HTTP call.
 //
 // Parameters:
 //   - ctx: cancellation context.
-//   - db: target SQLite database (writer connection used for ingestion).
+//   - db: target DB database (writer connection used for ingestion).
 //   - projectID: owning project key for cpg_nodes/cpg_edges.
 //   - cpgVersion: content-hash derived from the changed file set.
-func (g *joernGraph) IngestCPGToSQLite(ctx context.Context, db *sqlite.DB, projectID, cpgVersion string) error {
-	slog.Info("joern: IngestCPGToSQLite starting",
+func (g *joernGraph) IngestCPGToDB(ctx context.Context, db *postgres.DB, projectID, cpgVersion string) error {
+	slog.Info("joern: IngestCPGToDB starting",
 		"project_id", projectID, "cpg_version", cpgVersion)
 	var totalNodes, totalEdges int
 
@@ -137,21 +137,21 @@ func (g *joernGraph) IngestCPGToSQLite(ctx context.Context, db *sqlite.DB, proje
 		q := queryMethodsPaginated(offset, pageSize)
 		raw, err := g.client.doQuery(ctx, q)
 		if err != nil {
-			return fmt.Errorf("joern: IngestCPGToSQLite methods page %d: %w", offset, err)
+			return fmt.Errorf("joern: IngestCPGToDB methods page %d: %w", offset, err)
 		}
 		var jns []joernNode
 		if err := json.Unmarshal(raw, &jns); err != nil {
-			return fmt.Errorf("joern: IngestCPGToSQLite methods parse page %d: %w", offset, err)
+			return fmt.Errorf("joern: IngestCPGToDB methods parse page %d: %w", offset, err)
 		}
 		if len(jns) == 0 {
 			break
 		}
-		nodes := make([]sqlite.CPGNode, len(jns))
+		nodes := make([]postgres.CPGNode, len(jns))
 		for i, jn := range jns {
-			nodes[i] = sqlite.CPGNode{ID: jn.ID, Name: jn.Name, File: jn.File, Line: jn.Line, Code: jn.Code}
+			nodes[i] = postgres.CPGNode{ID: jn.ID, Name: jn.Name, File: jn.File, Line: jn.Line, Code: jn.Code}
 		}
 		if err := db.IngestNodeBatch(ctx, projectID, cpgVersion, string(NodeMethod), nodes); err != nil {
-			return fmt.Errorf("joern: IngestCPGToSQLite methods batch %d: %w", offset, err)
+			return fmt.Errorf("joern: IngestCPGToDB methods batch %d: %w", offset, err)
 		}
 		totalNodes += len(nodes)
 		offset += pageSize
@@ -166,21 +166,21 @@ func (g *joernGraph) IngestCPGToSQLite(ctx context.Context, db *sqlite.DB, proje
 		q := queryCallsPaginated(offset, pageSize)
 		raw, err := g.client.doQuery(ctx, q)
 		if err != nil {
-			return fmt.Errorf("joern: IngestCPGToSQLite calls page %d: %w", offset, err)
+			return fmt.Errorf("joern: IngestCPGToDB calls page %d: %w", offset, err)
 		}
 		var jns []joernNode
 		if err := json.Unmarshal(raw, &jns); err != nil {
-			return fmt.Errorf("joern: IngestCPGToSQLite calls parse page %d: %w", offset, err)
+			return fmt.Errorf("joern: IngestCPGToDB calls parse page %d: %w", offset, err)
 		}
 		if len(jns) == 0 {
 			break
 		}
-		nodes := make([]sqlite.CPGNode, len(jns))
+		nodes := make([]postgres.CPGNode, len(jns))
 		for i, jn := range jns {
-			nodes[i] = sqlite.CPGNode{ID: jn.ID, Name: jn.Name, File: jn.File, Line: jn.Line, Code: jn.Code}
+			nodes[i] = postgres.CPGNode{ID: jn.ID, Name: jn.Name, File: jn.File, Line: jn.Line, Code: jn.Code}
 		}
 		if err := db.IngestNodeBatch(ctx, projectID, cpgVersion, string(NodeCall), nodes); err != nil {
-			return fmt.Errorf("joern: IngestCPGToSQLite calls batch %d: %w", offset, err)
+			return fmt.Errorf("joern: IngestCPGToDB calls batch %d: %w", offset, err)
 		}
 		totalNodes += len(nodes)
 		offset += pageSize
@@ -195,35 +195,35 @@ func (g *joernGraph) IngestCPGToSQLite(ctx context.Context, db *sqlite.DB, proje
 		q := queryAllEdgesPaginated(offset, pageSize)
 		raw, err := g.client.doQuery(ctx, q)
 		if err != nil {
-			return fmt.Errorf("joern: IngestCPGToSQLite edges page %d: %w", offset, err)
+			return fmt.Errorf("joern: IngestCPGToDB edges page %d: %w", offset, err)
 		}
 		var jes []joernEdge
 		if err := json.Unmarshal(raw, &jes); err != nil {
-			return fmt.Errorf("joern: IngestCPGToSQLite edges parse page %d: %w", offset, err)
+			return fmt.Errorf("joern: IngestCPGToDB edges parse page %d: %w", offset, err)
 		}
 		if len(jes) == 0 {
 			break
 		}
-		edges := make([]sqlite.CPGEdge, len(jes))
+		edges := make([]postgres.CPGEdge, len(jes))
 		for i, je := range jes {
 			edgeType := je.Type
 			if edgeType == "" {
 				edgeType = "CALL"
 			}
-			edges[i] = sqlite.CPGEdge{FromID: je.From, ToID: je.To, EdgeType: edgeType}
+			edges[i] = postgres.CPGEdge{FromID: je.From, ToID: je.To, EdgeType: edgeType}
 		}
 		if err := db.IngestEdgeBatch(ctx, projectID, cpgVersion, edges); err != nil {
-			return fmt.Errorf("joern: IngestCPGToSQLite edges batch %d: %w", offset, err)
+			return fmt.Errorf("joern: IngestCPGToDB edges batch %d: %w", offset, err)
 		}
 		totalEdges += len(edges)
 		offset += pageSize
 	}
 
 	if err := db.RecordBuild(ctx, projectID, cpgVersion, cpgVersion, totalNodes, totalEdges); err != nil {
-		return fmt.Errorf("joern: IngestCPGToSQLite record build: %w", err)
+		return fmt.Errorf("joern: IngestCPGToDB record build: %w", err)
 	}
 
-	slog.Info("joern: IngestCPGToSQLite complete",
+	slog.Info("joern: IngestCPGToDB complete",
 		"nodes", totalNodes, "edges", totalEdges)
 	return nil
 }
@@ -233,7 +233,7 @@ func (g *joernGraph) IngestCPGToSQLite(ctx context.Context, db *sqlite.DB, proje
 // QueryNodes returns all nodes of nodeType across all ingested source files.
 // Results are cached per nodeType so callers querying the same type (e.g. both
 // Run and queryIDORCandidates requesting NodeMethod) share a single HTTP round-trip.
-// When a SQLite backend is available, reads from SQLite instead of Joern HTTP.
+// When a DB backend is available, reads from DB instead of Joern HTTP.
 func (g *joernGraph) QueryNodes(nodeType NodeType) ([]Node, error) {
 	g.cache.mu.RLock()
 	if nodes, ok := g.cache.methodCache[nodeType]; ok {
@@ -243,14 +243,14 @@ func (g *joernGraph) QueryNodes(nodeType NodeType) ([]Node, error) {
 	}
 	g.cache.mu.RUnlock()
 
-	// Try SQLite fast path first.
-	if g.sqliteDB() != nil {
-		nodes, err := g.queryNodesFromSQLite(string(nodeType))
+	// Try DB fast path first.
+	if g.pgDB() != nil {
+		nodes, err := g.queryNodesFromDB(string(nodeType))
 		if err == nil {
 			g.cache.mu.Lock()
 			g.cache.methodCache[nodeType] = nodes
 			g.cache.mu.Unlock()
-			slog.Debug("joern: QueryNodes from SQLite", "type", nodeType, "count", len(nodes))
+			slog.Debug("joern: QueryNodes from DB", "type", nodeType, "count", len(nodes))
 			return nodes, nil
 		}
 	}
@@ -283,7 +283,7 @@ func (g *joernGraph) QueryNodes(nodeType NodeType) ([]Node, error) {
 }
 
 // drainNodeCursor exhausts cur into a []Node slice, then closes it.
-func drainNodeCursor(cur *sqlite.NodeCursor) ([]Node, error) {
+func drainNodeCursor(cur *postgres.NodeCursor) ([]Node, error) {
 	defer cur.Close()
 	var nodes []Node
 	for cur.Next() {
@@ -297,7 +297,7 @@ func drainNodeCursor(cur *sqlite.NodeCursor) ([]Node, error) {
 }
 
 // drainEdgeCursor exhausts cur into a []Edge slice, then closes it.
-func drainEdgeCursor(cur *sqlite.EdgeCursor) ([]Edge, error) {
+func drainEdgeCursor(cur *postgres.EdgeCursor) ([]Edge, error) {
 	defer cur.Close()
 	var edges []Edge
 	for cur.Next() {
@@ -310,9 +310,9 @@ func drainEdgeCursor(cur *sqlite.EdgeCursor) ([]Edge, error) {
 	return edges, nil
 }
 
-// queryNodesFromSQLite reads all nodes of a given type from the SQLite backend.
-func (g *joernGraph) queryNodesFromSQLite(nodeType string) ([]Node, error) {
-	cur, err := g.sqliteDB().QueryNodesByType(g.ctx, g.sqliteProjectID(), g.sqliteCPGVersion(), nodeType)
+// queryNodesFromDB reads all nodes of a given type from the DB backend.
+func (g *joernGraph) queryNodesFromDB(nodeType string) ([]Node, error) {
+	cur, err := g.pgDB().QueryNodesByType(g.ctx, g.pgProjectID(), g.pgCPGVersion(), nodeType)
 	if err != nil {
 		return nil, err
 	}
@@ -324,9 +324,9 @@ func (g *joernGraph) QueryNodesByFile(relPath string, nodeType NodeType) ([]Node
 	if relPath == "" {
 		return nil, fmt.Errorf("joern: QueryNodesByFile: relPath must not be empty")
 	}
-	// Try SQLite fast path first.
-	if g.sqliteDB() != nil {
-		nodes, err := g.queryNodesByFileFromSQLite(relPath, string(nodeType))
+	// Try DB fast path first.
+	if g.pgDB() != nil {
+		nodes, err := g.queryNodesByFileFromDB(relPath, string(nodeType))
 		if err == nil {
 			return nodes, nil
 		}
@@ -346,9 +346,9 @@ func (g *joernGraph) QueryNodesByFile(relPath string, nodeType NodeType) ([]Node
 	return parseNodes(raw)
 }
 
-// queryNodesByFileFromSQLite reads nodes of a given type in a specific file from SQLite.
-func (g *joernGraph) queryNodesByFileFromSQLite(relPath, nodeType string) ([]Node, error) {
-	cur, err := g.sqliteDB().QueryNodesByFile(g.ctx, g.sqliteProjectID(), g.sqliteCPGVersion(), relPath, nodeType)
+// queryNodesByFileFromDB reads nodes of a given type in a specific file from DB.
+func (g *joernGraph) queryNodesByFileFromDB(relPath, nodeType string) ([]Node, error) {
+	cur, err := g.pgDB().QueryNodesByFile(g.ctx, g.pgProjectID(), g.pgCPGVersion(), relPath, nodeType)
 	if err != nil {
 		return nil, err
 	}
@@ -393,9 +393,9 @@ func (g *joernGraph) QueryEdges(fromID, toID string) ([]Edge, error) {
 	}
 	g.cache.mu.RUnlock()
 
-	// Try SQLite fast path first.
-	if g.sqliteDB() != nil {
-		edges, err := g.queryEdgesFromSQLite(fromID, toID)
+	// Try DB fast path first.
+	if g.pgDB() != nil {
+		edges, err := g.queryEdgesFromDB(fromID, toID)
 		if err == nil {
 			g.cache.mu.Lock()
 			g.cache.edgeCache[cacheKey] = edges
@@ -449,10 +449,10 @@ func (g *joernGraph) QueryEdges(fromID, toID string) ([]Edge, error) {
 	return all, nil
 }
 
-// queryEdgesFromSQLite reads edges from the cpg_edges table.
-func (g *joernGraph) queryEdgesFromSQLite(fromID, toID string) ([]Edge, error) {
-	db := g.sqliteDB()
-	proj, ver := g.sqliteProjectID(), g.sqliteCPGVersion()
+// queryEdgesFromDB reads edges from the cpg_edges table.
+func (g *joernGraph) queryEdgesFromDB(fromID, toID string) ([]Edge, error) {
+	db := g.pgDB()
+	proj, ver := g.pgProjectID(), g.pgCPGVersion()
 	switch {
 	case fromID != "" && toID == "":
 		cur, err := db.GetEdgesFrom(g.ctx, proj, ver, fromID)
@@ -490,9 +490,9 @@ func (g *joernGraph) queryEdgesFromSQLite(fromID, toID string) ([]Edge, error) {
 
 // GetCallGraph returns the full inter-procedural call graph.
 func (g *joernGraph) GetCallGraph() (CallGraph, error) {
-	// Try SQLite fast path first.
-	if g.sqliteDB() != nil {
-		cg, err := g.getCallGraphFromSQLite()
+	// Try DB fast path first.
+	if g.pgDB() != nil {
+		cg, err := g.getCallGraphFromDB()
 		if err == nil {
 			return cg, nil
 		}
@@ -526,26 +526,23 @@ func (g *joernGraph) GetCallGraph() (CallGraph, error) {
 	return cg, nil
 }
 
-// getCallGraphFromSQLite builds a CallGraph from the SQLite cpg_edges table.
-func (g *joernGraph) getCallGraphFromSQLite() (CallGraph, error) {
-	rows, err := g.sqliteDB().Reader().QueryContext(g.ctx,
-		`SELECT from_id, to_id FROM cpg_edges
-		 WHERE project_id=? AND cpg_version=? AND edge_type='CALL'
-		 ORDER BY from_id`, g.sqliteProjectID(), g.sqliteCPGVersion())
+// getCallGraphFromDB builds a CallGraph from the DB cpg_edges table.
+func (g *joernGraph) getCallGraphFromDB() (CallGraph, error) {
+	cur, err := g.pgDB().GetAllCallEdges(g.ctx, g.pgProjectID(), g.pgCPGVersion())
 	if err != nil {
-		return nil, fmt.Errorf("sqlite: getCallGraph: %w", err)
+		return nil, fmt.Errorf("postgres: getCallGraph: %w", err)
 	}
-	defer rows.Close() //nolint:errcheck
+	defer cur.Close()
 
 	cg := make(CallGraph)
-	for rows.Next() {
-		var from, to string
-		if err := rows.Scan(&from, &to); err != nil {
-			return nil, fmt.Errorf("sqlite: getCallGraph scan: %w", err)
+	for cur.Next() {
+		e, err := cur.Scan()
+		if err != nil {
+			return nil, fmt.Errorf("postgres: getCallGraph scan: %w", err)
 		}
-		cg[from] = append(cg[from], to)
+		cg[e.FromID] = append(cg[e.FromID], e.ToID)
 	}
-	return cg, rows.Err()
+	return cg, nil
 }
 
 // GetCallers returns all functions that directly call the function with the
@@ -557,9 +554,9 @@ func (g *joernGraph) GetCallers(functionID string) ([]Node, error) {
 	if strings.HasPrefix(functionID, "-") {
 		return nil, nil // ponytail: synthetic/virtual node
 	}
-	// Try SQLite fast path first.
-	if g.sqliteDB() != nil {
-		nodes, err := g.getCallersFromSQLite(functionID)
+	// Try DB fast path first.
+	if g.pgDB() != nil {
+		nodes, err := g.getCallersFromDB(functionID)
 		if err == nil {
 			return nodes, nil
 		}
@@ -576,9 +573,9 @@ func (g *joernGraph) GetCallers(functionID string) ([]Node, error) {
 	return parseNodes(raw)
 }
 
-// getCallersFromSQLite reads callers of functionID from the SQLite backend.
-func (g *joernGraph) getCallersFromSQLite(functionID string) ([]Node, error) {
-	cur, err := g.sqliteDB().GetCallers(g.ctx, g.sqliteProjectID(), g.sqliteCPGVersion(), functionID)
+// getCallersFromDB reads callers of functionID from the DB backend.
+func (g *joernGraph) getCallersFromDB(functionID string) ([]Node, error) {
+	cur, err := g.pgDB().GetCallers(g.ctx, g.pgProjectID(), g.pgCPGVersion(), functionID)
 	if err != nil {
 		return nil, err
 	}
@@ -594,9 +591,9 @@ func (g *joernGraph) GetCallees(functionID string) ([]Node, error) {
 	if strings.HasPrefix(functionID, "-") {
 		return nil, nil // ponytail: synthetic/virtual node — no real callees
 	}
-	// Try SQLite fast path first.
-	if g.sqliteDB() != nil {
-		nodes, err := g.getCalleesFromSQLite(functionID)
+	// Try DB fast path first.
+	if g.pgDB() != nil {
+		nodes, err := g.getCalleesFromDB(functionID)
 		if err == nil {
 			return nodes, nil
 		}
@@ -613,9 +610,9 @@ func (g *joernGraph) GetCallees(functionID string) ([]Node, error) {
 	return parseNodes(raw)
 }
 
-// getCalleesFromSQLite reads callees of functionID from the SQLite backend.
-func (g *joernGraph) getCalleesFromSQLite(functionID string) ([]Node, error) {
-	cur, err := g.sqliteDB().GetCallees(g.ctx, g.sqliteProjectID(), g.sqliteCPGVersion(), functionID)
+// getCalleesFromDB reads callees of functionID from the DB backend.
+func (g *joernGraph) getCalleesFromDB(functionID string) ([]Node, error) {
+	cur, err := g.pgDB().GetCallees(g.ctx, g.pgProjectID(), g.pgCPGVersion(), functionID)
 	if err != nil {
 		return nil, err
 	}
@@ -641,9 +638,9 @@ func (g *joernGraph) GetNeighboursAtDepth(rootID string, depth int) ([]Node, err
 		return nil, fmt.Errorf("joern: GetNeighboursAtDepth: rootID must not be empty")
 	}
 
-	// Use SQLite recursive CTE when backend is available (single query vs N HTTP calls).
-	if g.sqliteDB() != nil {
-		cur, err := g.sqliteDB().GetNeighboursAtDepth(g.ctx, g.sqliteProjectID(), g.sqliteCPGVersion(), rootID, depth)
+	// Use DB recursive CTE when backend is available (single query vs N HTTP calls).
+	if g.pgDB() != nil {
+		cur, err := g.pgDB().GetNeighboursAtDepth(g.ctx, g.pgProjectID(), g.pgCPGVersion(), rootID, depth)
 		if err == nil {
 			return drainNodeCursor(cur)
 		}

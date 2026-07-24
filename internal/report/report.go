@@ -43,7 +43,7 @@ type ScanInfo struct {
 	LOC            int    // lines of code scanned (0 = omit)
 	ScanDuration   string // e.g. "4.2s" (empty = omit)
 	// RootDir is the absolute path of the scanned project root.
-	// When set, all finding paths from Path B (Joern CPG) that start with
+	// When set, all finding paths from Reasoning (Joern CPG) that start with
 	// this prefix are normalized to relative paths in the rendered report.
 	RootDir string
 	// Alerts are operator-facing degradation notices (e.g. MIV block, CPG build failure).
@@ -121,11 +121,11 @@ var templateFuncs = template.FuncMap{
 	"sourcepathLabel": func(sp finding.SourcePath) string {
 		switch sp {
 		case finding.SourcePattern:
-			return "Path A"
+			return "Deterministic"
 		case finding.SourceSemantic:
-			return "Path B"
+			return "Reasoning"
 		case finding.SourceBoth:
-			return "A + B"
+			return "Deterministic + Reasoning"
 		default:
 			return string(sp)
 		}
@@ -190,7 +190,7 @@ var templateFuncs = template.FuncMap{
 	// startLine is the first line number (from LineRange.Start); 0 defaults to 1.
 	// sinkLine is the absolute line number to highlight (from LineRange.End).
 	// When sinkLine <= 0 or sinkLine < startLine, the last line is highlighted
-	// as fallback (preserves Path A behaviour where End == Start).
+	// as fallback (preserves Deterministic behaviour where End == Start).
 	"codeLines": func(code string, startLine, sinkLine int) []codeLine {
 		if startLine <= 0 {
 			startLine = 1
@@ -279,7 +279,7 @@ func New(outputPath string) *Generator {
 // Findings are sorted by severity (BLOCK first) before rendering.
 // normalizePaths converts absolute finding paths to relative by stripping the
 // RootDir prefix. Paths that are already relative or don't share the prefix are
-// left unchanged. This ensures Path A (OpenGrep, relative) and Path B (Joern
+// left unchanged. This ensures Deterministic (OpenGrep, relative) and Reasoning (Joern
 // CPG, often absolute) use consistent path forms in the report.
 func normalizePaths(rootDir string, findings []finding.Finding) {
 	if rootDir == "" {

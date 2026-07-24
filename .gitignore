@@ -45,6 +45,9 @@ internal/pattern/joern/workspace/
 # Data pipeline corpus — downloaded/scraped, not committed
 tests/corpus/*
 !tests/corpus/.gitkeep
+
+# Benchmark/test-target repos and datasets — downloaded, not committed
+benchmark/data/
 pipeline/notebooks/*.ipynb
 *.log
 /zerotrust

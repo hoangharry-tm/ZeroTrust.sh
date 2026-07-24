@@ -1,10 +1,13 @@
 {{.Traversal}}
   .map({{.Alias}} => {
-    val sc = {{.Alias}}.code.map(_c => if (_c=='\\'||_c=='"'||_c<32||_c>126) ' ' else _c).mkString
+    def san(s: String): String = if (s == null) "" else s.map(_c => if (_c=='\\'||_c=='"'||_c<32||_c>126) ' ' else _c).mkString
+    val sc = san({{.Alias}}.code)
+    val sn = san({{.NameExpr}})
+    val sf = san({{.FileExpr}})
     s"""{
       "id":   "${ {{.Alias}}.id.toString }",
-      "name": "${ {{.NameExpr}} }",
-      "file": "${ {{.FileExpr}} }",
+      "name": "${sn}",
+      "file": "${sf}",
       "line": ${ {{.Alias}}.lineNumber.getOrElse(0) },
       "code": "${sc}"
     }"""

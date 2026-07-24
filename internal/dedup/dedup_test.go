@@ -150,18 +150,27 @@ func TestGate1KeepsHigherConfidence(t *testing.T) {
 	}
 }
 
-func TestGate1DifferentLineNotMerged(t *testing.T) {
+// TestGate1DifferentLineNotMerged_TwoDistinctFindingsSurvive is a regression
+// test for a real bug found live: Gate 2 (since removed) keyed on CWE+path
+// alone, with no line number, so it merged ANY two findings sharing a CWE in
+// the same file — even genuinely unrelated ones. Found on a real Grafana
+// scan: getPluginAssets (line 276, CWE-862, the actual CVE-2021-43798
+// surface, correctly investigated by B5 with a real exploitable=true
+// verdict) got silently merged away into an unrelated CWE-862 finding at
+// line 371 of the same file, purely because they shared a CWE and a file —
+// the one real signal from that whole scan for the target CVE vanished with
+// no trace in the persisted output. Two findings at different lines, even
+// same CWE and file, must now survive as two distinct findings — Gate 1's
+// exact key (CWE+path+line) is the only gate that runs before Gates 3/4,
+// which compare actual content/AST similarity, not just location.
+func TestGate1DifferentLineNotMerged_TwoDistinctFindingsSurvive(t *testing.T) {
 	l := New("")
 	f1 := patternFinding("f1", "api/auth.py", "CWE-89", "", 10, 0.65)
 	f2 := patternFinding("f2", "api/auth.py", "CWE-89", "", 20, 0.65)
 
 	out, _ := l.Process(context.Background(), []finding.Finding{f1, f2})
-	// Gate 1 does not merge (different lines), but Gate 2 merges because
-	// the fingerprint (CWE + normalised path) is identical.  The Gate 2
-	// merge is correct: same CWE in the same file = same vulnerability
-	// detected at different program points.
-	if len(out) != 1 {
-		t.Errorf("expected 1 finding after gate-2 merge, got %d", len(out))
+	if len(out) != 2 {
+		t.Errorf("two distinct findings at different lines must both survive; got %d", len(out))
 	}
 }
 
@@ -173,36 +182,6 @@ func TestGate1DifferentCWENotMerged(t *testing.T) {
 	out, _ := l.Process(context.Background(), []finding.Finding{f1, f2})
 	if len(out) != 2 {
 		t.Errorf("different CWEs must not be merged; got %d", len(out))
-	}
-}
-
-// ─── Gate 2: code fingerprint dedup ──────────────────────────────────────────
-
-func TestGate2MergesSameCode(t *testing.T) {
-	l := New("")
-	code := `cursor.execute("SELECT * FROM users WHERE id=%s" % user_id)`
-	// Different lines — gate 1 won't catch them.
-	f1 := patternFinding("f1", "api/auth.py", "CWE-89", code, 10, 0.65)
-	f2 := semanticFinding("f2", "api/auth.py", "CWE-89", code, 20, 0.80)
-
-	out, err := l.Process(context.Background(), []finding.Finding{f1, f2})
-	if err != nil {
-		t.Fatalf("Process: %v", err)
-	}
-	if len(out) != 1 {
-		t.Fatalf("expected 1 finding after gate-2 merge (same code), got %d", len(out))
-	}
-}
-
-func TestGate2EmptyCodeNotMerged(t *testing.T) {
-	l := New("")
-	// Both have empty MatchedCode — gate 2 skips them; they survive independently.
-	f1 := patternFinding("f1", "api/auth.py", "CWE-89", "", 10, 0.65)
-	f2 := patternFinding("f2", "api/util.py", "CWE-89", "", 10, 0.65)
-
-	out, _ := l.Process(context.Background(), []finding.Finding{f1, f2})
-	if len(out) != 2 {
-		t.Errorf("empty MatchedCode must not be fingerprint-merged; got %d", len(out))
 	}
 }
 

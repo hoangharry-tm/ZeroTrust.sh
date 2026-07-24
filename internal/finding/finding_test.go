@@ -129,7 +129,7 @@ func TestSeverityFromConfidence_AgreesWithDedupThresholds(t *testing.T) {
 // ─── ComputeID ────────────────────────────────────────────────────────────────
 
 func TestComputeID_ReturnsHex64Chars(t *testing.T) {
-	id := ComputeID("CWE-89", "src/db.go", "cursor.execute(query)")
+	id := ComputeID("CWE-89", "src/db.go", 12)
 	if len(id) != 64 {
 		t.Errorf("expected 64-char hex, got len=%d: %q", len(id), id)
 	}
@@ -142,45 +142,63 @@ func TestComputeID_ReturnsHex64Chars(t *testing.T) {
 
 func TestComputeID_DeterministicAcrossCalls(t *testing.T) {
 	const n = 100
-	first := ComputeID("CWE-78", "internal/exec/runner.go", "exec.Command(cmd)")
+	first := ComputeID("CWE-78", "internal/exec/runner.go", 42)
 	for i := 0; i < n; i++ {
-		if got := ComputeID("CWE-78", "internal/exec/runner.go", "exec.Command(cmd)"); got != first {
+		if got := ComputeID("CWE-78", "internal/exec/runner.go", 42); got != first {
 			t.Fatalf("ComputeID not deterministic on call %d: got %q, want %q", i, got, first)
 		}
 	}
 }
 
 func TestComputeID_DifferentCWEProducesDifferentID(t *testing.T) {
-	id1 := ComputeID("CWE-89", "src/db.go", "x")
-	id2 := ComputeID("CWE-78", "src/db.go", "x")
+	id1 := ComputeID("CWE-89", "src/db.go", 1)
+	id2 := ComputeID("CWE-78", "src/db.go", 1)
 	if id1 == id2 {
 		t.Error("different CWE must produce different ID")
 	}
 }
 
 func TestComputeID_DifferentPathProducesDifferentID(t *testing.T) {
-	id1 := ComputeID("CWE-89", "src/auth.go", "x")
-	id2 := ComputeID("CWE-89", "src/db.go", "x")
+	id1 := ComputeID("CWE-89", "src/auth.go", 1)
+	id2 := ComputeID("CWE-89", "src/db.go", 1)
 	if id1 == id2 {
 		t.Error("different path must produce different ID")
 	}
 }
 
-func TestComputeID_DifferentCodeProducesDifferentID(t *testing.T) {
-	id1 := ComputeID("CWE-89", "src/db.go", "cursor.execute(q)")
-	id2 := ComputeID("CWE-89", "src/db.go", "cursor.execute(r)")
+func TestComputeID_DifferentLineProducesDifferentID(t *testing.T) {
+	id1 := ComputeID("CWE-89", "src/db.go", 10)
+	id2 := ComputeID("CWE-89", "src/db.go", 20)
 	if id1 == id2 {
-		t.Error("different matchedCode must produce different ID")
+		t.Error("different line must produce different ID")
 	}
 }
 
-// Two callers (opengrep and Path B) passing the same (cwe, path, code) must
+// TestComputeID_SameLocationStableAcrossDifferentCode is a regression test
+// for a real bug found live: the ID used to be keyed on matchedCode (an
+// LLM-extracted code snippet that isn't byte-identical across runs even for
+// the same surface), so the same file:line accumulated multiple,
+// contradictory, permanently-coexisting rows across re-scans (observed on
+// litemall's StorageService.java:71 — BLOCK, LOW, and HIGH verdicts all
+// simultaneously live for one location). Keying on line instead means two
+// different extracted-code-text variants for the SAME cwe+file+line collapse
+// to the SAME ID, so a re-scan's UPSERT overwrites the prior verdict instead
+// of appending a sibling row.
+func TestComputeID_SameLocationStableAcrossDifferentCode(t *testing.T) {
+	id1 := ComputeID("CWE-862", "storage/StorageService.java", 71)
+	id2 := ComputeID("CWE-862", "storage/StorageService.java", 71)
+	if id1 != id2 {
+		t.Errorf("same cwe+file+line must produce the same ID regardless of any code-text variation: %q vs %q", id1, id2)
+	}
+}
+
+// Two callers (opengrep and Reasoning) passing the same (cwe, path, line) must
 // produce the same ID so Gate 1 dedup can merge them.
 func TestComputeID_SameInputsFromDifferentCallersMatch(t *testing.T) {
-	cwe, path, code := "CWE-89", "api/auth.py", `cursor.execute("SELECT * FROM users WHERE id=%s" % uid)`
+	cwe, path, line := "CWE-89", "api/auth.py", 7
 
-	fromPathA := ComputeID(cwe, path, code)
-	fromPathB := ComputeID(cwe, path, code)
+	fromPathA := ComputeID(cwe, path, line)
+	fromPathB := ComputeID(cwe, path, line)
 
 	if fromPathA != fromPathB {
 		t.Errorf("same inputs produced different IDs: %q vs %q", fromPathA, fromPathB)
@@ -189,20 +207,20 @@ func TestComputeID_SameInputsFromDifferentCallersMatch(t *testing.T) {
 
 func TestComputeID_EmptyInputsDoNotPanic(t *testing.T) {
 	// Must not panic; result just needs to be a valid 64-char hex.
-	id := ComputeID("", "", "")
+	id := ComputeID("", "", 0)
 	if len(id) != 64 {
 		t.Errorf("expected 64-char hex for empty inputs, got %q", id)
 	}
 }
 
 // TestComputeID_KnownHash pins the SHA-256 formula to a pre-computed value.
-// If the formula (cwe + ":" + path + ":" + code) or hash algorithm changes,
+// If the formula (cwe + ":" + path + ":" + line) or hash algorithm changes,
 // this test fails — intentionally. Verify with:
 //
-//	echo -n 'CWE-89:src/db.go:x' | sha256sum
+//	echo -n 'CWE-89:src/db.go:5' | sha256sum
 func TestComputeID_KnownHash(t *testing.T) {
-	const want = "5da88350e9c0054e42c1b084cf361547e40d0cc6d557e5fc86fbacceaaf92376"
-	got := ComputeID("CWE-89", "src/db.go", "x")
+	const want = "3a401d2a4906ec4566eb8d503195465cef93ba66609529dd6bba4b4eeaddc6a8"
+	got := ComputeID("CWE-89", "src/db.go", 5)
 	if got != want {
 		t.Errorf("ComputeID formula changed:\n got  %s\n want %s", got, want)
 	}

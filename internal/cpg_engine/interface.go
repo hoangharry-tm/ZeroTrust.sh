@@ -140,7 +140,7 @@ type TaintPath struct {
 // Graph is the read interface shared by both detection paths.
 // The Joern HTTP client in this package is the only implementation.
 //
-// Both Path A and Path B acquire a Graph from Client.Graph() immediately
+// Both Deterministic and Reasoning acquire a Graph from Client.Graph() immediately
 // after BuildCPG completes; they share the same underlying connection.
 type Graph interface {
 	// QueryNodes returns all nodes of the given type across all files.

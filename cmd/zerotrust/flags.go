@@ -36,12 +36,15 @@ func defineFlags(cmd *cobra.Command) {
 	flags.String("llm-base-url", "", "LLM API base URL (defaults to the provider's standard endpoint)")
 	flags.String("llm-api-key", "", "API key for the LLM provider (openai only; falls back to $OPENAI_API_KEY)")
 	flags.String("calibration", "", "path to JSON calibration file from scripts/calibrate.py")
-	flags.String("joern-bin", "", "path to joern-server binary")
+	flags.String("joern-bin", "joern", "path to joern-server binary (resolved via PATH by default); set to \"\" to instead connect to an externally managed server at the fixed 127.0.0.1:8080 URL")
+
+	// ── Persistence ────────────────────────────────────────────────────────────
+	flags.String("db-url", "", "Postgres connection string (falls back to $DATABASE_URL)")
 
 	// ── Output ───────────────────────────────────────────────────────────────
-	flags.String("report", "", "HTML report output path (default: build/report.html)")
-	flags.String("json-report", "", "JSON report output path (disabled by default)")
 	flags.Bool("patch", false, "generate patch suggestions for confirmed findings")
+	flags.Bool("verify-poc", false, "sandboxed PoC verification for BLOCK/HIGH findings (requires Docker and --poe-artifact)")
+	flags.String("poe-artifact", "", "path to an already-built artifact to sandbox for --verify-poc (.jar, .py, .js/.mjs/.cjs, or a native binary)")
 	flags.BoolP("verbose", "v", false, "enable debug-level logging to stderr")
 }
 
@@ -51,8 +54,7 @@ func defineFlags(cmd *cobra.Command) {
 type runConfig struct {
 	Verbose         bool
 	ModelName       string
-	ReportPath      string
-	JSONReportPath  string
+	DatabaseURL     string
 	ProjectID       string
 	JoernBin        string
 	LLMProvider     string
@@ -60,6 +62,8 @@ type runConfig struct {
 	LLMAPIKey       string
 	CalibrationPath string
 	GeneratePatches bool
+	VerifyPoC       bool
+	PoEArtifact     string
 }
 
 // runConfigFromCommand extracts a run configuration from a cobra command.
@@ -76,13 +80,15 @@ func runConfigFromCommand(cmd *cobra.Command) (runConfig, error) {
 	if err != nil {
 		return cfg, fmt.Errorf("model: %w", err)
 	}
-	cfg.ReportPath, err = cmd.Flags().GetString("report")
+	cfg.DatabaseURL, err = cmd.Flags().GetString("db-url")
 	if err != nil {
-		return cfg, fmt.Errorf("report: %w", err)
+		return cfg, fmt.Errorf("db-url: %w", err)
 	}
-	cfg.JSONReportPath, err = cmd.Flags().GetString("json-report")
-	if err != nil {
-		return cfg, fmt.Errorf("json-report: %w", err)
+	if cfg.DatabaseURL == "" {
+		cfg.DatabaseURL = os.Getenv("DATABASE_URL")
+	}
+	if cfg.DatabaseURL == "" {
+		return cfg, fmt.Errorf("--db-url or $DATABASE_URL is required")
 	}
 	cfg.ProjectID, err = cmd.Flags().GetString("project-id")
 	if err != nil {
@@ -122,6 +128,17 @@ func runConfigFromCommand(cmd *cobra.Command) (runConfig, error) {
 	cfg.GeneratePatches, err = cmd.Flags().GetBool("patch")
 	if err != nil {
 		return cfg, fmt.Errorf("patch: %w", err)
+	}
+	cfg.VerifyPoC, err = cmd.Flags().GetBool("verify-poc")
+	if err != nil {
+		return cfg, fmt.Errorf("verify-poc: %w", err)
+	}
+	cfg.PoEArtifact, err = cmd.Flags().GetString("poe-artifact")
+	if err != nil {
+		return cfg, fmt.Errorf("poe-artifact: %w", err)
+	}
+	if cfg.VerifyPoC && cfg.PoEArtifact == "" {
+		return cfg, fmt.Errorf("--verify-poc requires --poe-artifact (path to an already-built artifact)")
 	}
 	return cfg, nil
 }

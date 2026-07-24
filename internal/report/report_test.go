@@ -309,14 +309,14 @@ func TestConfPct(t *testing.T) {
 
 func TestSourcepathLabel(t *testing.T) {
 	fn := templateFuncs["sourcepathLabel"].(func(finding.SourcePath) string)
-	if got := fn(finding.SourcePattern); got != "Path A" {
-		t.Errorf("PATTERN: want 'Path A', got %q", got)
+	if got := fn(finding.SourcePattern); got != "Deterministic" {
+		t.Errorf("PATTERN: want 'Deterministic', got %q", got)
 	}
-	if got := fn(finding.SourceSemantic); got != "Path B" {
-		t.Errorf("SEMANTIC: want 'Path B', got %q", got)
+	if got := fn(finding.SourceSemantic); got != "Reasoning" {
+		t.Errorf("SEMANTIC: want 'Reasoning', got %q", got)
 	}
-	if got := fn(finding.SourceBoth); got != "A + B" {
-		t.Errorf("BOTH: want 'A + B', got %q", got)
+	if got := fn(finding.SourceBoth); got != "Deterministic + Reasoning" {
+		t.Errorf("BOTH: want 'Deterministic + Reasoning', got %q", got)
 	}
 }
 

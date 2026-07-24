@@ -36,8 +36,8 @@ func TestBuildPrompt_HasFewShotExamples(t *testing.T) {
 		},
 	}
 	prompt := buildPrompt(surface, "")
-	if !strings.Contains(prompt, "FEW-SHOT EXAMPLES") {
-		t.Errorf("prompt should contain 'FEW-SHOT EXAMPLES', got:\n%s", prompt)
+	if !strings.Contains(prompt, "Worked examples") {
+		t.Errorf("prompt should contain 'Worked examples', got:\n%s", prompt)
 	}
 }
 
@@ -446,5 +446,167 @@ func TestB5PromptPreservesStringLiterals(t *testing.T) {
 	}
 	if !strings.Contains(got, "SELECT") {
 		t.Errorf("SQL query string not preserved in B5 prompt; got:\n%s", got[:500])
+	}
+}
+
+func TestMinifyCode_DropsBlankAndCommentOnlyLines(t *testing.T) {
+	code := "func f() {\n\n    // this is a comment\n    x := 1\n    # python style too\n    return x\n}"
+	got := minifyCode(code)
+	if strings.Contains(got, "this is a comment") || strings.Contains(got, "python style too") {
+		t.Errorf("comment-only lines should be dropped, got:\n%s", got)
+	}
+	if strings.Contains(got, "\n\n") {
+		t.Errorf("blank lines should be dropped, got:\n%s", got)
+	}
+	if !strings.Contains(got, "x := 1") || !strings.Contains(got, "return x") {
+		t.Errorf("real code lines must be preserved, got:\n%s", got)
+	}
+}
+
+func TestMinifyCode_PreservesTrailingInlineComments(t *testing.T) {
+	// Deliberately conservative: only whole-line comments are stripped, since
+	// safely distinguishing a trailing comment from a string literal
+	// containing "//" or "#" needs a real per-language tokenizer.
+	code := `url := "http://example.com" // fetch config`
+	got := minifyCode(code)
+	if got != code {
+		t.Errorf("trailing inline comment / string literal should be untouched, got:\n%s", got)
+	}
+}
+
+func TestMinifyCode_PreservesLogAndPrintStatements(t *testing.T) {
+	// Log/print calls are sometimes the actual sink (CWE-532, format-string
+	// bugs) — minifyCode must never strip them to save tokens.
+	code := "logger.info(\"user input: \" + userInput)\nSystem.out.println(cmd)"
+	got := minifyCode(code)
+	if got != code {
+		t.Errorf("log/print statements must be preserved verbatim, got:\n%s", got)
+	}
+}
+
+func TestTruncateAroundLine_KeepsTargetLineWhenTruncating(t *testing.T) {
+	var lines []string
+	for i := 0; i < 200; i++ {
+		lines = append(lines, "line "+string(rune('a'+i%26)))
+	}
+	lines[150] = "SINK_LINE_HERE"
+	code := strings.Join(lines, "\n")
+
+	got := truncateAroundLine(code, 150, 200) // budget far smaller than full code
+	if !strings.Contains(got, "SINK_LINE_HERE") {
+		t.Errorf("truncateAroundLine must preserve the target line, got:\n%s", got)
+	}
+	if len(got) >= len(code) {
+		t.Errorf("expected truncation to actually shrink the code")
+	}
+}
+
+func TestTruncateAroundLine_NoTruncationWhenUnderBudget(t *testing.T) {
+	code := "line1\nline2\nline3"
+	got := truncateAroundLine(code, 1, 1000)
+	if got != code {
+		t.Errorf("code under budget should be returned unchanged, got:\n%s", got)
+	}
+}
+
+func TestBuildPrompt_InvestigationGate_PresentForGatedCWE(t *testing.T) {
+	surface := enrichment.EnrichedSurface{
+		Surface:     targeting.Surface{ID: "n1", File: "test.java", Kind: targeting.SurfaceIDORCandidate},
+		ContractCWE: "CWE-862",
+	}
+	prompt := buildPrompt(surface, "")
+	if !strings.Contains(prompt, "Investigation gate") {
+		t.Errorf("gated CWE prompt should contain the Investigation gate section, got:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, `"n1"`) {
+		t.Errorf("gate should tell the model its own surface ID to use, got:\n%s", prompt)
+	}
+	// The gate presents get_callers and get_neighbours_at_depth as parallel
+	// capabilities mapped to different open questions, not a numbered
+	// "CHECKPOINT 1 then CHECKPOINT 2" procedure — found live that
+	// sequential/procedural framing biased the model into mechanically
+	// repeating the first-named tool instead of reasoning about which tool
+	// actually answers its remaining question.
+	if strings.Contains(prompt, "CHECKPOINT") {
+		t.Errorf("gate should not use step-numbered CHECKPOINT framing, got:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "get_callers") || !strings.Contains(prompt, "get_neighbours_at_depth") {
+		t.Errorf("gate should mention both tools, got:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "done RIGHT") || !strings.Contains(prompt, "done WRONG") {
+		t.Errorf("gated CWE prompt should contain contrastive right/wrong examples, got:\n%s", prompt)
+	}
+}
+
+func TestBuildPrompt_InvestigationGate_AlsoPresentForSinkAnchorCWE(t *testing.T) {
+	// CWE-89 has a fixed sink signature, but the gate now applies to it too —
+	// a caller can validate/parameterize the value before it reaches this
+	// sink, which is exactly the fetch()/SSRF false-positive this broadening
+	// was built to catch. The gate's wording must stay CWE-agnostic (no
+	// hardcoded "CWE-862"/"authorization" framing) since it now renders for
+	// injection/SSRF/path-traversal CWEs too.
+	surface := enrichment.EnrichedSurface{
+		Surface:     targeting.Surface{ID: "n1", File: "test.java", Kind: targeting.SurfaceExternalInput},
+		ContractCWE: "CWE-89",
+	}
+	prompt := buildPrompt(surface, "")
+	if !strings.Contains(prompt, "Investigation gate") {
+		t.Errorf("CWE-89 has a Rulebook entry, so the Investigation gate should still show, got:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "CWE-862 done") {
+		t.Errorf("gate text should be CWE-agnostic, not hardcoded to CWE-862, got:\n%s", prompt)
+	}
+}
+
+func TestBuildPrompt_InvestigationGate_AbsentForNoRulebookEntry(t *testing.T) {
+	surface := enrichment.EnrichedSurface{
+		Surface:     targeting.Surface{ID: "n1", File: "test.java", Kind: targeting.SurfaceExternalInput},
+		ContractCWE: "CWE-9999",
+	}
+	prompt := buildPrompt(surface, "")
+	if strings.Contains(prompt, "Investigation gate") {
+		t.Errorf("CWE with no Rulebook entry should not show the Investigation gate, got:\n%s", prompt)
+	}
+}
+
+func TestBuildPrompt_HasWhatNotToDoSection(t *testing.T) {
+	surface := enrichment.EnrichedSurface{
+		Surface: targeting.Surface{ID: "n1", File: "test.java", Kind: targeting.SurfaceExternalInput},
+	}
+	prompt := buildPrompt(surface, "")
+	if !strings.Contains(prompt, "What you must NOT do") {
+		t.Errorf("prompt should contain an explicit 'what not to do' section, got:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "Do NOT invent a function_id") {
+		t.Errorf("prompt should warn against inventing a function_id, got:\n%s", prompt)
+	}
+}
+
+func TestBuildPrompt_InvestigationGate_MultipleAuthMechanismsNoSingleAnchor(t *testing.T) {
+	// Regression test for a real anchoring bug found live: the prompt's only
+	// worked example for a "done right" CWE-862 investigation named
+	// "@PreAuthorize" as the illustrative mechanism. The model echoed that
+	// exact term back as its answer for a codebase (litemall) that actually
+	// uses Apache Shiro and never contains "@PreAuthorize" anywhere — 4 of
+	// 10 real findings in one scan fabricated that specific claim. The fix:
+	// show multiple different mechanisms (annotation, filter/interceptor,
+	// genuinely-inconclusive) so no single vocabulary word dominates, and
+	// explicitly warn that naming an unseen mechanism is fabrication.
+	surface := enrichment.EnrichedSurface{
+		Surface:     targeting.Surface{ID: "n1", File: "test.java", Kind: targeting.SurfaceIDORCandidate},
+		ContractCWE: "CWE-862",
+	}
+	prompt := buildPrompt(surface, "")
+
+	for _, mechanism := range []string{"annotation", "filter", "Shiro"} {
+		if !strings.Contains(prompt, mechanism) {
+			t.Errorf("prompt should illustrate multiple auth mechanisms including %q, got:\n%s", mechanism, prompt)
+		}
+	}
+	if !strings.Contains(prompt, "fabrication") {
+		t.Errorf("prompt should explicitly warn that naming an unseen mechanism is fabrication, got:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "not a checklist of terms to search for or") {
+		t.Errorf("prompt should clarify the examples illustrate a kind of evidence, not a term to recite, got:\n%s", prompt)
 	}
 }
